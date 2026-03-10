@@ -1,8 +1,10 @@
 # Follows the LTC implementation by Mathias Lechner and Ramin Hasani (2022) https://github.com/mlech26l/ncps/blob/master/ncps/tf/ltc_cell.py
 
 import tensorflow as tf
+from .base_cell import BaseCell
 
-class LRC_Cell(tf.keras.layers.AbstractRNNCell):
+
+class LRC_Cell(BaseCell):
     def __init__(
         self,
         units,
@@ -29,8 +31,7 @@ class LRC_Cell(tf.keras.layers.AbstractRNNCell):
 
         """
 
-        super().__init__(**kwargs)
-        self.units = units
+        super().__init__(units, **kwargs)
         self._init_ranges = {
             "gleak": (0.001, 1.0),
             "vleak": (-0.2, 0.2),
@@ -73,10 +74,6 @@ class LRC_Cell(tf.keras.layers.AbstractRNNCell):
         self._ode_solver_type = ode_solver
 
         self._layerwise = False
-
-    @property
-    def state_size(self):
-        return self.units
 
     @property
     def sensory_size(self):
