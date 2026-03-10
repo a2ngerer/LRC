@@ -1,3 +1,7 @@
+# DEPRECATED: This conda environment (TF 2.4.1, Python 3.9) is kept as a
+# historical reference only. The active environment is managed via uv.
+# Setup: uv sync --extra metal (Mac) or uv sync (Linux)
+# See pyproject.toml for current dependencies.
 name: lrc_neural
 channels:
   - defaults
