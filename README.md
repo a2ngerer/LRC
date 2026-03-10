@@ -1,46 +1,127 @@
-# Liquid-Resistance Liquid-Capacitance (LRC) Networks
+# RNN Architecture Benchmark — Master Thesis
 
-This repository contains code for the paper "Liquid-Resistance Liquid-Capacitance Networks" presented at the [NeuroAI Workshop at NeurIPS 2024](https://neuroai-workshop.github.io/previous_years/2024/accepted-papers.html). The paper is available on [ArXiv](https://arxiv.org/pdf/2403.08791).
+Systematic benchmark of **bio-inspired RNN cell types** across continuous-time dynamical system modeling and reinforcement learning control tasks.
 
-## Classification
-To run the classification examples:
+This repository is part of a master's thesis at TU Wien evaluating novel neuron architectures against classical baselines in a controlled, reproducible setting.
+
+---
+
+## What We Benchmark
+
+**4 neuron types × 2 wiring architectures = 8 model combinations**, evaluated on Neural ODE fitting tasks and robotics control environments.
+
+### Neuron Types
+
+| Neuron | Type | Description |
+|--------|------|-------------|
+| **LRC** | Bio-inspired ODE | Liquid-Resistance Liquid-Capacitance — adaptive elastance cell extending LTC ([Farsang et al., 2024](https://arxiv.org/abs/2403.08791)) |
+| **STC** | Bio-inspired | Spike-Threshold Capacitance — novel neuron type |
+| **LSTM** | Classical baseline | Long Short-Term Memory |
+| **CT-RNN** | ODE baseline | Continuous-Time RNN — leaky integrator |
+
+### Wiring Architectures
+
+| Wiring | Description |
+|--------|-------------|
+| **Dense** | Fully connected — all neurons connect to all neurons |
+| **NCP** | Neural Circuit Policy — sparse, biologically-inspired wiring ([Lechner et al., 2020](https://www.nature.com/articles/s42256-020-00237-3)) |
+
+### Architecture Matrix
+
+| | Dense | NCP |
+|---|:---:|:---:|
+| **LRC** | LRC + Dense | LRC + NCP |
+| **STC** | STC + Dense | STC + NCP |
+| **LSTM** | LSTM + Dense | LSTM + NCP |
+| **CT-RNN** | CT-RNN + Dense | CT-RNN + NCP |
+
+---
+
+## Tasks
+
+### Neural ODE — Dynamical System Fitting
+
+Fit continuous-time trajectories of 6 dynamical systems:
+
+| System | Type |
+|--------|------|
+| Spiral | 2D decaying spiral |
+| Duffing oscillator | Nonlinear forced oscillator |
+| Periodic sinusoid | Simple periodic signal |
+| Periodic Lotka-Volterra | Classic predator-prey |
+| Limited Lotka-Volterra | Carrying-capacity variant |
+| Nonlinear Lotka-Volterra | Nonlinear predator-prey |
+
+### Control — Gymnasium
+
+| Environment | Task |
+|-------------|------|
+| `Pendulum-v1` | Continuous control, swing-up |
+| `CartPole-v1` | Discrete control, balancing |
+
+---
+
+## Evaluation Metrics
+
+- **Performance**: MSE (Neural ODE), reward/accuracy (control), convergence speed
+- **Dynamics**: Lipschitz constant, phase portrait analysis
+- **Efficiency**: Training time per epoch, inference speed, GPU memory
+
+---
+
+## Repository Structure
+
 ```
-cd classification
-python run_imdb.py --model LRC_sym_elastance --size 64
+src/
+├── neurons/          # Cell implementations (LRC, STC, LSTM, CT-RNN)
+├── wirings/          # Dense and NCP wiring
+├── models/           # make_model(neuron, wiring) factory
+├── tasks/
+│   ├── neural_ode/   # Data generators + training loop for 6 systems
+│   └── control/      # Gymnasium environments
+└── evaluation/       # Metrics, visualization, profiling
+
+experiments/
+└── configs/          # YAML configs per experiment
+
+classification/       # Original LRC classification experiments (Farsang et al.)
+neuralODE/            # Original LRC neural ODE experiments (Farsang et al.)
+docs/                 # Documentation, original paper README
 ```
-Model choices are LRCs with two types of elastance: `LRC_sym_elastance` and `LRC_asym_elastance`, and `lstm`, `mgu`, `gru`.
 
-For the person localization, first download the dataset by running the `download_dataset.sh` script.
+> The `classification/` and `neuralODE/` directories contain the original code from [Farsang et al. (2024)](https://arxiv.org/abs/2403.08791), kept as reference. New experiments are built under `src/` and `experiments/`.
 
-## Neural ODE
-To run the neural ODE examples:
-```
-cd neuralODE
-python run_ode.py --model lrc --lrc_type symmetric --data spiral --niters 1000
-```
-The data choices are:
-`periodic_sinusodial`, `spiral`, `duffing`, `periodic_predator_prey`, `limited_predator_prey`, `nonlinear_predator_prey`.
+---
 
-Use `--viz True` for visualizing the progress of each validation step. 
+## Status
 
-Sinusoid           |  Spiral | Duffing
-:-------------------------:|:-------------------------:|:-------------------------:
-![](imgs/traj_phase_periodic_sinusodial.gif)  |  ![](imgs/traj_phase_spiral.gif) |  ![](imgs/traj_phase_duffing.gif)
+| Phase | Description | Timeline | Status |
+|-------|-------------|----------|--------|
+| **Phase 1** | Foundation: modular structure, TF upgrade, model factory, Neural ODE port | März 2026 | In progress |
+| **Phase 2** | New architectures: CT-RNN, STC, NCP wiring | April 2026 | Planned |
+| **Phase 3** | Full benchmark run, evaluation pipeline, plots | Mai–Juni 2026 | Planned |
+| **Phase 4** | Reproducibility, thesis export, final README | Juli–Sept 2026 | Planned |
 
-Periodic Lotka-Volterra           |  Limited Lotka-Volterra  | Non-linear Lotka-Volterra
-:-------------------------:|:-------------------------:|:-------------------------:
-![](imgs/traj_phase_periodic_lv.gif)  |  ![](imgs/traj_phase_limited_lv.gif) |  ![](imgs/traj_phase_nonlinear_lv.gif)
+---
 
-# Citation
-If you use this work, please cite our paper as follows:
+## Setup
+
+> Full setup instructions will be added at the end of Phase 1 (uv + TF 2.13+ environment).
+
+---
+
+## Based On
+
+This benchmark extends the LRC implementation by Farsang, Neubauer & Grosu (2024):
+
 ```bibtex
 @misc{farsang2024liquidresistanceliquidcapacitance,
-      title={Liquid Resistance Liquid Capacitance Networks}, 
+      title={Liquid Resistance Liquid Capacitance Networks},
       author={Mónika Farsang and Sophie A. Neubauer and Radu Grosu},
       year={2024},
       eprint={2403.08791},
       archivePrefix={arXiv},
       primaryClass={cs.NE},
-      url={https://arxiv.org/abs/2403.08791}, 
+      url={https://arxiv.org/abs/2403.08791},
 }
 ```
