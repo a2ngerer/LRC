@@ -9,7 +9,7 @@ Progress log: `obsidian_master_thesis/Thesis/work-documentation.md`
 
 - **Every task = its own branch**: `phase{N}/step{M}-short-name` (e.g. `phase1/step1-migrate-lrc-cells`)
 - **Commits**: small, atomic — commit per logical sub-step, not per file
-- **After each branch**: merge to `main` with `--no-ff` and a summary merge commit message
+- **After each branch**: merge to `main` with `--no-ff`, then push branch + main to origin
 - **After each session**: update `obsidian_master_thesis/Thesis/work-documentation.md`
 - **Python**: always `uv` — never `pip`, `conda`, `python` directly (use `uv run python`)
 

@@ -25,13 +25,15 @@ Examples:
   chore: add pyproject.toml with uv and TF 2.13 deps
 ```
 
-### Merging a step to main
+### Merging a step to main and pushing
 ```bash
 git checkout main
 git merge --no-ff phase{N}/step{M}-name -m "merge: phase{N}/step{M} — <one-line summary>"
+git push origin phase{N}/step{M}-name   # preserve branch on GitHub
+git push origin main
 ```
 
-Keep the branch after merging — it documents the history.
+Keep the branch after merging — it documents the history on GitHub.
 
 ---
 
