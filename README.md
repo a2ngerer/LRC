@@ -15,7 +15,7 @@ This repository is part of a master's thesis at TU Wien evaluating novel neuron 
 | Neuron | Type | Description |
 |--------|------|-------------|
 | **LRC** | Bio-inspired ODE | Liquid-Resistance Liquid-Capacitance — adaptive elastance cell extending LTC ([Farsang et al., 2024](https://arxiv.org/abs/2403.08791)) |
-| **STC** | Bio-inspired | Spike-Threshold Capacitance — novel neuron type |
+| **STC** | Bio-inspired ODE | Saturated Liquid Time-Constant — LTC with bounded forget/update conductances ([Farsang et al., 2024](https://arxiv.org/abs/2403.08791)) |
 | **LSTM** | Classical baseline | Long Short-Term Memory |
 | **CT-RNN** | ODE baseline | Continuous-Time RNN — leaky integrator |
 
@@ -106,7 +106,22 @@ docs/                 # Documentation, original paper README
 
 ## Setup
 
-> Full setup instructions will be added at the end of Phase 1 (uv + TF 2.13+ environment).
+**Requirements:** [uv](https://docs.astral.sh/uv/) — install once with `curl -LsSf https://astral.sh/uv/install.sh | sh`
+
+```bash
+# Mac (Apple Silicon — includes Metal GPU acceleration)
+uv sync --extra metal
+
+# Linux / CPU-only
+uv sync
+
+# Run any script
+uv run python src/...
+uv run pytest
+```
+
+> **Legacy:** `environment.yml` (conda, TF 2.4.1) is kept as a historical reference only.
+> The active environment is `pyproject.toml`.
 
 ---
 

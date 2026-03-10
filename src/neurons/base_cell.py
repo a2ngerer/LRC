@@ -18,6 +18,11 @@ class BaseCell(tf.keras.layers.AbstractRNNCell):
     """
 
     def __init__(self, units, **kwargs):
+        if type(self) is BaseCell:
+            raise TypeError(
+                "BaseCell is abstract and cannot be instantiated directly. "
+                "Subclass it and implement build() and call()."
+            )
         super().__init__(**kwargs)
         self.units = units
 

@@ -1,0 +1,32 @@
+[project]
+name = "lrc-benchmark"
+version = "0.1.0"
+description = "Benchmark: 4 neuron types x 2 wirings on Neural ODE + control tasks"
+requires-python = ">=3.11, <3.13"
+dependencies = [
+    "tensorflow>=2.15,<2.16",
+    "numpy",
+    "matplotlib",
+    "scipy",
+    "pyyaml",
+    "tqdm",
+    "pandas",
+]
+
+[project.optional-dependencies]
+metal = ["tensorflow-metal"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
