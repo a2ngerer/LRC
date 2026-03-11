@@ -48,6 +48,9 @@ tests/tasks/
 Single public function:
 
 ```python
+import numpy as np
+from scipy.integrate import solve_ivp
+
 def generate_dataset(name: str, data_size: int = 1000) -> tuple[np.ndarray, np.ndarray]:
     """Generate a trajectory for the named ODE system.
 
@@ -66,7 +69,9 @@ def generate_dataset(name: str, data_size: int = 1000) -> tuple[np.ndarray, np.n
     """
 ```
 
-All 6 systems return 2D trajectories (features=2). Uses `scipy.integrate.solve_ivp` internally. System parameters (initial conditions, time span, ODE coefficients) match `neuralODE/run_ode.py` exactly.
+All 6 systems return 2D trajectories (features=2). Uses `scipy.integrate.solve_ivp` with `method='DOP853'` (equivalent to the original code's `dopri5`) and default tolerances (`rtol=1e-3, atol=1e-6`). System parameters (initial conditions, time span, ODE coefficients) match `neuralODE/run_ode.py` exactly.
+
+**Note:** Original code had a typo `'periodic_sinusodial'` — fixed to `'periodic_sinusoidal'` in this implementation.
 
 | System | t_span | y0 |
 |--------|--------|----|
@@ -80,6 +85,10 @@ All 6 systems return 2D trajectories (features=2). Uses `scipy.integrate.solve_i
 ### ode_model.py
 
 ```python
+import tensorflow as tf
+from tensorflow.keras.layers import Dense
+from src.models import make_model
+
 class ODEFuncModel(tf.keras.Model):
     def __init__(self, neuron_type, wiring_type, units, features, **cell_kwargs):
         """ODE function model: Dense(units) → RNN core → Dense(features).
@@ -94,15 +103,16 @@ class ODEFuncModel(tf.keras.Model):
             features:    input/output feature dimension (2 for all 6 ODE systems)
             **cell_kwargs: forwarded to make_model → cell constructor
         """
+        super().__init__()
         self.dense_in = Dense(units)
         self.rnn = make_model(neuron_type, wiring_type, units, **cell_kwargs)
         self.dense_out = Dense(features)
 
-    def call(self, t, y):
-        # y: (batch, 1, features)
-        h = self.dense_in(y)    # (batch, 1, units)
-        dh = self.rnn(h)        # (batch, 1, units)
-        dy = self.dense_out(dh) # (batch, 1, features)
+    def call(self, t, state):
+        # state: (batch, 1, features)
+        h = self.dense_in(state)   # (batch, 1, units)
+        dh = self.rnn(h)           # (batch, 1, units)
+        dy = self.dense_out(dh)    # (batch, 1, features)
         return dy
 ```
 
@@ -111,19 +121,23 @@ Note: `t` is accepted but unused (autonomous ODE). Kept for compatibility with t
 ### solver.py
 
 ```python
+import tensorflow as tf
+
 def euler_odeint(func, y0, t):
     """Euler ODE integrator.
 
     Args:
-        func: callable(t_scalar, y) -> dy/dt, same shape as y
+        func: callable(t, y) -> dy where t is a 0-D tensor and dy has the same shape as y
         y0:   initial state, shape (batch, 1, features)
         t:    time points as TF tensor, shape (T,)
 
     Returns:
         Tensor of shape (T, batch, 1, features)
+
+    Note: Uses Python list + tf.stack (eager mode only; no @tf.function).
     """
     ys = [y0]
-    for i in tf.range(len(t) - 1):
+    for i in range(t.shape[0] - 1):
         dt = t[i + 1] - t[i]
         dy = func(t[i], ys[-1])
         ys.append(ys[-1] + tf.cast(dt, ys[-1].dtype) * dy)
@@ -133,6 +147,10 @@ def euler_odeint(func, y0, t):
 ### trainer.py
 
 ```python
+import numpy as np
+import tensorflow as tf
+from .solver import euler_odeint
+
 def get_batch(t, y, batch_size, batch_time):
     """Sample a random batch of sub-sequences.
 
@@ -143,9 +161,18 @@ def get_batch(t, y, batch_size, batch_time):
         batch_time: length of each sub-sequence
 
     Returns:
-        y0:       shape (batch_size, 1, 2)   — initial states
-        t_batch:  shape (batch_time,)         — time points
-        y_batch:  shape (batch_time, batch_size, 1, 2) — true trajectory
+        y0:       shape (batch_size, 1, 2)   — initial states at each random start
+        t_batch:  shape (batch_time,)         — fixed time window t[:batch_time] (same for all batch elements)
+        y_batch:  shape (batch_time, batch_size, 1, 2) — true trajectory for each batch element
+
+    Implementation:
+        s = np.random.choice(data_size - batch_time, batch_size)  # random start indices
+        y0      = y[s][:, np.newaxis, :]          # (batch_size, 1, 2)
+        t_batch = t[:batch_time]                   # (batch_time,) — always starts at index 0
+        # Each batch element: y[s_i:s_i+batch_time] → (batch_time, 2) → expand → (batch_time, 1, 2)
+        y_batch = np.stack(
+            [y[s_i:s_i+batch_time, np.newaxis, :] for s_i in s], axis=1
+        )  # shape (batch_time, batch_size, 1, 2)
     """
 
 def train(model, t, y, n_iters, batch_size=16, batch_time=16, lr=1e-3):
@@ -164,7 +191,9 @@ def train(model, t, y, n_iters, batch_size=16, batch_time=16, lr=1e-3):
         list of loss values (one per iteration)
     """
     # Uses GradientTape + Adam
-    # Loss: mean absolute error between euler_odeint(model, y0, t_batch) and y_batch
+    # pred = euler_odeint(model, y0, tf.constant(t_batch))  → shape (batch_time, batch_size, 1, 2)
+    # true = tf.constant(y_batch)                            → shape (batch_time, batch_size, 1, 2)
+    # Loss: tf.reduce_mean(tf.abs(pred - true))  (shapes match exactly)
     # Prints loss every 10 iterations
 ```
 
@@ -185,13 +214,18 @@ lr: 0.001
 
 ```python
 # Usage: uv run python experiments/run_neural_ode.py --config experiments/configs/neural_ode_lrc_spiral.yaml
+import argparse
+import yaml
+from src.tasks.neural_ode.datasets import generate_dataset
+from src.tasks.neural_ode.ode_model import ODEFuncModel
+from src.tasks.neural_ode.trainer import train
 ```
 
 - Parses `--config` argument
 - Loads YAML with `pyyaml`
 - Calls `generate_dataset(config['data'])`
 - Builds `ODEFuncModel(config['neuron'], config['wiring'], config['units'], features=2)`
-- Calls `train(model, t, y, config['niters'], ...)`
+- Calls `train(model, t, y, n_iters=config['niters'], batch_size=config['batch_size'], batch_time=config['batch_time'], lr=config['lr'])`
 
 ## Tests
 
@@ -209,11 +243,12 @@ Parametrize over all 6 system names. For each: assert `t.shape == (1000,)`, `y.s
 1. Zero ODE: `dy/dt = 0` → output equals y0 at all time steps; shape `(T, batch, 1, features)` correct
 2. Linear ODE: `dy/dt = y` → output values increase monotonically (sanity check)
 
-### test_trainer.py (3 tests)
+### test_trainer.py (4 tests)
 
 1. `get_batch` output shapes correct
 2. `train` completes 5 iterations on spiral without error
 3. `train` returns list of float losses of length == n_iters
+4. Gradients flow: run 1 iteration, verify model trainable_variables are non-empty and at least one gradient is not all-zero (confirms GradientTape captures the euler_odeint call)
 
 ## Success Criterion
 
@@ -230,3 +265,4 @@ Runs 100 iterations, prints loss every 10 steps, exits cleanly.
 - Multiple ODE system runs in one script
 - GPU device placement
 - Checkpointing / model saving
+- Random seed control / reproducibility flags
