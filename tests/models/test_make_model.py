@@ -48,3 +48,26 @@ def test_make_model_kwargs_forwarding():
     """Cell constructor kwargs are forwarded through make_model."""
     model = make_model('lrc', 'dense', 4, ode_unfolds=5)
     assert isinstance(model, tf.keras.Sequential)
+
+
+# --- make_dense_model ---
+
+def test_make_dense_model_single_layer():
+    from src.models import make_dense_model
+    model = make_dense_model('lrc', units=4)
+    assert isinstance(model, tf.keras.Sequential)
+    assert model(tf.zeros([2, 5, 3])).shape == (2, 5, 4)
+
+
+def test_make_dense_model_multi_layer():
+    from src.models import make_dense_model
+    model = make_dense_model('ctrnn', units=4, num_layers=3)
+    x = tf.zeros([2, 5, 3])
+    assert model(x).shape == (2, 5, 4)
+
+
+def test_make_dense_model_output_neurons():
+    from src.models import make_dense_model
+    model = make_dense_model('lstm', units=8, num_layers=2, output_neurons=2)
+    x = tf.zeros([2, 5, 3])
+    assert model(x).shape == (2, 5, 2)
