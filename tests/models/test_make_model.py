@@ -71,3 +71,30 @@ def test_make_dense_model_output_neurons():
     model = make_dense_model('lstm', units=8, num_layers=2, output_neurons=2)
     x = tf.zeros([2, 5, 3])
     assert model(x).shape == (2, 5, 2)
+
+
+# --- make_ncp_model ---
+
+def test_make_ncp_model_returns_sequential():
+    from src.models import make_ncp_model
+    model = make_ncp_model('lrc', inter_neurons=8, command_neurons=6, motor_neurons=4)
+    assert isinstance(model, tf.keras.Sequential)
+
+
+def test_make_ncp_model_output_shape():
+    from src.models import make_ncp_model
+    model = make_ncp_model('lstm', inter_neurons=8, command_neurons=6, motor_neurons=4)
+    x = tf.zeros([2, 5, 3])
+    assert model(x).shape == (2, 5, 4)
+
+
+def test_make_ncp_model_gradient_flow():
+    from src.models import make_ncp_model
+    model = make_ncp_model('ctrnn', inter_neurons=8, command_neurons=6, motor_neurons=4)
+    x = tf.zeros([2, 5, 3])
+    model(x)  # build weights
+    with tf.GradientTape() as tape:
+        loss = tf.reduce_mean(model(x))
+    grads = tape.gradient(loss, model.trainable_variables)
+    assert len(model.trainable_variables) > 0
+    assert any(g is not None and tf.reduce_any(g != 0).numpy() for g in grads)
