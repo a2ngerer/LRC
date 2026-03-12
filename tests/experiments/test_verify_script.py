@@ -1,4 +1,3 @@
-import pytest
 from experiments.verify_neural_ode import run_verification, check_convergence
 
 
