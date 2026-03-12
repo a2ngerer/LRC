@@ -70,3 +70,44 @@ def test_lrc_ar_cell_forward_pass():
     output, new_state = cell(inputs, state)
     assert output.shape == (batch, units)
     assert new_state[0].shape == (batch, units)
+
+
+# --- CTRNN_Cell ---
+
+def test_ctrnn_cell_is_subclass_of_basecell():
+    from src.neurons import CTRNN_Cell
+    from src.neurons.base_cell import BaseCell
+    assert issubclass(CTRNN_Cell, BaseCell)
+
+
+def test_ctrnn_forward_pass_shape():
+    from src.neurons import CTRNN_Cell
+    cell = CTRNN_Cell(units=8)
+    x = tf.zeros([3, 5])
+    state = [tf.zeros([3, 8])]
+    output, new_states = cell(x, state)
+    assert output.shape == (3, 8)
+    assert new_states[0].shape == (3, 8)
+
+
+def test_ctrnn_irregular_sampling():
+    from src.neurons import CTRNN_Cell
+    cell = CTRNN_Cell(units=8)
+    x = tf.zeros([3, 5])
+    state = [tf.zeros([3, 8])]
+    output, _ = cell((x, 0.5), state)
+    assert output.shape == (3, 8)
+
+
+def test_ctrnn_make_model_and_gradient_flow():
+    from src.models import make_model
+    model = make_model('ctrnn', 'dense', 4)
+    assert isinstance(model, tf.keras.Sequential)
+    x = tf.zeros([2, 5, 3])
+    assert model(x).shape == (2, 5, 4)
+    model(x)  # ensure weights built
+    with tf.GradientTape() as tape:
+        loss = tf.reduce_mean(model(x))
+    grads = tape.gradient(loss, model.trainable_variables)
+    assert len(model.trainable_variables) > 0
+    assert any(g is not None and tf.reduce_any(g != 0).numpy() for g in grads)
