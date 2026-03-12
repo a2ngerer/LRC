@@ -16,7 +16,7 @@ def main():
     print(f"Training Neural ODE | data={config['data']} neuron={config['neuron']} units={config['units']}")
 
     t, y = generate_dataset(config['data'])
-    model = ODEFuncModel(config['neuron'], config['wiring'], config['units'], features=2)
+    model = ODEFuncModel(config['neuron'], config['units'], features=2)
 
     losses = train(
         model, t, y,
