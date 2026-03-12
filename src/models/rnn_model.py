@@ -1,10 +1,11 @@
 import tensorflow as tf
-from src.neurons import LRC_Cell, LRC_AR_Cell
+from src.neurons import LRC_Cell, LRC_AR_Cell, CTRNN_Cell
 from src.wirings import DenseWiring
 
 _CELL_REGISTRY = {
     'lrc':    LRC_Cell,
     'lrc_ar': LRC_AR_Cell,
+    'ctrnn': CTRNN_Cell,
 }
 
 _WIRING_REGISTRY = {
