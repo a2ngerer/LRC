@@ -253,6 +253,15 @@ wheels = [
 ]
 
 [[package]]
+name = "future"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a7/b2/4140c69c6a66432916b26158687e821ba631a4c9273c474343badf84d3ba/future-1.0.0.tar.gz", hash = "sha256:bd2968309307861edae1458a4f8a4f3598c03be43b97521076aebf5d94c07b05", size = 1228490, upload-time = "2024-02-21T11:52:38.461Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/da/71/ae30dadffc90b9006d77af76b393cb9dfbfc9629f339fc1574a1c52e6806/future-1.0.0-py3-none-any.whl", hash = "sha256:929292d34f5872e70396626ef385ec22355a1fae8ad29e1a734c3e43f9fbc216", size = 491326, upload-time = "2024-02-21T11:52:35.956Z" },
+]
+
+[[package]]
 name = "gast"
 version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -455,6 +464,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "matplotlib" },
+    { name = "ncps" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pyyaml" },
@@ -476,6 +486,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "matplotlib" },
+    { name = "ncps" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pyyaml" },
@@ -581,6 +592,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/6a/05/ec30199c791cf0d788a26f56d8efb8ee4133ede79a9680fd8cc05e706404/ml_dtypes-0.3.2-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3a17ef2322e60858d93584e9c52a5be7dd6236b056b7fa1ec57f1bb6ba043e33", size = 2180925, upload-time = "2024-01-03T19:21:10.87Z" },
     { url = "https://files.pythonhosted.org/packages/e5/f1/93219c44bae4017e6e43391fa4433592de08e05def9d885227d3596f21a5/ml_dtypes-0.3.2-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e8505946df1665db01332d885c2020b4cb9e84a8b1241eb4ba69d59591f65855", size = 2160573, upload-time = "2024-01-03T19:21:12.775Z" },
     { url = "https://files.pythonhosted.org/packages/47/f3/847da54c3d243ff2aa778078ecf09da199194d282744718ef325dd8afd41/ml_dtypes-0.3.2-cp312-cp312-win_amd64.whl", hash = "sha256:f47619d978ab1ae7dfdc4052ea97c636c6263e1f19bd1be0e42c346b98d15ff4", size = 128649, upload-time = "2024-01-03T19:21:14.312Z" },
+]
+
+[[package]]
+name = "ncps"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "future" },
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/78/23/dded6d24dee306f89794a6d17dacbe18d9b9394e161ba80a6759abfeb4da/ncps-1.0.1.tar.gz", hash = "sha256:fd791104318201de3b0e2e524577e3222435706d0e5368009b8ae2a9f3d1618f", size = 38115, upload-time = "2024-08-14T13:38:30.892Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1e/cb/3e7c0b5f0d1dfeea92dbe99a77d4831ac8e871a985c779479cc804aa665f/ncps-1.0.1-py3-none-any.whl", hash = "sha256:249b2a62c38608df62d454fe20f4e880f74c27ef97ea3a45e101d47b1b273fb5", size = 60299, upload-time = "2024-08-14T13:38:29.456Z" },
 ]
 
 [[package]]
