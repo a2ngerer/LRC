@@ -1,10 +1,12 @@
 import tensorflow as tf
-from src.neurons import LRC_Cell, LRC_AR_Cell
+from src.neurons import LRC_Cell, LRC_AR_Cell, CTRNN_Cell, LSTM_Cell
 from src.wirings import DenseWiring
 
 _CELL_REGISTRY = {
     'lrc':    LRC_Cell,
     'lrc_ar': LRC_AR_Cell,
+    'ctrnn': CTRNN_Cell,
+    'lstm': LSTM_Cell,
 }
 
 _WIRING_REGISTRY = {
@@ -16,7 +18,7 @@ def make_model(neuron_type, wiring_type, units, **kwargs):
     """Build a bare RNN Sequential model for the given neuron + wiring combination.
 
     Args:
-        neuron_type: str key ('lrc', 'lrc_ar') or a BaseCell subclass
+        neuron_type: str key ('lrc', 'lrc_ar', 'ctrnn', 'lstm') or a BaseCell subclass
         wiring_type: str key ('dense') or a BaseWiring subclass
         units:       number of RNN units (forwarded to cell constructor)
         **kwargs:    additional keyword args forwarded to the cell constructor
