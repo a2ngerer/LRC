@@ -1,6 +1,7 @@
 import numpy as np
 import tensorflow as tf
-from src.wirings import SparseLinear
+from src.neurons import LRC_Cell, LSTM_Cell, CTRNN_Cell
+from src.wirings import NCPWiring, SparseLinear
 
 
 def test_sparse_linear_output_shape():
@@ -18,8 +19,6 @@ def test_sparse_linear_respects_mask():
     x = tf.ones([1, 1, 4])
     out = layer(x).numpy()
     assert np.all(out[..., 3:] == 0.0)
-from src.neurons import LRC_Cell, LSTM_Cell, CTRNN_Cell
-from src.wirings import NCPWiring
 
 
 def test_ncp_wiring_build_model_returns_sequential():

@@ -1,5 +1,6 @@
 import numpy as np
 import tensorflow as tf
+from ncps.wirings import NCP
 from .base_wiring import BaseWiring
 
 
@@ -30,9 +31,6 @@ class SparseLinear(tf.keras.layers.Layer):
 
     def call(self, x):
         return x @ (self.W * self.mask)
-
-
-from ncps.wirings import NCP
 
 
 class NCPWiring(BaseWiring):
@@ -80,11 +78,8 @@ class NCPWiring(BaseWiring):
             motor_fanin=max(1, command_neurons // 2),
             seed=seed,
         )
-        try:
-            A = wiring.adjacency_matrix
-        except Exception:
-            wiring.build(input_shape=0)
-            A = wiring.adjacency_matrix
+        wiring.build(input_shape=0)
+        A = wiring.adjacency_matrix
 
         inter_idx = wiring._inter_neurons    # list of inter neuron indices
         cmd_idx = wiring._command_neurons    # list of command neuron indices
@@ -99,6 +94,15 @@ class NCPWiring(BaseWiring):
         self._command_to_motor = (
             A[np.ix_(cmd_idx, mot_idx)] != 0
         ).astype(np.float32)   # shape: (command_neurons, motor_neurons)
+
+        assert self._inter_to_command.any(), (
+            "NCPWiring: inter→command mask is all-zeros (disconnected layer). "
+            "Increase inter_neurons or command_neurons."
+        )
+        assert self._command_to_motor.any(), (
+            "NCPWiring: command→motor mask is all-zeros (disconnected layer). "
+            "Increase command_neurons or motor_neurons."
+        )
 
     def build_model(self) -> tf.keras.Sequential:
         return tf.keras.Sequential([
