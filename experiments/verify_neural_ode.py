@@ -53,7 +53,7 @@ def run_verification(systems=ALL_SYSTEMS, n_iters=None, config=None):
     for name in systems:
         print(f'\n=== {name} ===')
         t, y = generate_dataset(name)
-        model = ODEFuncModel(cfg['neuron'], cfg['wiring'], cfg['units'], features=2)
+        model = ODEFuncModel(cfg['neuron'], cfg['units'], features=2)
         losses = train(model, t, y,
                        n_iters=cfg['niters'],
                        batch_size=cfg['batch_size'],
