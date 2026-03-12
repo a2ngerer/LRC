@@ -19,7 +19,6 @@ ALL_SYSTEMS = [
 
 DEFAULT_CONFIG = {
     'neuron': 'lrc_ar',
-    'wiring': 'dense',
     'units': 16,
     'niters': 2000,
     'batch_size': 16,
