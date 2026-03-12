@@ -1,6 +1,6 @@
 import tensorflow as tf
 from src.neurons import LRC_Cell, LRC_AR_Cell, CTRNN_Cell, LSTM_Cell
-from src.wirings import DenseWiring
+from src.wirings import DenseWiring, NCPWiring
 
 _CELL_REGISTRY = {
     'lrc':    LRC_Cell,
@@ -61,3 +61,27 @@ def make_dense_model(neuron_type, units, num_layers=1, output_neurons=None, **ce
     if output_neurons is not None:
         layers.append(tf.keras.layers.Dense(output_neurons))
     return tf.keras.Sequential(layers)
+
+
+def make_ncp_model(neuron_type, inter_neurons, command_neurons, motor_neurons,
+                   seed=42, **cell_kwargs):
+    """Build a three-layer NCP-wired RNN model.
+
+    Layers: inter -> (sparse) -> command -> (sparse) -> motor
+    Output shape: (batch, timesteps, motor_neurons)
+
+    Args:
+        neuron_type:      str key ('lrc', 'lrc_ar', 'ctrnn', 'lstm') or BaseCell subclass
+        inter_neurons:    neurons in inter layer
+        command_neurons:  neurons in command layer
+        motor_neurons:    neurons in motor layer (= output size)
+        seed:             NCP wiring seed (default 42)
+        **cell_kwargs:    forwarded to each cell constructor
+
+    Returns:
+        tf.keras.Sequential
+    """
+    cell_cls = _CELL_REGISTRY[neuron_type] if isinstance(neuron_type, str) else neuron_type
+    wiring = NCPWiring(cell_cls, inter_neurons, command_neurons, motor_neurons,
+                       seed=seed, **cell_kwargs)
+    return wiring.build_model()
