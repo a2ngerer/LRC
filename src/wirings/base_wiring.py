@@ -10,7 +10,7 @@ class BaseWiring(abc.ABC):
     Phase 2 will add NCPWiring here — no changes to make_model required.
     """
 
-    def __init__(self, cell):
+    def __init__(self, cell=None):
         self.cell = cell
 
     @abc.abstractmethod
