@@ -197,6 +197,8 @@ neuralODE/*/*.png
 *.csv
 *.txt
 
+results/
+
 # Claude Code — internal workflow files
 CLAUDE.md
 claude_instructions/
