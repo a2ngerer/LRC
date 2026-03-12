@@ -1,0 +1,8 @@
+neuron: lrc_ar
+wiring: dense
+data: spiral
+units: 16
+niters: 100
+batch_size: 16
+batch_time: 16
+lr: 0.001
