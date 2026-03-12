@@ -6,11 +6,9 @@ class BaseWiring(abc.ABC):
 
     A wiring defines how a cell is wrapped into a Keras model.
     Subclass this and implement build_model().
-
-    Phase 2 will add NCPWiring here — no changes to make_model required.
     """
 
-    def __init__(self, cell):
+    def __init__(self, cell=None):
         self.cell = cell
 
     @abc.abstractmethod

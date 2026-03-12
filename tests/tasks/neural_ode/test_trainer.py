@@ -18,14 +18,14 @@ def test_get_batch_shapes():
 def test_train_completes_without_error():
     """train runs 5 iterations without raising."""
     t, y = generate_dataset('spiral', data_size=50)
-    model = ODEFuncModel('lrc_ar', 'dense', 4, features=2)
+    model = ODEFuncModel('lrc_ar', 4, features=2)
     train(model, t, y, n_iters=5, batch_size=4, batch_time=10)
 
 
 def test_train_returns_loss_list():
     """train returns a list of floats with one entry per iteration."""
     t, y = generate_dataset('spiral', data_size=50)
-    model = ODEFuncModel('lrc_ar', 'dense', 4, features=2)
+    model = ODEFuncModel('lrc_ar', 4, features=2)
     losses = train(model, t, y, n_iters=5, batch_size=4, batch_time=10)
     assert isinstance(losses, list), f"Expected list, got {type(losses)}"
     assert len(losses) == 5, f"Expected 5 losses, got {len(losses)}"
@@ -35,7 +35,7 @@ def test_train_returns_loss_list():
 def test_train_gradient_flow():
     """GradientTape captures gradients through euler_odeint."""
     t, y = generate_dataset('spiral', data_size=50)
-    model = ODEFuncModel('lrc_ar', 'dense', 4, features=2)
+    model = ODEFuncModel('lrc_ar', 4, features=2)
 
     y0_batch, t_batch, y_batch = get_batch(t, y, batch_size=2, batch_time=5)
     t_tf = tf.constant(t_batch, dtype=tf.float32)
