@@ -111,3 +111,54 @@ def test_ctrnn_make_model_and_gradient_flow():
     grads = tape.gradient(loss, model.trainable_variables)
     assert len(model.trainable_variables) > 0
     assert any(g is not None and tf.reduce_any(g != 0).numpy() for g in grads)
+
+
+# --- LSTM_Cell ---
+
+def test_lstm_cell_is_subclass_of_basecell():
+    from src.neurons import LSTM_Cell
+    from src.neurons.base_cell import BaseCell
+    assert issubclass(LSTM_Cell, BaseCell)
+
+
+def test_lstm_state_size():
+    from src.neurons import LSTM_Cell
+    cell = LSTM_Cell(units=8)
+    assert cell.state_size == [8, 8]
+
+
+def test_lstm_forward_pass_shape():
+    from src.neurons import LSTM_Cell
+    cell = LSTM_Cell(units=8)
+    x = tf.zeros([3, 5])
+    states = [tf.zeros([3, 8]), tf.zeros([3, 8])]
+    output, new_states = cell(x, states)
+    assert output.shape == (3, 8)
+    assert len(new_states) == 2
+    assert new_states[0].shape == (3, 8)
+    assert new_states[1].shape == (3, 8)
+
+
+def test_lstm_irregular_sampling_ignored():
+    """LSTM discards elapsed_time (discrete cell)."""
+    from src.neurons import LSTM_Cell
+    cell = LSTM_Cell(units=8)
+    x = tf.zeros([3, 5])
+    states = [tf.zeros([3, 8]), tf.zeros([3, 8])]
+    output_reg, _ = cell(x, states)
+    output_irr, _ = cell((x, 0.5), states)
+    assert tf.reduce_all(output_reg == output_irr).numpy()
+
+
+def test_lstm_make_model_and_gradient_flow():
+    from src.models import make_model
+    model = make_model('lstm', 'dense', 4)
+    assert isinstance(model, tf.keras.Sequential)
+    x = tf.zeros([2, 5, 3])
+    assert model(x).shape == (2, 5, 4)
+    model(x)
+    with tf.GradientTape() as tape:
+        loss = tf.reduce_mean(model(x))
+    grads = tape.gradient(loss, model.trainable_variables)
+    assert len(model.trainable_variables) > 0
+    assert any(g is not None and tf.reduce_any(g != 0).numpy() for g in grads)
