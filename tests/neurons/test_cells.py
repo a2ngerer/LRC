@@ -100,8 +100,8 @@ def test_ctrnn_irregular_sampling():
 
 
 def test_ctrnn_make_model_and_gradient_flow():
-    from src.models import make_model
-    model = make_model('ctrnn', 'dense', 4)
+    from src.models import make_dense_model
+    model = make_dense_model('ctrnn', units=4)
     assert isinstance(model, tf.keras.Sequential)
     x = tf.zeros([2, 5, 3])
     assert model(x).shape == (2, 5, 4)
@@ -151,8 +151,8 @@ def test_lstm_irregular_sampling_ignored():
 
 
 def test_lstm_make_model_and_gradient_flow():
-    from src.models import make_model
-    model = make_model('lstm', 'dense', 4)
+    from src.models import make_dense_model
+    model = make_dense_model('lstm', units=4)
     assert isinstance(model, tf.keras.Sequential)
     x = tf.zeros([2, 5, 3])
     assert model(x).shape == (2, 5, 4)
