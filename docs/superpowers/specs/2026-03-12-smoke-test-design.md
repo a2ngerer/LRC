@@ -32,6 +32,14 @@ tests/experiments/
 
 ### `experiments/smoke_test_combinations.py`
 
+**Imports:**
+
+```python
+import sys
+import tensorflow as tf
+from src.models import make_dense_model, make_ncp_model
+```
+
 **Constants:**
 
 ```python
@@ -41,12 +49,15 @@ WIRINGS = ['dense', 'ncp']
 # Dense config per neuron (units must equal input features for lrc_ar)
 DENSE_UNITS = {
     'lrc':    8,
-    'lrc_ar': 2,   # spiral features=2; lrc_ar requires input_dim == units
+    'lrc_ar': 2,   # spiral features=2; lrc_ar uses input as ODE state, so input_dim must equal units
     'ctrnn':  8,
     'lstm':   8,
 }
 
-# NCP config — same for all neurons; lrc_ar fails (inter_neurons=8 ≠ features=2)
+# NCP config — same for all neurons; lrc_ar fails at runtime because lrc_ar
+# passes raw inputs as v_pre into _sigmoid where mu/sigma have shape (units,units)=(8,8).
+# The broadcast requires input_dim==units. At the inter layer input_dim=2 but
+# units=inter_neurons=8, so 2!=8 and the subtraction raises a shape error.
 NCP_CONFIG = dict(inter_neurons=8, command_neurons=6, motor_neurons=2)
 
 # Known-incompatible combinations: expected to fail, not a bug
@@ -62,7 +73,9 @@ def run_combination(neuron: str, wiring: str, n_iters: int = 3) -> tuple[bool, E
     Returns:
         (success, error) where error is None on success.
     """
-    # Input: random (batch=2, timesteps=10, features=2), target same shape
+    # x = tf.random.normal((2, 10, 2))   — input (batch=2, timesteps=10, features=2)
+    # y = tf.random.normal((2, 10, 2))   — independent target tensor (same shape)
+    # Does NOT use generate_dataset; no real ODE data needed for a smoke test.
     # Build model
     # Run n_iters steps with Adam + MSE loss using tf.GradientTape
     # Return (True, None) on success, (False, exception) on failure
@@ -137,7 +150,7 @@ Thin structural test — no training, runs in the normal pytest suite.
 
 ```python
 from experiments.smoke_test_combinations import (
-    NEURONS, WIRINGS, EXPECTED_FAIL, DENSE_UNITS, NCP_CONFIG, run_combination
+    NEURONS, WIRINGS, EXPECTED_FAIL, DENSE_UNITS, NCP_CONFIG,
 )
 
 
@@ -181,4 +194,4 @@ Exit code 0. Output shows 7 PASS + 1 XFAIL.
 uv run pytest tests/experiments/test_smoke_combinations.py -v
 ```
 
-5/5 structural tests pass. Full suite: 59 existing + 5 new = **64/64**.
+5/5 structural tests pass. All pre-existing tests continue to pass.
