@@ -19,14 +19,27 @@ class SparseLinear(tf.keras.layers.Layer):
     def __init__(self, units, mask, **kwargs):
         super().__init__(**kwargs)
         self.units = units
-        self._mask_np = np.array(mask, dtype=np.float32)
+        mask_arr = np.asarray(mask, dtype=np.float32)
+        if mask_arr.shape[-1] != units:
+            raise ValueError(
+                f"SparseLinear: mask shape {mask_arr.shape} last dim "
+                f"must equal units={units}"
+            )
+        self._mask_np = mask_arr
 
     def build(self, input_shape):
+        expected_in = self._mask_np.shape[0]
+        if input_shape[-1] != expected_in:
+            raise ValueError(
+                f"SparseLinear: input_shape[-1]={input_shape[-1]} does not "
+                f"match mask input dim {expected_in}"
+            )
         self.W = self.add_weight(
-            name='W', shape=(input_shape[-1], self.units),
+            name='W', shape=(expected_in, self.units),
             dtype=tf.float32, initializer='glorot_uniform',
         )
         self.mask = tf.constant(self._mask_np, dtype=tf.float32)
+        del self._mask_np
         self.built = True
 
     def call(self, x):

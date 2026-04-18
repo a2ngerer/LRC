@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import tensorflow as tf
 from src.neurons import LRC_Cell, LSTM_Cell, CTRNN_Cell
 from src.wirings import NCPWiring, SparseLinear
@@ -19,6 +20,17 @@ def test_sparse_linear_respects_mask():
     x = tf.ones([1, 1, 4])
     out = layer(x).numpy()
     assert np.all(out[..., 3:] == 0.0)
+
+
+def test_sparse_linear_rejects_mask_units_mismatch():
+    with pytest.raises(ValueError):
+        SparseLinear(units=5, mask=np.ones((4, 6), dtype=np.float32))
+
+
+def test_sparse_linear_rejects_input_dim_mismatch():
+    layer = SparseLinear(units=6, mask=np.ones((4, 6), dtype=np.float32))
+    with pytest.raises(ValueError):
+        layer(tf.zeros([2, 3, 7]))
 
 
 def test_ncp_wiring_build_model_returns_sequential():

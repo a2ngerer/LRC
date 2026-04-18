@@ -4,6 +4,8 @@ from src.models import make_dense_model, make_ncp_model
 from src.neurons import LRC_Cell
 
 
+# --- make_dense_model ---
+
 def test_make_dense_model_returns_sequential():
     model = make_dense_model("lrc", units=32)
     assert isinstance(model, tf.keras.Sequential)
@@ -47,8 +49,6 @@ def test_make_dense_model_kwargs_forwarding():
     model = make_dense_model("lrc", units=4, ode_unfolds=5)
     assert isinstance(model, tf.keras.Sequential)
 
-
-# --- make_dense_model ---
 
 def test_make_dense_model_single_layer():
     model = make_dense_model("lrc", units=4)
