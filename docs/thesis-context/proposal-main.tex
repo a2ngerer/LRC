@@ -1,0 +1,162 @@
+\documentclass[11pt,a4paper]{article}
+
+% Configuration
+\usepackage[utf8]{inputenc}
+\usepackage{setspace}
+\usepackage{amsmath}
+\usepackage{url}
+\usepackage{cite}
+\usepackage[colorlinks=true, citecolor=blue, linkcolor=blue, urlcolor=blue]{hyperref}
+
+\begin{document}
+\setstretch{1.4}
+
+\title{\textbf{Master's Thesis Proposal} \\
+Exploring Bio-inspired Neural Networks: \\
+A Comparative Study of Architectural and Model Mechanisms}
+
+\author{Student: Alexander Angerer \\ Advisor: Univ.Prof. Dipl.-Ing. Dr.rer.nat Radu Grosu \\ Assistance: Monika Farsang}
+\date{February 2026}
+\maketitle
+
+
+% ========================================
+\section{Motivation \& Problem Statement}
+
+Recurrent neural networks (RNNs) are fundamental to sequence modeling and control tasks, but architectural design choices significantly impact their performance, stability, and generalization. Traditional gated RNNs such as Long Short-Term Memory (LSTM) \cite{Hochreiter1997} and Gated Recurrent Units (GRU) \cite{Cho2014} rely on fixed gating mechanisms to control information flow, while classical Continuous-Time RNNs (CT-RNNs) --- the simplest Electrical Equivalent Circuit, modeling neurons with purely electrical (Ohmic) synapses --- operate with constant, neuron-specific time-constants. Both leave untapped the richer dynamics observed in biological neurons: chemical (sigmoidal) synaptic currents, state-dependent time-constants, and non-constant membrane capacitance.
+
+An alternative line of research models neurons as \textbf{Electrical Equivalent Circuits (EECs)} with biologically inspired synaptic dynamics. This thesis builds directly on the recent work of Farsang et al.\ \cite{Farsang2024liquid, Farsang2024chemical} from the Cyber-Physical Systems (CPS) Research Unit at TU Wien, who introduced a progression of such models --- culminating in \textbf{Liquid Resistance Liquid Capacitance (LRC)} networks with state- and input-dependent membrane elastance. LRC units admit single-step explicit Euler integration, yielding highly compact and biologically plausible controllers.
+
+The practical case for compact ODE-based architectures is driven by the deployment constraints of embedded Cyber-Physical Systems. Transformer-based models impose quadratic attention costs that preclude real-time embedded deployment~\cite{vaswani2017attention}. While state-space models (e.g., S4~\cite{gu2021efficiently}, Mamba) and extended gated RNNs (e.g., xLSTM) achieve linear-time inference and strong performance, they still operate at parameter scales of tens to hundreds of millions --- orders of magnitude beyond what embedded controllers require. In contrast, NCP-based LRC controllers with tens of neurons and single-step integration are feasible on resource-constrained hardware.
+
+Despite these properties, \textbf{which specific mechanisms} drive performance differences among EEC-based architectures? And does the choice of \emph{wiring} --- bio-inspired sparse \textbf{Neural Circuit Policies (NCPs)} \cite{Lechner_Hasani_Amini_Henzinger_Rus_Grosu_2020} versus standard dense connectivity --- interact with the neuron model choice?
+
+\medskip
+\noindent This thesis answers these questions systematically, guided by five research questions:
+\begin{enumerate}
+    \item \textbf{RQ1 --- Performance:} Under what conditions do bio-inspired architectures (LRC, STC) outperform traditional gated RNNs (LSTM, GRU) on time-series and control benchmarks?
+    \item \textbf{RQ2 --- Mechanisms:} Which specific architectural features --- liquid elastance $\epsilon(w_i)$, saturation constraints, or traditional gating --- drive differences in performance, stability, and computational efficiency?
+    \item \textbf{RQ3 --- Wiring:} Does bio-inspired wiring (NCP) provide complementary benefits independent of the neuron model, and how do neuron type and wiring architecture interact in determining performance and interpretability?
+    \item \textbf{RQ4 --- Convergence \& Gradient Flow:} Why do LRC networks converge less effectively in sparse NCP architectures than in dense architectures, and what role does gradient flow play in this divergence?
+    \item \textbf{RQ5 --- Intermediate Models:} Can intermediate architectures --- such as CT-RNN extended with liquid elastance $\epsilon(w_i)$ --- isolate the mechanistic contribution of individual architectural features (electrical vs.\ chemical synapses, liquid elastance) to performance and stability?
+\end{enumerate}
+
+% ========================================
+\newpage
+\section{Aim of the Work}
+
+This thesis provides a \textbf{systematic architectural comparison} along two independent axes: \emph{neuron model} and \emph{wiring architecture} (dense vs.\ NCP). On the neuron-model axis we compare two novel bio-inspired EEC variants --- LRC \cite{Farsang2024liquid} and STC \cite{Farsang2024chemical} --- against two baselines: LSTM \cite{Hochreiter1997} as the dominant traditional gated RNN (representative of the LSTM/GRU family), and CT-RNN as the classical EEC with purely electrical synapses, which also serves as the base model for the intermediate ablations of RQ5. For wiring, fully-connected dense layers are compared against NCP \cite{Lechner_Hasani_Amini_Henzinger_Rus_Grosu_2020}, which partitions neurons into sensory, inter, command, and motor layers with sparse directed connections, loosely inspired by the \textit{C.~elegans} connectome \cite{Wicks1996}. The full experimental design:
+
+\begin{center}
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{l|cc}
+\textbf{Neuron model} & \textbf{Dense} & \textbf{NCP} \\
+\hline
+Gated baseline: LSTM         & LSTM+Dense        & LSTM+NCP \\
+EEC baseline: CT-RNN         & CT-RNN+Dense      & CT-RNN+NCP \\
+Novel bio-inspired: STC, LRC & STC/LRC+Dense     & STC/LRC+NCP \\
+\end{tabular}
+\end{center}
+
+\noindent Architectures are evaluated on (1) time-series prediction benchmarks (e.g., Lotka-Volterra dynamics, nonlinear oscillators) and (2) continuous control tasks (e.g., Pendulum, CartPole). Each configuration is assessed across task performance, training dynamics, computational cost, and interpretability.
+
+\smallskip
+\noindent \textbf{Motivating observation for the wiring axis.} LRC units were originally developed and validated in fully-connected architectures, where they match or exceed gated RNN performance \cite{Farsang2024liquid}. Early attempts to combine LRC units with sparse NCP wiring, however, revealed visibly weaker convergence than in the dense setting. Understanding this gap --- likely rooted in how gradient flow is shaped by the sparse, directed NCP topology --- is one of the concrete contributions this thesis targets (RQ4), and one of the reasons wiring is treated as a first-class axis rather than a fixed design choice.
+
+\subsection*{Expected Contributions}
+
+\begin{enumerate}
+    \item \textbf{Benchmark Comparison}: Systematic, reproducible evaluation of LRC and STC against LSTM and CT-RNN baselines under unified experimental conditions.
+    \item \textbf{Mechanistic Analysis}: Identification of which architectural features --- liquid elastance $\epsilon(w_i)$, saturation constraints, gating --- drive observed differences in performance and stability.
+    \item \textbf{Wiring Analysis}: Assessment of whether NCP wiring provides complementary benefits across neuron types, and how wiring and neuron model interact.
+    \item \textbf{Intermediate Model Design}: Novel model variants bridging CT-RNN and LRC (e.g., CT-RNN augmented with liquid elastance) as ablation instruments to isolate the mechanistic contribution of individual architectural features.
+\end{enumerate}
+
+\subsection*{Potential Extended Contribution}
+
+A sufficiently complete set of baseline results --- across the eight dense/NCP configurations above --- would put this thesis in a position to identify \emph{when} NCP wiring helps and \emph{which} neuron models exploit it best. Conditional on reaching that point within the available time budget, a promising follow-up direction is to explore a \textbf{new wiring architecture} inspired by the six cortical layers L1--L6 of the mammalian neocortex, and to evaluate which neuron model works best inside it. This extension is explicitly framed as a potential, not guaranteed, contribution: the baseline comparison and mechanistic analysis remain the primary deliverable.
+
+% ========================================
+\newpage
+\section*{Scope \& Delimitation}
+
+The primary focus of this thesis is the \textbf{mechanistic comparison of recurrent architectures at the parameter scale relevant for embedded Cyber-Physical Systems} --- on the order of tens to a few hundred neurons and up to a few tens of thousands of parameters. At this scale, the dominant practical references among non-EEC models are the traditional gated RNNs LSTM and GRU, which are therefore included as experimental baselines. Architectures that operate at fundamentally different scales or require fundamentally different training machinery are \textbf{out of scope} for the direct experimental comparison:
+
+\begin{itemize}
+    \item \textbf{Large-scale sequence models} (Transformers, state-space models such as S4 \cite{gu2021efficiently} and Mamba, extended gated RNNs such as xLSTM): These models target a different deployment regime, with parameter counts several orders of magnitude beyond what embedded CPS controllers admit. Benchmarking them at their native scales would not constitute a like-for-like comparison with LRC/STC controllers, and benchmarking them at artificially shrunk scales would not reflect how they are used in practice. LSTM and GRU therefore serve as the appropriately-scaled traditional references, while large-scale models are discussed in the state-of-the-art for context.
+    \item \textbf{Spiking Neural Networks (SNNs)}: Despite the ``bio-inspired'' framing, this thesis focuses on ODE-based Electrical Equivalent Circuit models with continuous-valued activations. SNNs form a distinct line of bio-inspired research with different training machinery (surrogate gradients, event-driven simulation) and are therefore treated as out of scope rather than as a direct competitor.
+    \item \textbf{Hardware deployment}: All evaluation is performed in simulation. Real-world deployment on embedded or robotic hardware is left for future work.
+\end{itemize}
+
+Novel model variants designed as ablation instruments (e.g., CT-RNN augmented with liquid elastance, see RQ5) are \textit{within} scope: they remain members of the EEC family and serve directly to isolate the contribution of individual architectural features. A new wiring architecture (L1--L6 inspired) is described above as a potential extended contribution if time permits.
+
+% ========================================
+\newpage
+\section{Methodological Approach}
+
+\textbf{(1) Literature Review.}
+Comprehensive survey of EEC-based neuron architectures (LTC, STC, LRC), NCP wiring, traditional RNNs, and Neural ODE frameworks \cite{neuralode}.
+
+\textbf{(2) Implementation.}
+All eight model configurations are implemented in a unified framework. ODE integration schemes follow the source papers (explicit Euler for LRC, adaptive solvers for LTC/STC). Comparisons are controlled for parameter count, training budget, and ODE solver budget, with results averaged across multiple random seeds. Hyperparameters are tuned independently per architecture.
+
+\textbf{(3) Experimental Evaluation.}
+Models are trained on (i) time-series benchmarks --- Lotka-Volterra dynamics, a nonlinear oscillator (e.g., Van der Pol), and irregular time-series \cite{neuralode} --- and (ii) continuous control tasks (Pendulum, CartPole) using REPPO \cite{voelcker2025relative} for policy optimization. Evaluation covers task performance (MSE/NRMSE for prediction; episodic return for control), training efficiency, and ODE solver overhead.
+
+\textbf{(4) Architectural Analysis.}
+Analysis of how liquid elastance $\epsilon(w_i)$, saturation constraints, and NCP wiring affect gradient flow, temporal dynamics, and interpretability, supported by visualization of learned neuron dynamics (phase portraits, activation patterns).
+
+% ========================================
+\newpage
+\section{Structure of the Work}
+
+\begin{enumerate}
+    \item \textbf{Introduction} --- motivation, research questions, contributions
+    \item \textbf{Background} --- RNNs, EECs, bio-inspired architectures (LTC, STC, LRC, NCP), Neural ODEs
+    \item \textbf{Related Work} --- architectural comparisons in RNN literature, CPS applications
+    \item \textbf{Methodology} --- experimental setup, architecture implementations, evaluation metrics
+    \item \textbf{Results} --- performance comparison, mechanistic analysis, dynamics and stability, computational efficiency
+    \item \textbf{Conclusion} --- summary of findings, insights into architectural mechanisms, future work
+\end{enumerate}
+
+% ========================================
+\newpage
+\section{State-of-the-Art}
+
+Bio-inspired neural networks have gained significant attention as an alternative to traditional RNN architectures. These models draw inspiration from biological neurons and synapses, aiming to capture the temporal dynamics and computational properties observed in biological neural systems.
+
+\textbf{Electrical Equivalent Circuits (EECs)} provide the mathematical foundation for bio-inspired models, representing neurons as capacitors whose membrane potential evolves according to stimulus, leaking, and synaptic currents \cite{Kandel2000, Wicks1996}. Classical Continuous-Time RNNs (CT-RNNs) model neurons with \textbf{electrical synapses} (Ohmic currents), while more recent work explores \textbf{chemical synapses} with sigmoid-gated, state-dependent dynamics.
+
+\textbf{Liquid Time-Constant Networks (LTCs)} \cite{Hasani2020} introduced chemical synapses to CT-RNNs, enabling \textbf{input-dependent time constants}. This allows the network to adapt its temporal dynamics based on the current state and input, improving performance on irregular time-series and robotics tasks. However, LTCs exhibit stiff ODE behavior requiring expensive adaptive solvers.
+
+To address this, \textbf{Saturated LTCs (STCs)} \cite{Farsang2024chemical} constrain the forget and update conductances with saturation functions, reducing oscillations and enabling cheaper integration schemes. More recently, \textbf{Liquid Resistance Liquid Capacitance networks (LRCs)} \cite{Farsang2024liquid} extend this concept by introducing a \textbf{liquid elastance} $\epsilon(w_i)$ — modeling the biological observation that membrane capacitance varies with neural state and input \cite{Howell2015, Severin2024, Kumar2023}. The resulting \textbf{LRC Units (LRCUs)} can be integrated with explicit Euler in a single unfolding, achieving comparable performance to gated RNNs like LSTMs while maintaining bio-inspired interpretability.
+
+\textbf{Neural Circuit Policies (NCPs)} \cite{Lechner_Hasani_Amini_Henzinger_Rus_Grosu_2020} address a complementary dimension: rather than modifying the neuron model, NCPs impose a \textbf{sparse, structured wiring} loosely inspired by the \textit{C.~elegans} connectome \cite{Wicks1996}. A single NCP controller with 19 neurons and 253 synapses was shown to solve autonomous vehicle steering, outperforming orders-of-magnitude larger black-box systems. NCPs are orthogonal to the neuron model and can be combined with any recurrent unit.
+
+\textbf{Traditional gated RNNs} such as LSTM \cite{Hochreiter1997} and GRU \cite{Cho2014} remain standard baselines, employing fixed gating mechanisms to control information flow.
+
+\textbf{Large-scale sequence models} --- Transformers with quadratic attention costs, and more efficient alternatives such as S4~\cite{gu2021efficiently}, Mamba, and xLSTM --- achieve strong performance on language and sequence benchmarks. However, even the linear-time SSM and gated-RNN variants operate at parameter scales of tens to hundreds of millions, far exceeding the resource budget of embedded CPS controllers. LRC Units, solvable with a single explicit Euler step, achieve accuracy competitive with gated RNNs while remaining deployable on resource-constrained hardware \cite{Farsang2024liquid}.
+
+This thesis bridges these research directions by \textbf{systematically comparing architectural and model mechanisms} across two independent axes --- neuron model (LSTM, CT-RNN, STC, LRC) and wiring architecture (dense vs.\ NCP) --- identifying which features contribute to performance, stability, interpretability, and computational efficiency.
+
+% ========================================
+\newpage
+\section{Relevance to the Curriculum of Computer Engineering}
+
+The most relevant courses from the Master's program in Computer Engineering include:
+
+\begin{itemize}
+\item \textbf{Discrete Mathematics} — Graph theory and recurrence relations directly applicable to network topology analysis and RNN dynamics.
+\item \textbf{Formal Methods of Computer Science} — Mathematical rigor and structured proof methods for analyzing stability and convergence.
+\item \textbf{Stochastic Foundations of Cyber-Physical Systems} — ODE theory and control-theoretic concepts underlying the LTC, STC, and LRC architectures and the robotics control tasks.
+\item \textbf{Generative AI} — Broad foundation in modern sequence modeling and optimization, providing context for the comparison against traditional architectures.
+\item \textbf{Machine Vision} — Practical ML pipeline skills (training, hyperparameter tuning, benchmarking) directly applicable to the experimental evaluation.
+\item \textbf{Autonomous Racing Cars} — Hands-on continuous-control experience on the F1TENTH platform, providing practical grounding for the control benchmarks and embedded-scale deployment constraints motivating compact ODE-based controllers.
+\end{itemize}
+
+% ========================================
+\newpage
+\bibliographystyle{alpha}
+\bibliography{bibliography}
+
+\end{document}
