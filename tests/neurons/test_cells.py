@@ -162,3 +162,108 @@ def test_lstm_make_model_and_gradient_flow():
     grads = tape.gradient(loss, model.trainable_variables)
     assert len(model.trainable_variables) > 0
     assert any(g is not None and tf.reduce_any(g != 0).numpy() for g in grads)
+
+
+# --- LTC_Cell ---
+
+def test_ltc_cell_is_subclass_of_basecell():
+    from src.neurons import LTC_Cell
+    assert issubclass(LTC_Cell, BaseCell)
+
+
+def test_ltc_cell_state_size():
+    from src.neurons import LTC_Cell
+    cell = LTC_Cell(units=32)
+    assert cell.state_size == 32
+
+
+def test_ltc_forward_pass_shape():
+    from src.neurons import LTC_Cell
+    cell = LTC_Cell(units=8)
+    x = tf.zeros([3, 5])
+    state = [tf.zeros([3, 8])]
+    output, new_states = cell(x, state)
+    assert output.shape == (3, 8)
+    assert new_states[0].shape == (3, 8)
+
+
+def test_ltc_irregular_sampling():
+    from src.neurons import LTC_Cell
+    cell = LTC_Cell(units=8)
+    x = tf.zeros([3, 5])
+    state = [tf.zeros([3, 8])]
+    output, _ = cell((x, 0.5), state)
+    assert output.shape == (3, 8)
+
+
+def test_ltc_state_stays_finite():
+    """Fused solver must not blow up over many steps (stiffness guard)."""
+    from src.neurons import LTC_Cell
+    cell = LTC_Cell(units=8)
+    x = tf.random.normal([3, 5])
+    state = [tf.zeros([3, 8])]
+    for _ in range(50):
+        _, state = cell(x, state)
+    assert tf.reduce_all(tf.math.is_finite(state[0])).numpy()
+
+
+def test_ltc_make_model_and_gradient_flow():
+    from src.models import make_dense_model
+    model = make_dense_model('ltc', units=4)
+    assert isinstance(model, tf.keras.Sequential)
+    x = tf.zeros([2, 5, 3])
+    assert model(x).shape == (2, 5, 4)
+    model(x)
+    with tf.GradientTape() as tape:
+        loss = tf.reduce_mean(model(x))
+    grads = tape.gradient(loss, model.trainable_variables)
+    assert len(model.trainable_variables) > 0
+    assert any(g is not None and tf.reduce_any(g != 0).numpy() for g in grads)
+
+
+# --- GRU_Cell ---
+
+def test_gru_cell_is_subclass_of_basecell():
+    from src.neurons import GRU_Cell
+    assert issubclass(GRU_Cell, BaseCell)
+
+
+def test_gru_state_size():
+    from src.neurons import GRU_Cell
+    cell = GRU_Cell(units=8)
+    assert cell.state_size == 8
+
+
+def test_gru_forward_pass_shape():
+    from src.neurons import GRU_Cell
+    cell = GRU_Cell(units=8)
+    x = tf.zeros([3, 5])
+    states = [tf.zeros([3, 8])]
+    output, new_states = cell(x, states)
+    assert output.shape == (3, 8)
+    assert new_states[0].shape == (3, 8)
+
+
+def test_gru_irregular_sampling_ignored():
+    """GRU discards elapsed_time (discrete cell)."""
+    from src.neurons import GRU_Cell
+    cell = GRU_Cell(units=8)
+    x = tf.zeros([3, 5])
+    states = [tf.zeros([3, 8])]
+    output_reg, _ = cell(x, states)
+    output_irr, _ = cell((x, 0.5), states)
+    assert tf.reduce_all(output_reg == output_irr).numpy()
+
+
+def test_gru_make_model_and_gradient_flow():
+    from src.models import make_dense_model
+    model = make_dense_model('gru', units=4)
+    assert isinstance(model, tf.keras.Sequential)
+    x = tf.zeros([2, 5, 3])
+    assert model(x).shape == (2, 5, 4)
+    model(x)
+    with tf.GradientTape() as tape:
+        loss = tf.reduce_mean(model(x))
+    grads = tape.gradient(loss, model.trainable_variables)
+    assert len(model.trainable_variables) > 0
+    assert any(g is not None and tf.reduce_any(g != 0).numpy() for g in grads)
