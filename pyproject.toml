@@ -16,6 +16,8 @@ dependencies = [
 
 [project.optional-dependencies]
 metal = ["tensorflow-metal"]
+# GPU cluster (Linux/CUDA 12): uv sync --extra cuda
+cuda = ["tensorflow[and-cuda]>=2.15,<2.16"]
 
 [build-system]
 requires = ["hatchling"]
