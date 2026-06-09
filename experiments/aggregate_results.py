@@ -92,23 +92,29 @@ def _cohens_d_paired(x: np.ndarray, y: np.ndarray) -> float:
 
 
 def _test_block(df, pairs, title) -> str:
-    lines = [f'## {title} (Wilcoxon signed-rank, alpha={ALPHA}, metric={METRIC})\n']
-    lines.append('| Comparison | n pairs | median diff | p-value | significant | Cohen\'s d |')
-    lines.append('|------------|---------|-------------|---------|-------------|-----------|')
+    """One comparison family; Bonferroni correction over the family's tests."""
+    n_tests = len(pairs)
+    lines = [f'## {title} (Wilcoxon signed-rank, alpha={ALPHA}, metric={METRIC}, '
+             f'Bonferroni m={n_tests})\n']
+    lines.append('| Comparison | n pairs | median diff | p raw | p Bonferroni '
+                 '| significant | Cohen\'s d |')
+    lines.append('|------------|---------|-------------|-------|--------------'
+                 '|-------------|-----------|')
     for label, key_a, key_b in pairs:
         x, y = _paired_vectors(df, key_a, key_b)
         if len(x) < 5:
-            lines.append(f'| {label} | {len(x)} | — | — | too few pairs | — |')
+            lines.append(f'| {label} | {len(x)} | — | — | — | too few pairs | — |')
             continue
         try:
             stat, p = wilcoxon(x, y)
         except ValueError:   # all differences zero
-            lines.append(f'| {label} | {len(x)} | 0 | 1.0 | no | 0 |')
+            lines.append(f'| {label} | {len(x)} | 0 | 1.0 | 1.0 | no | 0 |')
             continue
+        p_adj = min(1.0, p * n_tests)
         d = _cohens_d_paired(x, y)
-        sig = 'YES' if p < ALPHA else 'no'
+        sig = 'YES' if p_adj < ALPHA else 'no'
         lines.append(f'| {label} | {len(x)} | {np.median(x - y):+.4f} '
-                     f'| {p:.4g} | {sig} | {d:+.3f} |')
+                     f'| {p:.4g} | {p_adj:.4g} | {sig} | {d:+.3f} |')
     lines.append('')
     return '\n'.join(lines)
 
