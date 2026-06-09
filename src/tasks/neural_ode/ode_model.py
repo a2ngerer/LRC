@@ -3,6 +3,26 @@ from tensorflow.keras.layers import Dense
 from src.models import make_dense_model
 
 
+class SequentialODEFunc(tf.keras.Model):
+    """Adapts a Sequential model to the ODE-function call signature.
+
+    euler_odeint calls func(t, y); Sequential's built-in signature is
+    (inputs, training, mask), so passing it directly misroutes y into the
+    training flag. This wrapper forwards only the state.
+
+    Args:
+        net: any Keras model mapping (batch, 1, features) -> (batch, 1, features)
+    """
+
+    def __init__(self, net):
+        super().__init__()
+        self.net = net
+
+    def call(self, t, state):
+        # t is unused (autonomous ODE) but kept for euler_odeint compatibility
+        return self.net(state)
+
+
 class ODEFuncModel(tf.keras.Model):
     def __init__(self, neuron_type, units, features, **cell_kwargs):
         """ODE function model: Dense(units) -> RNN core -> Dense(features).
