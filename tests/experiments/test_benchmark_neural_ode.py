@@ -5,8 +5,11 @@ from experiments.benchmark_neural_ode import (
 
 
 def test_combinations_count():
-    """Exactly 7 valid combinations (lrc_ar+ncp excluded)."""
-    assert len(COMBINATIONS) == 7
+    """Thesis matrix: 4 cells (ltc, lrc, gru, lstm) x 2 wirings = 8."""
+    assert len(COMBINATIONS) == 8
+    for cell in ['ltc', 'lrc', 'gru', 'lstm']:
+        for wiring in ['dense', 'ncp']:
+            assert (cell, wiring) in COMBINATIONS
 
 
 def test_lrc_ar_ncp_excluded():
