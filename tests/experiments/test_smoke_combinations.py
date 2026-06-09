@@ -5,8 +5,14 @@ from experiments.smoke_test_combinations import (
 
 
 def test_combination_matrix_size():
-    """Matrix covers all planned neurons × wirings."""
-    assert len(NEURONS) == 4
+    """Matrix covers all planned neurons × wirings.
+
+    Benchmark matrix (thesis): ltc, lrc, gru, lstm × dense, ncp.
+    ctrnn and lrc_ar are kept as additional smoke-tested cells.
+    """
+    assert len(NEURONS) == 6
+    for n in ['ltc', 'lrc', 'gru', 'lstm']:
+        assert n in NEURONS
     assert len(WIRINGS) == 2
 
 

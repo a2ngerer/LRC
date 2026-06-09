@@ -9,20 +9,24 @@ import tensorflow as tf
 
 from src.models import make_dense_model, make_ncp_model
 from src.tasks.neural_ode.datasets import generate_dataset
+from src.tasks.neural_ode.ode_model import SequentialODEFunc
 from src.tasks.neural_ode.trainer import train
 
+# Thesis matrix (decision 2026-06-09): ltc, lrc, gru, lstm x dense, ncp.
+# STC is not finalized yet; ctrnn/lrc_ar remain available via make_model but
+# are not part of the benchmark matrix.
+# Note: experiments/run_benchmark.py is the cluster runner (multi-seed,
+# per-run JSON); this script remains as a quick sequential local runner.
 COMBINATIONS = [
-    ('lrc',    'dense'),
-    ('lrc',    'ncp'),
-    ('lrc_ar', 'dense'),
-    ('ctrnn',  'dense'),
-    ('ctrnn',  'ncp'),
-    ('lstm',   'dense'),
-    ('lstm',   'ncp'),
+    ('ltc',  'dense'),
+    ('ltc',  'ncp'),
+    ('lrc',  'dense'),
+    ('lrc',  'ncp'),
+    ('gru',  'dense'),
+    ('gru',  'ncp'),
+    ('lstm', 'dense'),
+    ('lstm', 'ncp'),
 ]
-# ('lrc_ar', 'ncp') excluded — lrc_ar passes raw inputs as v_pre into _sigmoid
-# where mu/sigma have shape (units,units). At the NCP inter layer input_dim=2
-# but inter_neurons=16, so 2 != 16 raises a shape error.
 
 SYSTEMS = [
     'spiral',
@@ -40,6 +44,8 @@ DENSE_UNITS = {
     'lrc_ar': 2,
     'ctrnn':  16,
     'lstm':   16,
+    'ltc':    16,
+    'gru':    16,
 }
 
 # NCP config — inter=16, command=8 chosen to be comparable to Dense units=16.
@@ -49,12 +55,17 @@ NCP_CONFIG = dict(inter_neurons=16, command_neurons=8, motor_neurons=2)
 TRAIN_CONFIG = dict(n_iters=2000, batch_size=16, batch_time=16, lr=1e-3)
 
 
-def build_model(neuron: str, wiring: str) -> tf.keras.Sequential:
-    """Return the appropriate model for (neuron, wiring)."""
+def build_model(neuron: str, wiring: str) -> SequentialODEFunc:
+    """Return the appropriate model for (neuron, wiring).
+
+    Wrapped in SequentialODEFunc: euler_odeint calls func(t, y), which would
+    misroute y into Sequential's training flag otherwise.
+    """
     if wiring == 'dense':
-        return make_dense_model(neuron, units=DENSE_UNITS[neuron], output_neurons=2)
+        net = make_dense_model(neuron, units=DENSE_UNITS[neuron], output_neurons=2)
     else:
-        return make_ncp_model(neuron, **NCP_CONFIG)
+        net = make_ncp_model(neuron, **NCP_CONFIG)
+    return SequentialODEFunc(net)
 
 
 def run_one(neuron: str, wiring: str, system: str) -> dict:
