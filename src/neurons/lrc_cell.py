@@ -47,7 +47,7 @@ class LRC_Cell(BaseCell):
                 if k not in self._init_ranges.keys():
                     raise ValueError(
                         "Unknown parameter '{}' in initialization range dictionary! (Expected only {})".format(
-                            k, str(list(self._init_range.keys()))
+                            k, str(list(self._init_ranges.keys()))
                         )
                     )
                 if k in ["gleak", "w", "sensory_w"] and v[0] < 0:
@@ -247,11 +247,11 @@ class LRC_Cell(BaseCell):
         # Unfold the multiply ODE multiple times into one RNN step
         for t in range(self._ode_unfolds): # 1 unfold is enough for LRC, but leaving this here to experiment with more unfolds
             if self._elastance_type == "asymmetric":
-                x = tf.keras.layers.Concatenate()([inputs, v_pre])
+                x = tf.concat([inputs, v_pre], axis=-1)
                 elast_dense = self.elastance_mapping(x)
                 elastance_t = tf.nn.sigmoid(elast_dense) * dt
             elif self._elastance_type == "symmetric":
-                x = tf.keras.layers.Concatenate()([inputs, v_pre])
+                x = tf.concat([inputs, v_pre], axis=-1)
                 elast_dense = self.elastance_mapping(x)
                 elastance_t = (tf.nn.sigmoid(elast_dense + self._params["distr_shift"]) - tf.nn.sigmoid(elast_dense - self._params["distr_shift"])) * dt
             else:

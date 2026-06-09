@@ -46,7 +46,7 @@ class LRC_AR_Cell(BaseCell):
                 if k not in self._init_ranges.keys():
                     raise ValueError(
                         "Unknown parameter '{}' in initialization range dictionary! (Expected only {})".format(
-                            k, str(list(self._init_range.keys()))
+                            k, str(list(self._init_ranges.keys()))
                         )
                     )
                 if k in ["gleak", "w"] and v[0] < 0:
