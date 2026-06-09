@@ -14,10 +14,15 @@ This repository is part of a master's thesis at TU Wien evaluating novel neuron 
 
 | Neuron | Type | Description |
 |--------|------|-------------|
+| **LTC** | Bio-inspired ODE | Liquid Time-Constant — conductance-based cell with input-dependent time constants ([Hasani et al., 2021](https://arxiv.org/abs/2006.04439)) |
 | **LRC** | Bio-inspired ODE | Liquid-Resistance Liquid-Capacitance — adaptive elastance cell extending LTC ([Farsang et al., 2024](https://arxiv.org/abs/2403.08791)) |
-| **STC** | Bio-inspired ODE | Saturated Liquid Time-Constant — LTC with bounded forget/update conductances ([Farsang et al., 2024](https://arxiv.org/abs/2403.08791)) |
+| **GRU** | Classical baseline | Gated Recurrent Unit |
 | **LSTM** | Classical baseline | Long Short-Term Memory |
-| **CT-RNN** | ODE baseline | Continuous-Time RNN — leaky integrator |
+
+> Matrix decision 2026-06-09: STC is not finalized yet, so the benchmark
+> matrix uses LTC, LRC, GRU, LSTM. CT-RNN and LRC-AR cells remain available
+> via `make_model` (and for the planned RQ5 intermediate models) but are not
+> part of the matrix.
 
 ### Wiring Architectures
 
@@ -30,10 +35,10 @@ This repository is part of a master's thesis at TU Wien evaluating novel neuron 
 
 | | Dense | NCP |
 |---|:---:|:---:|
+| **LTC** | LTC + Dense | LTC + NCP |
 | **LRC** | LRC + Dense | LRC + NCP |
-| **STC** | STC + Dense | STC + NCP |
+| **GRU** | GRU + Dense | GRU + NCP |
 | **LSTM** | LSTM + Dense | LSTM + NCP |
-| **CT-RNN** | CT-RNN + Dense | CT-RNN + NCP |
 
 ---
 
@@ -97,10 +102,22 @@ docs/                 # Documentation, original paper README
 
 | Phase | Description | Timeline | Status |
 |-------|-------------|----------|--------|
-| **Phase 1** | Foundation: modular structure, TF upgrade, model factory, Neural ODE port | März 2026 | In progress |
-| **Phase 2** | New architectures: CT-RNN, STC, NCP wiring | April 2026 | Planned |
-| **Phase 3** | Full benchmark run, evaluation pipeline, plots | Mai–Juni 2026 | Planned |
-| **Phase 4** | Reproducibility, thesis export, final README | Juli–Sept 2026 | Planned |
+| **Phase 1** | Foundation: modular structure, TF upgrade, model factory, Neural ODE port | März 2026 | Done |
+| **Phase 2** | New architectures: CT-RNN, LTC, GRU, NCP wiring | April–Juni 2026 | Done |
+| **Phase 3a** | Benchmark infrastructure: multi-seed runner, MSE/NRMSE, gradient-flow logging, stats/plots pipeline, SLURM setup | Juni 2026 | Done (Neural ODE part) |
+| **Phase 3b** | Full benchmark run on dataLAB GPU cluster | bis 31.07.2026 | Ready to launch |
+| **Phase 4** | Reproducibility, thesis export, final README | Aug–Okt 2026 | Planned |
+
+### Running the benchmark
+
+```bash
+uv run python experiments/run_benchmark.py --list      # all 240 run specs
+uv run python experiments/run_benchmark.py --cell ltc --wiring ncp --system spiral --seed 0
+uv run python experiments/aggregate_results.py         # tables + Wilcoxon/Cohen's d
+uv run python experiments/plot_results.py              # curves, phase portraits, gradient flow
+```
+
+GPU cluster (TU Wien dataLAB): see [`cluster/README.md`](cluster/README.md).
 
 ---
 
