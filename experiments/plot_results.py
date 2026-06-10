@@ -27,11 +27,22 @@ from src.tasks.neural_ode.datasets import generate_dataset
 STYLES = {'dense': '-', 'ncp': '--'}
 
 
-def load_runs(runs_dir):
+def load_runs(runs_dirs):
+    """Load run JSONs from one or more directories.
+
+    Runs with an active gradient clip get the cell label '<cell>+clip' so
+    they appear as their own variant in every grouping/legend.
+    """
+    if isinstance(runs_dirs, str):
+        runs_dirs = [runs_dirs]
     runs = []
-    for path in sorted(glob(os.path.join(runs_dir, '*.json'))):
-        with open(path, encoding='utf-8') as f:
-            runs.append(json.load(f))
+    for runs_dir in runs_dirs:
+        for path in sorted(glob(os.path.join(runs_dir, '*.json'))):
+            with open(path, encoding='utf-8') as f:
+                r = json.load(f)
+            if float(r.get('config', {}).get('clip_norm', 0.0)):
+                r['run']['cell'] += '+clip'
+            runs.append(r)
     return runs
 
 
@@ -154,7 +165,7 @@ def plot_gradient_flow(runs, outdir):
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
-    p.add_argument('--runs', default='results/runs')
+    p.add_argument('--runs', nargs='+', default=['results/runs'])
     p.add_argument('--out', default='results/figures')
     p.add_argument('--seed', type=int, default=0, help='seed used for phase portraits')
     p.add_argument('--skip-gradflow', action='store_true')
