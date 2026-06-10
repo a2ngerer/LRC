@@ -267,3 +267,64 @@ def test_gru_make_model_and_gradient_flow():
     grads = tape.gradient(loss, model.trainable_variables)
     assert len(model.trainable_variables) > 0
     assert any(g is not None and tf.reduce_any(g != 0).numpy() for g in grads)
+
+
+# --- CfC_Cell ---
+
+def test_cfc_cell_is_subclass_of_basecell():
+    from src.neurons import CfC_Cell
+    assert issubclass(CfC_Cell, BaseCell)
+
+
+def test_cfc_cell_state_size():
+    from src.neurons import CfC_Cell
+    cell = CfC_Cell(units=32)
+    assert cell.state_size == 32
+
+
+def test_cfc_forward_pass_shape():
+    from src.neurons import CfC_Cell
+    units, batch, input_dim = 4, 2, 3
+    cell = CfC_Cell(units=units)
+    inputs = tf.zeros([batch, input_dim])
+    state = [tf.zeros([batch, units])]
+    output, new_state = cell(inputs, state)
+    assert output.shape == (batch, units)
+    assert new_state[0].shape == (batch, units)
+
+
+def test_cfc_irregular_sampling():
+    """CfC uses elapsed_time: different dt -> different next state."""
+    from src.neurons import CfC_Cell
+    tf.random.set_seed(0)
+    cell = CfC_Cell(units=4)
+    x = tf.random.normal([2, 3])
+    state = [tf.random.normal([2, 4])]
+    _, s1 = cell((x, 1.0), state)
+    _, s2 = cell((x, 0.1), state)
+    assert not tf.reduce_all(tf.abs(s1[0] - s2[0]) < 1e-7)
+
+
+def test_cfc_state_stays_finite():
+    """Closed-form update is saturated -> no blow-up over many steps."""
+    from src.neurons import CfC_Cell
+    tf.random.set_seed(0)
+    cell = CfC_Cell(units=4)
+    x = tf.random.normal([2, 3]) * 10.0
+    state = [tf.zeros([2, 4])]
+    for _ in range(100):
+        _, state = cell(x, state)
+    assert bool(tf.reduce_all(tf.math.is_finite(state[0])))
+
+
+def test_cfc_make_model_and_gradient_flow():
+    from src.models import make_dense_model
+    tf.random.set_seed(0)
+    model = make_dense_model('cfc', units=8, output_neurons=2)
+    x = tf.random.normal((2, 10, 3))
+    with tf.GradientTape() as tape:
+        y = model(x)
+        loss = tf.reduce_mean(tf.square(y))
+    grads = tape.gradient(loss, model.trainable_variables)
+    assert y.shape == (2, 10, 2)
+    assert all(g is not None for g in grads)
