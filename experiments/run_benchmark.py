@@ -65,6 +65,15 @@ NCP_WIRING_SEED = 42
 DEFAULTS = dict(n_iters=2000, batch_size=16, batch_time=16, lr=1e-3,
                 loss='mse', grad_log_every=25, data_size=1000)
 
+# Per-cell constructor overrides forwarded to the cell (and every NCP layer).
+# LRC defaults to elastance_type="interp", which falls through to a constant
+# elastance (no liquid capacitance) -- effectively a saturated LTC. "asymmetric"
+# activates the input/state-dependent liquid elastance that defines the LRC model
+# and that RQ2/RQ5 isolate. Other cells take no extra kwargs.
+CELL_KWARGS = {
+    'lrc': dict(elastance_type='asymmetric'),
+}
+
 
 def build_specs(cells, wirings, systems, seeds):
     """Deterministic run-spec list; index order is the SLURM array contract."""
@@ -75,10 +84,11 @@ def build_specs(cells, wirings, systems, seeds):
 
 
 def build_model(cell: str, wiring: str) -> SequentialODEFunc:
+    cell_kwargs = CELL_KWARGS.get(cell, {})
     if wiring == 'dense':
-        net = make_dense_model(cell, units=DENSE_UNITS, output_neurons=2)
+        net = make_dense_model(cell, units=DENSE_UNITS, output_neurons=2, **cell_kwargs)
     else:
-        net = make_ncp_model(cell, seed=NCP_WIRING_SEED, **NCP_CONFIG)
+        net = make_ncp_model(cell, seed=NCP_WIRING_SEED, **NCP_CONFIG, **cell_kwargs)
     return SequentialODEFunc(net)
 
 
@@ -121,6 +131,7 @@ def run_one(spec: dict, cfg: dict) -> dict:
             'dense_units': DENSE_UNITS,
             'ncp': NCP_CONFIG,
             'ncp_wiring_seed': NCP_WIRING_SEED,
+            'cell_kwargs': CELL_KWARGS.get(spec['cell'], {}),
         },
         'env': {
             'tensorflow': tf.__version__,
