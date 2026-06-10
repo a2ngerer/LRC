@@ -328,3 +328,80 @@ def test_cfc_make_model_and_gradient_flow():
     grads = tape.gradient(loss, model.trainable_variables)
     assert y.shape == (2, 10, 2)
     assert all(g is not None for g in grads)
+
+
+# --- MixedMemoryCell (MM_LTC, MM_LRC) ---
+
+def test_mm_cells_are_subclasses_of_basecell():
+    from src.neurons import MM_LTC_Cell, MM_LRC_Cell, MixedMemoryCell
+    assert issubclass(MixedMemoryCell, BaseCell)
+    assert issubclass(MM_LTC_Cell, MixedMemoryCell)
+    assert issubclass(MM_LRC_Cell, MixedMemoryCell)
+
+
+def test_mm_state_size_is_h_and_c():
+    from src.neurons import MM_LTC_Cell
+    cell = MM_LTC_Cell(units=8)
+    assert cell.state_size == [8, 8]
+
+
+def test_mm_ltc_forward_pass_shape():
+    from src.neurons import MM_LTC_Cell
+    units, batch, input_dim = 4, 2, 3
+    cell = MM_LTC_Cell(units=units)
+    inputs = tf.zeros([batch, input_dim])
+    state = [tf.zeros([batch, units]), tf.zeros([batch, units])]
+    output, new_state = cell(inputs, state)
+    assert output.shape == (batch, units)
+    assert len(new_state) == 2
+    assert new_state[0].shape == (batch, units)
+    assert new_state[1].shape == (batch, units)
+
+
+def test_mm_lrc_forwards_elastance_kwarg():
+    from src.neurons import MM_LRC_Cell
+    cell = MM_LRC_Cell(units=4, elastance_type='asymmetric')
+    inputs = tf.zeros([2, 3])
+    state = [tf.zeros([2, 4]), tf.zeros([2, 4])]
+    output, _ = cell(inputs, state)
+    assert cell._inner._elastance_type == 'asymmetric'
+    assert output.shape == (2, 4)
+
+
+def test_mm_ltc_irregular_sampling():
+    """elapsed_time reaches the inner ODE cell: different dt -> different state."""
+    from src.neurons import MM_LTC_Cell
+    tf.random.set_seed(0)
+    cell = MM_LTC_Cell(units=4)
+    x = tf.random.normal([2, 3])
+    state = [tf.random.normal([2, 4]), tf.random.normal([2, 4])]
+    _, s1 = cell((x, 1.0), state)
+    _, s2 = cell((x, 0.1), state)
+    assert not tf.reduce_all(tf.abs(s1[0] - s2[0]) < 1e-7)
+
+
+def test_mm_memory_path_isolated_from_ode():
+    """The c path is pure LSTM gating: same x and (h, c) but different dt
+    must yield the *same* new c (only h goes through the ODE)."""
+    from src.neurons import MM_LTC_Cell
+    tf.random.set_seed(0)
+    cell = MM_LTC_Cell(units=4)
+    x = tf.random.normal([2, 3])
+    state = [tf.random.normal([2, 4]), tf.random.normal([2, 4])]
+    _, s1 = cell((x, 1.0), state)
+    _, s2 = cell((x, 0.1), state)
+    assert bool(tf.reduce_all(tf.abs(s1[1] - s2[1]) < 1e-7))
+
+
+def test_mm_make_models_and_gradient_flow():
+    from src.models import make_dense_model
+    for key in ('mm_ltc', 'mm_lrc'):
+        tf.random.set_seed(0)
+        model = make_dense_model(key, units=8, output_neurons=2)
+        x = tf.random.normal((2, 10, 3))
+        with tf.GradientTape() as tape:
+            y = model(x)
+            loss = tf.reduce_mean(tf.square(y))
+        grads = tape.gradient(loss, model.trainable_variables)
+        assert y.shape == (2, 10, 2)
+        assert all(g is not None for g in grads), key
