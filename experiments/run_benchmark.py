@@ -54,6 +54,13 @@ SYSTEMS = [
 ]
 SEEDS = [0, 1, 2, 3, 4]
 
+# Benchmark v2: vanishing-gradient-fixed cells (see
+# docs/superpowers/specs/2026-06-10-benchmark-v2-fixed-cells-design.md).
+CELLS_V2 = ['mm_ltc', 'mm_lrc', 'cfc']
+# Clip threshold for the v2 clip-axis runs. 1.0 is the common recurrent-RL
+# default; the exact value is an experiment parameter, not a tuned constant.
+V2_CLIP_NORM = 1.0
+
 DENSE_UNITS = 16
 # inter=16, command=8 chosen to be comparable to Dense units=16.
 # motor_neurons=2 matches the 2-dimensional ODE output.
@@ -72,15 +79,31 @@ DEFAULTS = dict(n_iters=2000, batch_size=16, batch_time=16, lr=1e-3,
 # and that RQ2/RQ5 isolate. Other cells take no extra kwargs.
 CELL_KWARGS = {
     'lrc': dict(elastance_type='asymmetric'),
+    'mm_lrc': dict(elastance_type='asymmetric'),
 }
 
 
-def build_specs(cells, wirings, systems, seeds):
+def build_specs(cells, wirings, systems, seeds, clip_norm=0.0):
     """Deterministic run-spec list; index order is the SLURM array contract."""
     return [
-        {'cell': c, 'wiring': w, 'system': sy, 'seed': se}
+        {'cell': c, 'wiring': w, 'system': sy, 'seed': se, 'clip_norm': clip_norm}
         for c, w, sy, se in product(cells, wirings, systems, seeds)
     ]
+
+
+def build_specs_v2(systems=SYSTEMS, seeds=SEEDS):
+    """v2 matrix: fixed cells x {no clip, clip} + problem cells x clip.
+
+    Order (= SLURM array contract for v2):
+      [0,180):   CELLS_V2, clip off
+      [180,360): CELLS_V2, clip V2_CLIP_NORM
+      [360,480): ltc/lrc,  clip V2_CLIP_NORM (isolates the optimizer fix)
+    """
+    return (
+        build_specs(CELLS_V2, WIRINGS, systems, seeds, clip_norm=0.0)
+        + build_specs(CELLS_V2, WIRINGS, systems, seeds, clip_norm=V2_CLIP_NORM)
+        + build_specs(['ltc', 'lrc'], WIRINGS, systems, seeds, clip_norm=V2_CLIP_NORM)
+    )
 
 
 def build_model(cell: str, wiring: str) -> SequentialODEFunc:
@@ -111,19 +134,21 @@ def run_one(spec: dict, cfg: dict) -> dict:
     model = build_model(spec['cell'], spec['wiring'])
     tracker = GradientFlowTracker(log_every=cfg['grad_log_every'])
 
+    clip_norm = float(spec.get('clip_norm', 0.0))
     t0 = time.time()
     losses = train(
         model, t, y,
         n_iters=cfg['n_iters'], batch_size=cfg['batch_size'],
         batch_time=cfg['batch_time'], lr=cfg['lr'], loss=cfg['loss'],
         rng=rng, gradient_tracker=tracker,
+        clip_norm=clip_norm or None,
     )
     duration = time.time() - t0
 
     evaluation = evaluate_full_trajectory(model, t, y)
 
     return {
-        'schema_version': 1,
+        'schema_version': 2,
         'run': spec,
         'config': {
             **{k: cfg[k] for k in ('n_iters', 'batch_size', 'batch_time',
@@ -132,6 +157,7 @@ def run_one(spec: dict, cfg: dict) -> dict:
             'ncp': NCP_CONFIG,
             'ncp_wiring_seed': NCP_WIRING_SEED,
             'cell_kwargs': CELL_KWARGS.get(spec['cell'], {}),
+            'clip_norm': clip_norm,
         },
         'env': {
             'tensorflow': tf.__version__,
@@ -151,7 +177,10 @@ def run_one(spec: dict, cfg: dict) -> dict:
 
 
 def result_filename(spec: dict) -> str:
-    return f"{spec['cell']}_{spec['wiring']}_{spec['system']}_seed{spec['seed']}.json"
+    base = f"{spec['cell']}_{spec['wiring']}_{spec['system']}_seed{spec['seed']}"
+    if spec.get('clip_norm'):
+        base += f"_clip{spec['clip_norm']}"
+    return base + '.json'
 
 
 def save_result(result: dict, outdir: str) -> str:
@@ -169,16 +198,22 @@ def parse_args(argv=None):
     sel.add_argument('--count', action='store_true', help='print number of run specs and exit')
     sel.add_argument('--index', type=int, default=None, help='run spec by index (SLURM array)')
     sel.add_argument('--all', action='store_true', help='run all specs sequentially')
-    sel.add_argument('--cell', choices=CELLS, default=None)
+    sel.add_argument('--profile', choices=['v1', 'v2'], default='v1',
+                     help='v1: thesis matrix (240 runs, results/runs). '
+                          'v2: fixed cells + clip axis (480 runs, results/runs_v2)')
+    sel.add_argument('--clip-norm', type=float, default=0.0,
+                     help='gradient clip threshold for explicit single runs '
+                          '(0 = off); profile runs take it from the spec')
+    sel.add_argument('--cell', choices=CELLS + CELLS_V2, default=None)
     sel.add_argument('--wiring', choices=WIRINGS, default=None)
     sel.add_argument('--system', choices=SYSTEMS, default=None)
     sel.add_argument('--seed', type=int, default=None)
 
     mat = p.add_argument_group('matrix filters (apply before indexing)')
-    mat.add_argument('--cells', default=','.join(CELLS), help='comma-separated cell subset')
-    mat.add_argument('--systems', default=','.join(SYSTEMS), help='comma-separated system subset')
-    mat.add_argument('--wirings', default=','.join(WIRINGS), help='comma-separated wiring subset')
-    mat.add_argument('--seeds', default=','.join(map(str, SEEDS)), help='comma-separated seeds')
+    mat.add_argument('--cells', default=None, help='comma-separated cell subset')
+    mat.add_argument('--systems', default=None, help='comma-separated system subset')
+    mat.add_argument('--wirings', default=None, help='comma-separated wiring subset')
+    mat.add_argument('--seeds', default=None, help='comma-separated seeds')
 
     tr = p.add_argument_group('training config')
     tr.add_argument('--iters', type=int, default=DEFAULTS['n_iters'])
@@ -191,26 +226,40 @@ def parse_args(argv=None):
     tr.add_argument('--data-size', type=int, default=DEFAULTS['data_size'])
     tr.add_argument('--deterministic', action='store_true',
                     help='enable TF op determinism (bit-exact, slower)')
-    tr.add_argument('--outdir', default='results/runs')
+    tr.add_argument('--outdir', default=None,
+                    help='default: results/runs (v1) / results/runs_v2 (v2)')
     return p.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
 
-    specs = build_specs(
-        [c for c in args.cells.split(',') if c],
-        [w for w in args.wirings.split(',') if w],
-        [s for s in args.systems.split(',') if s],
-        [int(s) for s in args.seeds.split(',') if s != ''],
-    )
+    if args.profile == 'v2':
+        specs = build_specs_v2()
+    else:
+        specs = build_specs(CELLS, WIRINGS, SYSTEMS, SEEDS)
+    if args.cells:
+        keep = set(args.cells.split(','))
+        specs = [s for s in specs if s['cell'] in keep]
+    if args.wirings:
+        keep = set(args.wirings.split(','))
+        specs = [s for s in specs if s['wiring'] in keep]
+    if args.systems:
+        keep = set(args.systems.split(','))
+        specs = [s for s in specs if s['system'] in keep]
+    if args.seeds:
+        keep = {int(s) for s in args.seeds.split(',') if s != ''}
+        specs = [s for s in specs if s['seed'] in keep]
+    if args.outdir is None:
+        args.outdir = 'results/runs_v2' if args.profile == 'v2' else 'results/runs'
 
     if args.count:
         print(len(specs))
         return 0
     if args.list:
         for i, s in enumerate(specs):
-            print(f"{i:4d}  {s['cell']:<5} {s['wiring']:<6} {s['system']:<26} seed={s['seed']}")
+            print(f"{i:4d}  {s['cell']:<7} {s['wiring']:<6} {s['system']:<26} "
+                  f"seed={s['seed']} clip={s['clip_norm']}")
         return 0
 
     cfg = dict(
@@ -228,7 +277,8 @@ def main(argv=None) -> int:
         todo = specs
     elif all(v is not None for v in (args.cell, args.wiring, args.system, args.seed)):
         todo = [{'cell': args.cell, 'wiring': args.wiring,
-                 'system': args.system, 'seed': args.seed}]
+                 'system': args.system, 'seed': args.seed,
+                 'clip_norm': args.clip_norm}]
     else:
         print('Select runs via --index, --all, or --cell/--wiring/--system/--seed '
               '(or use --list/--count).', file=sys.stderr)
