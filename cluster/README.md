@@ -86,3 +86,10 @@ hour on an A40; one timing run locally first is recommended
 (`uv run python experiments/run_benchmark.py --index 0 --iters 100`).
 With the %8 throttle the full 240-run matrix completes in a few hours of
 wall-clock time without ever exceeding the GPU quota.
+
+## Benchmark v2 (fixed cells)
+
+`./cluster/submit_benchmark_v2.sh` submits the 480-run v2 matrix
+(`--profile v2`: mm_ltc/mm_lrc/cfc + gradient-clip axis). Results land in
+`results/runs_v2/`. How to compare v1 vs v2: see
+`experiments/BENCHMARK_COMPARISON.md`.
