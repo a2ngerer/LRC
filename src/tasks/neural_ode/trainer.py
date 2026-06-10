@@ -40,7 +40,8 @@ def get_batch(t, y, batch_size, batch_time, rng=None):
 
 
 def train(model, t, y, n_iters, batch_size=16, batch_time=16, lr=1e-3,
-          loss='mse', rng=None, gradient_tracker=None, verbose=True):
+          loss='mse', rng=None, gradient_tracker=None, clip_norm=None,
+          verbose=True):
     """Training loop.
 
     Args:
@@ -55,6 +56,9 @@ def train(model, t, y, n_iters, batch_size=16, batch_time=16, lr=1e-3,
         rng:        optional np.random.Generator for reproducible batch sampling
         gradient_tracker: optional GradientFlowTracker; record() is called on
                     iterations where should_log() is True (RQ4 tooling)
+        clip_norm:  optional float; if set, gradients are rescaled with
+                    tf.clip_by_global_norm(grads, clip_norm) before the
+                    optimizer step. None (default) = v1 behavior.
         verbose:    print loss every 10 iterations
 
     Returns:
@@ -77,9 +81,18 @@ def train(model, t, y, n_iters, batch_size=16, batch_time=16, lr=1e-3,
             loss_value = loss_fn(pred, y_true)
 
         grads = tape.gradient(loss_value, model.trainable_variables)
+        if clip_norm:
+            applied_grads, pre_clip_norm = tf.clip_by_global_norm(grads, clip_norm)
+        else:
+            applied_grads = grads
+        # Per-layer norms are recorded pre-clip so RQ4 sees the raw gradient
+        # pathology; the clip block shows when and how hard clipping engaged.
         if gradient_tracker is not None and gradient_tracker.should_log(itr):
             gradient_tracker.record(itr, model, grads)
-        optimizer.apply_gradients(zip(grads, model.trainable_variables))
+            if clip_norm:
+                gradient_tracker.record_clip(
+                    itr, float(pre_clip_norm.numpy()), clip_norm)
+        optimizer.apply_gradients(zip(applied_grads, model.trainable_variables))
 
         loss_val = float(loss_value.numpy())
         losses.append(loss_val)
