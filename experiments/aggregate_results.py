@@ -27,22 +27,33 @@ ALPHA = 0.05
 METRIC = 'nrmse'   # primary comparison metric (proposal: MSE/NRMSE)
 
 
-def load_runs(runs_dir: str) -> pd.DataFrame:
+def load_runs(runs_dirs) -> pd.DataFrame:
+    """Load run JSONs from one or more directories into a long DataFrame.
+
+    Runs with an active gradient clip get the cell label '<cell>+clip' so
+    every downstream groupby/statistic treats them as their own variant.
+    """
+    if isinstance(runs_dirs, str):
+        runs_dirs = [runs_dirs]
     rows = []
-    for path in sorted(glob(os.path.join(runs_dir, '*.json'))):
-        with open(path, encoding='utf-8') as f:
-            r = json.load(f)
-        rows.append({
-            'cell': r['run']['cell'],
-            'wiring': r['run']['wiring'],
-            'system': r['run']['system'],
-            'seed': r['run']['seed'],
-            'final_loss': r['training']['final_loss'],
-            'mse': r['evaluation']['mse'],
-            'nrmse': r['evaluation']['nrmse'],
-            'duration_s': r['training']['duration_s'],
-            'file': os.path.basename(path),
-        })
+    for runs_dir in runs_dirs:
+        for path in sorted(glob(os.path.join(runs_dir, '*.json'))):
+            with open(path, encoding='utf-8') as f:
+                r = json.load(f)
+            clip = float(r.get('config', {}).get('clip_norm', 0.0))
+            cell = r['run']['cell'] + ('+clip' if clip else '')
+            rows.append({
+                'cell': cell,
+                'wiring': r['run']['wiring'],
+                'system': r['run']['system'],
+                'seed': r['run']['seed'],
+                'clip_norm': clip,
+                'final_loss': r['training']['final_loss'],
+                'mse': r['evaluation']['mse'],
+                'nrmse': r['evaluation']['nrmse'],
+                'duration_s': r['training']['duration_s'],
+                'file': os.path.basename(path),
+            })
     return pd.DataFrame(rows)
 
 
@@ -143,11 +154,16 @@ def statistics(df: pd.DataFrame) -> str:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
-    p.add_argument('--runs', default='results/runs')
+    p.add_argument('--runs', nargs='+', default=['results/runs'])
     p.add_argument('--out', default='results')
+    p.add_argument('--cells', default=None,
+                   help='comma-separated cell-variant subset, e.g. '
+                        '"ltc,mm_ltc,ltc+clip"')
     args = p.parse_args(argv)
 
     df = load_runs(args.runs)
+    if args.cells:
+        df = df[df['cell'].isin(args.cells.split(','))]
     if df.empty:
         print(f'No run JSONs found in {args.runs}', file=sys.stderr)
         return 1
