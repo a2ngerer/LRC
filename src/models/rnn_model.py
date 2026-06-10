@@ -1,6 +1,6 @@
 import tensorflow as tf
 from src.neurons import (LRC_Cell, LRC_AR_Cell, CTRNN_Cell, LSTM_Cell,
-                         LTC_Cell, GRU_Cell)
+                         LTC_Cell, GRU_Cell, CfC_Cell)
 from src.wirings import NCPWiring
 
 _CELL_REGISTRY = {
@@ -10,6 +10,7 @@ _CELL_REGISTRY = {
     "lstm": LSTM_Cell,
     "ltc": LTC_Cell,
     "gru": GRU_Cell,
+    "cfc": CfC_Cell,
 }
 
 
