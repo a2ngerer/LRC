@@ -1386,10 +1386,10 @@ Expected: all PASS (87 pre-existing + ~20 new)
 - [ ] **Step 2: Mini end-to-end v2 pipeline (local, CPU, ~2 min)**
 
 ```bash
-uv run python experiments/run_benchmark.py --profile v2 \
+uv run python experiments/run_benchmark.py --profile v2 --all \
     --cells mm_ltc,cfc --systems spiral --seeds 0 \
     --iters 30 --data-size 120 --outdir /tmp/v2_smoke
-uv run python experiments/run_benchmark.py \
+uv run python experiments/run_benchmark.py --all \
     --cells ltc --systems spiral --seeds 0 \
     --iters 30 --data-size 120 --outdir /tmp/v1_smoke
 uv run python experiments/aggregate_results.py \
