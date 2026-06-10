@@ -28,7 +28,10 @@ class GradientFlowTracker:
 
     def __init__(self, log_every: int = 25):
         self.log_every = log_every
-        self.history = {'iterations': [], 'layers': {}}
+        self.history = {
+            'iterations': [], 'layers': {},
+            'clip': {'iterations': [], 'pre_clip_norm': [], 'clip_norm': []},
+        }
 
     def should_log(self, iteration: int) -> bool:
         return self.log_every > 0 and iteration % self.log_every == 0
@@ -54,9 +57,22 @@ class GradientFlowTracker:
             name = f'{idx}_{type(layer).__name__}'
             self.history['layers'].setdefault(name, []).append(norm)
 
+    def record_clip(self, iteration: int, pre_clip_norm: float,
+                    clip_norm: float) -> None:
+        """Store the global norm before clipping and the active threshold.
+
+        The post-clip norm is min(pre_clip_norm, clip_norm) by construction,
+        so it is not stored separately.
+        """
+        c = self.history['clip']
+        c['iterations'].append(iteration)
+        c['pre_clip_norm'].append(pre_clip_norm)
+        c['clip_norm'].append(clip_norm)
+
     def as_dict(self) -> dict:
         return {
             'log_every': self.log_every,
             'iterations': self.history['iterations'],
             'layer_norms': self.history['layers'],
+            'clip': self.history['clip'],
         }
