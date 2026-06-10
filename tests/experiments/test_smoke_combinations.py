@@ -7,11 +7,12 @@ from experiments.smoke_test_combinations import (
 def test_combination_matrix_size():
     """Matrix covers all planned neurons × wirings.
 
-    Benchmark matrix (thesis): ltc, lrc, gru, lstm × dense, ncp.
+    Benchmark matrix v1 (thesis): ltc, lrc, gru, lstm × dense, ncp.
+    Benchmark matrix v2 adds: cfc, mm_ltc, mm_lrc.
     ctrnn and lrc_ar are kept as additional smoke-tested cells.
     """
-    assert len(NEURONS) == 6
-    for n in ['ltc', 'lrc', 'gru', 'lstm']:
+    assert len(NEURONS) == 9
+    for n in ['ltc', 'lrc', 'gru', 'lstm', 'cfc', 'mm_ltc', 'mm_lrc']:
         assert n in NEURONS
     assert len(WIRINGS) == 2
 

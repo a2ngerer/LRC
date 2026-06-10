@@ -3,7 +3,7 @@ import sys
 import tensorflow as tf
 from src.models import make_dense_model, make_ncp_model
 
-NEURONS = ['lrc', 'lrc_ar', 'ctrnn', 'lstm', 'ltc', 'gru']
+NEURONS = ['lrc', 'lrc_ar', 'ctrnn', 'lstm', 'ltc', 'gru', 'cfc', 'mm_ltc', 'mm_lrc']
 WIRINGS = ['dense', 'ncp']
 
 # Dense config per neuron.
@@ -17,6 +17,9 @@ DENSE_UNITS = {
     'lstm':   8,
     'ltc':    8,
     'gru':    8,
+    'cfc':    8,
+    'mm_ltc': 8,
+    'mm_lrc': 8,
 }
 
 # NCP config — same for all neurons.
