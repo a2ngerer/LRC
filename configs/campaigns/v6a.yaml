@@ -1,0 +1,37 @@
+# Campaign v6a -- multi-wiring-seed robustness of the noise-regime ncp ordering.
+# Equivalent to build_specs_v6a() (run_benchmark.py:380).
+# ncp ONLY; constant stress='noise'; one OUTER ncp_wiring_seed axis (graph-major).
+#   4 graphs x (8 cells x 1 wiring x 6 systems x 5 seeds = 240) = 960 specs
+#   -> results/runs_v6a. Block layout: [0,240) ws7 .. [720,960) ws99.
+name: v6a
+mode: axes
+outdir: results/runs_v6a
+description: >
+  Does the ncp bio>classical ordering survive other NCP wiring graphs, or was
+  seed 42 lucky? Reruns the noise regime on ncp for 4 NEW wiring graphs; the
+  seed-42 graph is reused from v5, not re-run.
+
+# CELLS_V6: 4 closed-form bio champions + 3 classical + lrc bottom anchor.
+cells: [cfc, cfc_lrc, cfc_mm_lrc, cfc_mm_ltc, gru, lstm, ctrnn, lrc]
+# ncp only -- dense never collapses, so it is dropped here.
+wirings: [ncp]
+systems:
+  - spiral
+  - duffing
+  - periodic_sinusoidal
+  - periodic_predator_prey
+  - limited_predator_prey
+  - nonlinear_predator_prey
+seeds: [0, 1, 2, 3, 4]
+clip_norm: 0.0
+
+# Every v6a spec is the v5 NOISE regime, so `stress` is a constant key.
+constants:
+  stress: noise
+
+# The wiring graph is the new axis, nested OUTERMOST (graph-major). Only graphs
+# != NCP_WIRING_SEED(42) appear, so result_filename emits the _wseed token and
+# never overwrites the seed-42 v5 anchor.
+extra_axes:
+  - key: ncp_wiring_seed
+    values: [7, 13, 21, 99]

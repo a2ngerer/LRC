@@ -1,0 +1,42 @@
+# Campaign v5 -- generalization stress test over the full v4 cell set.
+# Equivalent to build_specs_v5() (run_benchmark.py:357).
+# One OUTER stress axis (regime-major) x the v4-base cross product.
+#   3 regimes x (11 x 2 x 6 x 5 = 660) = 1980 specs -> results/runs_v5.
+# Block layout: [0,660) noise, [660,1320) extrapolation, [1320,1980) ood_init.
+name: v5
+mode: axes
+outdir: results/runs_v5
+description: >
+  Generalization stress test. Reruns the full v4 cell set under three
+  independent stressors (noise / extrapolation / ood_init), nested as the
+  OUTERMOST axis so the matrix is regime-major. The clean baseline is v4 itself.
+
+# CELLS_V5 = list(CELLS_V4): LTC 2x2 + LRC 2x2 + classical baselines.
+cells:
+  - ltc
+  - cfc
+  - mm_ltc
+  - cfc_mm_ltc
+  - lrc
+  - cfc_lrc
+  - mm_lrc
+  - cfc_mm_lrc
+  - gru
+  - lstm
+  - ctrnn
+wirings: [dense, ncp]
+systems:
+  - spiral
+  - duffing
+  - periodic_sinusoidal
+  - periodic_predator_prey
+  - limited_predator_prey
+  - nonlinear_predator_prey
+seeds: [0, 1, 2, 3, 4]
+clip_norm: 0.0
+
+# The stress regime is an extra axis nested OUTSIDE (and before) the base
+# product, so iteration is regime-major. Each spec gets a `stress` key.
+extra_axes:
+  - key: stress
+    values: [noise, extrapolation, ood_init]

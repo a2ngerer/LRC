@@ -1,0 +1,55 @@
+# Campaign eps -- liquid-elastance over-parameterization ablation.
+# Equivalent to build_specs_eps() (run_benchmark.py:434).
+# EXPLICIT mode: ordered per-task blocks; within a block the nesting is
+#   ode_unfolds -> cell -> wiring -> seed (system fixed per block).
+# Pruning (sym + hybrid arms off the flat spiral anchor) is expressed as a DROP
+# filter; because the canonical cell order is preserved both when legacy prunes
+# via _eps_cells_for_task and when we drop here, the result is byte-identical.
+#   multitimescale: 3 uf x 8 x 2 x 30 = 1440
+#   spiral (pruned): 4 x 2 x 30        =  240
+#   stiff_linear_k{1,10,100,1000}: 8 x 2 x 30 = 480 each = 1920
+#   total = 3600 -> results/runs_eps.
+name: eps
+mode: explicit
+outdir: results/runs_eps
+description: >
+  8 LRC conditions x 2 wirings on a two-tier task suite (multitimescale
+  headline + flat anchors + stiff_linear sweep). The sym (C, E_C) and hybrid
+  (F, G) arms run only on the informative tasks; they are dropped off the flat
+  spiral anchor. Every run is seed-jittered (eps_jitter) at n=30.
+
+# Canonical CELLS_EPS order -- the stable array contract. The drop filter below
+# removes the sym/hybrid subset on spiral only.
+cells:
+  - lrc_interp        # A
+  - lrc_asym          # B
+  - lrc_sym           # C
+  - lrc_frozen        # D
+  - lrc_pmctrl        # E
+  - lrc_pmctrl_c      # E_C
+  - lrc_asym_hybrid   # F
+  - lrc_interp_hybrid # G
+wirings: [dense, ncp]
+seeds: {range: [0, 30]}   # SEEDS_EPS = list(range(30))
+clip_norm: 0.0
+
+# Constants stamped onto every eps spec.
+constants:
+  eps_jitter: true
+
+# Task blocks in array order. Only multitimescale sweeps ode_unfolds {1,2,4};
+# the anchors and exploratory stiff tasks run at uf=1.
+blocks:
+  - {system: multitimescale,    ode_unfolds: [1, 2, 4]}
+  - {system: spiral,            ode_unfolds: [1]}
+  - {system: stiff_linear_k1,   ode_unfolds: [1]}
+  - {system: stiff_linear_k10,  ode_unfolds: [1]}
+  - {system: stiff_linear_k100, ode_unfolds: [1]}
+  - {system: stiff_linear_k1000, ode_unfolds: [1]}
+
+# Prune the sym + hybrid arms off the flat spiral anchor (the only
+# non-informative eps task). A spec is dropped iff BOTH conditions hold.
+filters:
+  - drop:
+      system: [spiral]
+      cell: [lrc_sym, lrc_pmctrl_c, lrc_asym_hybrid, lrc_interp_hybrid]

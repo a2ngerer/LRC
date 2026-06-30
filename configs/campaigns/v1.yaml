@@ -1,0 +1,22 @@
+# Campaign v1 -- thesis baseline matrix.
+# Equivalent to the legacy default profile:
+#   build_specs(CELLS, WIRINGS, SYSTEMS, SEEDS)   (run_benchmark.py:1026)
+# Pure cross product, 4 x 2 x 6 x 5 = 240 specs -> results/runs.
+name: v1
+mode: axes
+outdir: results/runs
+description: >
+  Thesis baseline matrix: {ltc, lrc, gru, lstm} x {dense, ncp} x 6 ODE systems
+  x 5 seeds. Pure cross product; clip off, default solver/horizon.
+
+cells: [ltc, lrc, gru, lstm]
+wirings: [dense, ncp]
+systems:
+  - spiral
+  - duffing
+  - periodic_sinusoidal
+  - periodic_predator_prey
+  - limited_predator_prey
+  - nonlinear_predator_prey
+seeds: [0, 1, 2, 3, 4]
+clip_norm: 0.0
