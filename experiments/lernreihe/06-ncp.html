@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>06 · NCP — Neural Circuit Policies</title>
+<meta name="description" content="Vorlesung 06: Neural Circuit Policies — spärliche, biologisch inspirierte Verschaltung aus dem C.-elegans-Schaltkreis. SparseLinear mit fixer binärer Maske, sensory → inter → command → motor, das Wiring orthogonal zum Neuronenmodell.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lecture="06">
+
+<!-- ============================ HERO ============================ -->
+<header class="hero">
+  <canvas class="hero-canvas" data-c1="#7c3aed" data-c2="#2563eb" data-c3="#0f9d6b"></canvas>
+  <div class="hero-inner">
+    <div class="hero-kicker reveal"><span class="lecnum">Vorlesung 06</span> Verschaltung · biologisch inspiriert</div>
+    <h1 class="hero-title reveal">NCP: wenn nicht jedes Neuron<br>mit <span class="liquid">jedem</span> spricht</h1>
+    <p class="hero-sub reveal">Bisher ging es immer um <em>ein</em> Neuron. Jetzt geht es um die Topologie:
+    welche Neuronen überhaupt miteinander verdrahtet sind. Neural Circuit Policies kopieren den
+    Verschaltungsplan eines Wurms — sensorisch → inter → command → motor — und frieren ihn als fixe,
+    spärliche Maske ein. Wichtig: diese Verdrahtung ist <em>orthogonal</em> zum Zellmodell.</p>
+    <div class="hero-meta reveal">
+      <span class="hero-pill"><span class="dot" style="background:var(--ncp)"></span>NCP · 4 Schichten</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--lrc)"></span>SparseLinear · binäre Maske</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--cfc)"></span>C. elegans · 19 Neuronen</span>
+    </div>
+  </div>
+  <div class="scroll-hint"><span>Scrollen</span><span class="line"></span></div>
+</header>
+
+<!-- ============================ 0 · EINSTIEG ============================ -->
+<section id="intro" data-toc="Einstieg">
+  <div class="wrap">
+    <div class="eyebrow reveal">Worum es geht</div>
+    <h2 class="reveal">Eine neue Achse: die Verdrahtung</h2>
+    <p class="lead reveal">Die Vorlesungen 01–05 haben am Neuron selbst geschraubt — Gates, liquides τ,
+    closed-form Dynamik, ein ODE-LSTM-Speicherpfad. Diese Vorlesung lässt die Zelle in Ruhe und fragt
+    etwas anderes: <em>Welche</em> Neuronen sind überhaupt miteinander verbunden? Das ist die zweite,
+    völlig eigenständige Achse deines Experiments.</p>
+
+    <p class="reveal">Stell dir das Auto aus dem laufenden Fallbeispiel vor. Bisher hatte es eine Schicht
+    aus 16 Neuronen, in der jedes mit jedem redet — <em>dense</em>. Die Frage von Neural Circuit Policies
+    lautet: Was, wenn die Neuronen stattdessen wie in einem echten Nervensystem in <strong>Schichten mit
+    klaren Rollen</strong> sitzen und nur wenige, gezielte Verbindungen existieren? Weniger Verbindungen,
+    klarere Verantwortlichkeiten, lesbare Pfade vom Sensor zum Stellsignal.</p>
+
+    <div class="callout reveal">
+      <div class="ctag">Das Versprechen dieser Seite</div>
+      <p style="margin-bottom:.6em">Am Ende verstehst du drei Dinge konkret: <strong>(1)</strong> wie eine
+      <code>SparseLinear</code>-Schicht mit fixer binärer Maske dafür sorgt, dass maskierte Verbindungen
+      <em>permanent</em> null bleiben — auch der Gradient; <strong>(2)</strong> wie der vierschichtige Stapel
+      sensory → inter → command → motor aufgebaut ist und wo genau die Sparsity sitzt; <strong>(3)</strong>
+      warum das Wiring <em>orthogonal</em> zum Zellmodell ist — jede Zelle (LTC, LRC, CfC, LSTM) lässt sich
+      dense <em>oder</em> ncp verdrahten.</p>
+      <p style="margin-bottom:0">Beide Labs zeichnen den echten Graphen mit den Konfigurations-Zahlen aus
+      <code>run_benchmark.py</code> und der spärlichen Logik aus <code>ncp.py</code>.</p>
+    </div>
+
+    <div class="legend reveal">
+      <div class="li"><span class="src src-paper">Paper</span> Originalarbeit / Paper-Notiz</div>
+      <div class="li"><span class="src src-code">Code</span> exakt aus deiner Implementierung</div>
+      <div class="li"><span class="src src-dr">Deep-Research</span> LLM-Recherche, zu prüfen</div>
+      <div class="li"><span class="src src-classic">klassisch</span> Lehrbuchwissen</div>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 1 · BIOLOGIE ============================ -->
+<section id="biology" data-toc="C. elegans">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--ncp);color:var(--ncp)"><span class="section-num">01</span> &nbsp;Der Bauplan kommt aus dem Wurm</div>
+    <h2 class="reveal">Vier Schichten, wenige Neuronen, lesbare Pfade</h2>
+    <p class="reveal">Neural Circuit Policies stammen aus der Beobachtung, dass der Fadenwurm
+    <em>Caenorhabditis elegans</em> mit einem winzigen, vollständig kartierten Nervensystem komplexes
+    Verhalten erzeugt. Der konkrete Vorbild-Schaltkreis ist die <strong>Tap-Withdrawal-Reaktion</strong>:
+    klopft man an die Petrischale, zieht sich der Wurm zurück. Dieser Reflexkreis lässt sich als dynamisches
+    Netzwerk simulieren <span class="src src-paper" title="Wicks, Roehrig, Rankin 1996, J. Neurosci. — dynamic network simulation of the nematode tap withdrawal circuit">Paper · Wicks1996</span>.</p>
+
+    <p class="reveal">Lechner et al. übertragen genau dieses Prinzip ins maschinelle Lernen: ein
+    <strong>vierschichtiges Wiring</strong> aus sensorischen Neuronen, Interneuronen, Command-Neuronen und
+    Motorneuronen, mit spärlichen, gezielten Verbindungen dazwischen. Das Ergebnis sind Steuer-Policies mit
+    <em>wenigen</em> Neuronen, deren innere Verschaltung man tatsächlich auslesen und prüfen kann — der
+    Titel der Arbeit lautet nicht umsonst „enabling auditable autonomy“
+    <span class="src src-paper" title="Lechner, Hasani, Amini, Henzinger, Rus, Grosu 2020, Nature Machine Intelligence — Neural circuit policies enabling auditable autonomy">Paper · lechner2020neural</span>.</p>
+
+    <div class="callout insight reveal">
+      <div class="ctag" style="color:var(--ncp)">Der entscheidende Trennstrich</div>
+      <p style="margin-bottom:.6em">Ein NCP ist <strong>kein Neuronenmodell</strong>. Es ist ein
+      <em>Verdrahtungsschema</em>. Welche dynamische Gleichung in jeder Zelle steckt — LTC, LRC, CfC, LSTM —
+      ist eine separate Entscheidung. Genau diese Trennung macht die Untersuchung interessant: Wiring und
+      Zellmodell sind <strong>orthogonale Achsen</strong>, und man kann fragen, ob sie sich addieren oder
+      sogar wechselwirken <span class="src src-paper" title="Farsang et al. 2024, ICRA — chemische vs. elektrische Synapsen; Wiring orthogonal zum Synapsenmodell">Paper · farsang2024learning</span>.</p>
+      <p style="margin-bottom:0">Das ist die Grundlage für <strong>RQ3</strong>, die am Ende dieser
+      Vorlesung im Wortlaut steht.</p>
+    </div>
+
+    <p class="reveal">Im Code ist diese Vierschichtigkeit direkt sichtbar. Die NCP-Bibliothek
+    (<code>ncps.wirings.NCP</code>) erzeugt die Adjazenzmatrix; deine Implementierung extrahiert daraus die
+    Verbindungsmasken zwischen den Schichten
+    <span class="src src-code" title="ncp.py:36-123 — NCPWiring docstring + Konstruktion">Code · ncp.py:36</span>.</p>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 2 · SPARSELINEAR ============================ -->
+<section id="sparse" data-toc="SparseLinear">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--ncp);color:var(--ncp)"><span class="section-num">02</span> &nbsp;Wie eine Verbindung permanent verschwindet</div>
+    <h2 class="reveal">SparseLinear: die Maske, die der Gradient nicht aufweicht</h2>
+    <p class="reveal">Der Kern der spärlichen Verschaltung ist eine einzige, schlichte Schicht. Sie
+    multipliziert die Eingabe nicht mit der vollen Gewichtsmatrix, sondern mit der elementweise maskierten
+    Matrix <span class="mono">W ⊙ M</span>, wobei <span class="mono">M</span> eine fixe binäre Matrix ist:</p>
+
+    <div class="eq accent-ncp reveal">
+      <div class="eq-label"><span>SparseLinear · forward pass</span><span class="src src-code">Code</span></div>
+      <div data-eq="\text{call}(x) \;=\; x \,@\, (W \odot M)\,,\qquad M_{ij}\in\{0,1\}\ \text{fix},\quad \frac{\partial\,\mathcal{L}}{\partial W_{ij}}\Big|_{M_{ij}=0}=0"></div>
+    </div>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">ncp.py · SparseLinear</span><span class="ref">Zeilen 7–33</span></div>
+<pre><span class="k">class</span> <span class="f">SparseLinear</span>(tf.keras.layers.Layer):
+    <span class="s">"""Dense layer with a fixed binary connectivity mask.</span>
+<span class="s">    Weights at masked-off positions are zeroed each forward pass</span>
+<span class="s">    (W * mask), so gradients there are also zero — the sparsity</span>
+<span class="s">    is permanent throughout training."""</span>
+
+    <span class="k">def</span> <span class="f">build</span>(self, input_shape):
+        self.W    = self.<span class="f">add_weight</span>(name=<span class="s">'W'</span>, shape=(input_shape[-1], self.units), ...)
+<span class="hl">        self.mask = tf.<span class="f">constant</span>(self._mask_np, dtype=tf.float32)   <span class="c"># nie trainierbar</span></span>
+
+    <span class="k">def</span> <span class="f">call</span>(self, x):
+<span class="hl">        <span class="k">return</span> x @ (self.W * self.mask)   <span class="c"># maskierte Position -> 0 -> kein Gradient</span></span></pre>
+    </div>
+    <p class="code-cap reveal">Die Maske ist eine <span class="mono">tf.constant</span>, nicht ein
+    <span class="mono">add_weight</span> — sie wird nie gelernt. An jeder Null in <span class="mono">M</span>
+    ist das Produkt null, die Ableitung nach dem zugehörigen <span class="mono">W</span> ebenfalls. Die
+    Verbindung kann im Training nicht „zurückwachsen“. <span class="src src-code">Code · ncp.py:7</span></p>
+
+    <div class="callout reveal">
+      <div class="ctag">Warum das mehr ist als ein Dropout</div>
+      <p style="margin-bottom:0">Dropout schaltet Verbindungen zufällig und temporär ab; im Forward-Pass der
+      Inferenz sind alle wieder da. Die NCP-Maske ist <strong>fix und strukturell</strong>: dieselben
+      Verbindungen fehlen in jedem Schritt, beim Training wie bei der Inferenz. Die Sparsity ist also keine
+      Regularisierung, sondern eine <em>Architekturentscheidung</em>, die fest verdrahtet bleibt.</p>
+    </div>
+
+    <p class="reveal">Im ersten Lab siehst du das auf Graphebene: schalte zwischen dem dichten Netz (jeder mit
+    jedem) und der NCP-Maske (nur die gezielten Kanten) hin und her und beobachte, wie die Kantenzahl
+    einbricht.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-wiring">
+      <div class="lab-head"><span class="led"></span><span class="title">Wiring-Graph · dense vs. NCP</span><span class="sub" id="wir-status">NCP-Maske</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-wiring"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Verdrahtung</label>
+            <div class="seg" id="wir-mode"><button data-v="dense">dense</button><button data-v="ncp" class="on">NCP (spärlich)</button></div>
+          </div>
+          <div class="ctrl"><label>Fanout pro Quellknoten <span class="val" id="wir-fan-v">4</span></label><input type="range" id="wir-fan" class="acc-ncp" min="1" max="8" step="1" value="4"></div>
+          <div class="lab-readout">
+            Kanten dense <span class="k" id="wir-edense">—</span><br>
+            Kanten NCP <span class="big k" id="wir-encp">—</span><br>
+            Sparsity-Quote <span class="k" id="wir-sparse">—</span>
+          </div>
+          <div class="lab-task">Schalt auf <b style="color:var(--ncp)">NCP</b>: aus dem dichten Knäuel werden
+          wenige gezielte Kanten. Dreh den <b>Fanout</b> — er steuert, wie viele Ziele jeder Quellknoten in
+          der nächsten Schicht erreicht. Die Schichten sind <b>sensory · inter 16 · command 8 · motor 2</b>,
+          genau wie im Benchmark.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Vier Spalten = vier Schichten. Im NCP-Modus zeichnet das Lab nur die Kanten einer deterministisch (rng(42)) erzeugten spärlichen Maske. <span class="src src-code">Code · ncp.py · run_benchmark.py</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 3 · DER STAPEL ============================ -->
+<section id="stack" data-toc="Der Stapel">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--ncp);color:var(--ncp)"><span class="section-num">03</span> &nbsp;Dicht innen, spärlich dazwischen</div>
+    <h2 class="reveal">Drei RNN-Schichten, zwei spärliche Brücken</h2>
+    <p class="reveal">Der eigentliche NCP-Stapel im Code ist eine <span class="mono">tf.keras.Sequential</span>
+    aus drei gestapelten RNN-Schichten — inter, command, motor — mit je einer
+    <code>SparseLinear</code>-Brücke dazwischen. Wichtig ist die Aufteilung der Konnektivität: <em>innerhalb</em>
+    jeder Schicht sind die recurrent-Gewichte <strong>dicht</strong>, nur die Verbindungen <em>zwischen</em>
+    den Schichten sind spärlich <span class="src src-code" title="ncp.py:36-123 — NCPWiring docstring + build_model">Code · ncp.py:36</span>.</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">ncp.py · NCPWiring.build_model</span><span class="ref">Zeilen 107–123</span></div>
+<pre><span class="k">return</span> tf.keras.Sequential([
+    tf.keras.layers.<span class="f">RNN</span>(self.cell_cls(units=self.inter_neurons,   ...)),  <span class="c"># dicht innen</span>
+<span class="hl">    <span class="f">SparseLinear</span>(self.command_neurons, self._inter_to_command),         <span class="c"># spärliche Brücke</span></span>
+    tf.keras.layers.<span class="f">RNN</span>(self.cell_cls(units=self.command_neurons, ...)),  <span class="c"># dicht innen</span>
+<span class="hl">    <span class="f">SparseLinear</span>(self.motor_neurons,   self._command_to_motor),          <span class="c"># spärliche Brücke</span></span>
+    tf.keras.layers.<span class="f">RNN</span>(self.cell_cls(units=self.motor_neurons,   ...)),  <span class="c"># dicht innen</span>
+])</pre>
+    </div>
+    <p class="code-cap reveal">Die beiden Masken <span class="mono">_inter_to_command</span> und
+    <span class="mono">_command_to_motor</span> entstehen aus der NCP-Adjazenzmatrix: <span class="mono">A[src, dst] ≠ 0</span>
+    heißt „Verbindung existiert“. <span class="src src-code">Code · ncp.py:88-96</span></p>
+
+    <p class="reveal">Das <span class="mono">cell_cls</span> ist der Platzhalter, der die Orthogonalität konkret
+    macht: dort steht je nach Lauf <code>LRC_Cell</code>, <code>LSTM_Cell</code>, eine CfC-Zelle oder eine
+    LTC-Zelle. Dasselbe Wiring, austauschbares Neuron. Die Maske kümmert sich nicht darum, welche Dynamik in
+    den Knoten rechnet.</p>
+
+    <p class="reveal">Die Zahlen sind im Benchmark fixiert — und sie sind bewusst so gewählt, dass das
+    NCP-Netz mit dem dichten Pendant vergleichbar bleibt
+    <span class="src src-code" title="run_benchmark.py:64-70 — DENSE_UNITS, NCP_CONFIG, NCP_WIRING_SEED">Code · run_benchmark.py:64</span>:</p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>Schicht</th><th>Neuronen</th><th>Rolle</th><th>Fanout / Fanin</th></tr></thead>
+      <tbody>
+        <tr><th>sensory</th><td class="mono">Eingang</td><td>nimmt den Zustand auf</td><td class="mono">sensory_fanout = max(1, 16//2) = 8</td></tr>
+        <tr><th>inter</th><td class="mono">16</td><td>Verarbeitung / Repräsentation</td><td class="mono">inter_fanout = max(1, 8//2) = 4</td></tr>
+        <tr><th>command</th><td class="mono">8</td><td>Entscheidung / Steuerlogik</td><td class="mono">recurrent_command = max(1, 8//2) = 4</td></tr>
+        <tr><th>motor</th><td class="mono">2</td><td>Ausgang (= 2D-ODE-Ausgabe)</td><td class="mono">motor_fanin = max(1, 8//2) = 4</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="lab-caption reveal">NCP_CONFIG: inter=16, command=8, motor=2; alle Fanouts/Fanin = max(1, n//2); NCP_WIRING_SEED = 42. Das Dense-Pendant ist 1 RNN-Schicht, units=16, voll verbunden. <span class="src src-code">Code · run_benchmark.py:64-70</span></p>
+
+    <div class="callout warn reveal">
+      <div class="ctag">Ein Detail, das leicht stolpern lässt</div>
+      <p style="margin-bottom:0">Die <code>ncps.wirings.NCP</code>-Klasse ordnet die Neuronen intern als
+      <span class="mono">[motor | command | inter]</span> an. Deine Implementierung holt sich deshalb die
+      tatsächlichen Index-Listen über die privaten Attribute <span class="mono">w._inter_neurons</span>,
+      <span class="mono">w._command_neurons</span>, <span class="mono">w._motor_neurons</span>, bevor sie die
+      Masken aus der Adjazenzmatrix herausschneidet. Verwechselt man die Reihenfolge, baut man die falsche
+      Maske. <span class="src src-code">Code · ncp.py:45-86</span></p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 4 · SPARSITY SKALIERT ============================ -->
+<section id="scaling" data-toc="Sparsity skaliert">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--ncp);color:var(--ncp)"><span class="section-num">04</span> &nbsp;Warum 19 Neuronen reichen können</div>
+    <h2 class="reveal">Sparsity zahlt sich aus</h2>
+    <p class="reveal">Das Argument hinter Neural Circuit Policies ist nicht „klein ist hübsch“, sondern
+    Effizienz und Lesbarkeit zugleich. Lechner et al. demonstrieren Spurhaltung mit nur <strong>19
+    Steuerneuronen</strong> — eine Größenordnung, in der man die Verschaltung noch von Hand prüfen kann
+    <span class="src src-paper" title="Lechner et al. 2020, Nature Machine Intelligence — 19-Neuronen-Lane-Keeping, auditable">Paper · lechner2020neural</span>.</p>
+
+    <p class="reveal">Der Hebel dahinter ist die Skalierung der Verbindungszahl. In einer dichten Schicht
+    wächst die Zahl der Verbindungen zwischen zwei Schichten mit dem <em>Produkt</em> ihrer Größen. In einer
+    NCP-Brücke wächst sie nur mit dem Fanout pro Quellknoten — linear, nicht multiplikativ:</p>
+
+    <div class="eq accent-ncp reveal">
+      <div class="eq-label"><span>Kantenzahl · dense vs. NCP-Brücke</span><span class="src src-classic">klassisch</span></div>
+      <div data-eq="E_{\text{dense}} = n_{\text{src}}\cdot n_{\text{dst}}\,,\qquad E_{\text{NCP}} \le n_{\text{src}}\cdot \text{fanout}\,,\qquad \text{Sparsity} = 1 - \frac{E_{\text{NCP}}}{E_{\text{dense}}}"></div>
+    </div>
+
+    <p class="reveal">Bei kleinem Fanout und großen Schichten ist der Unterschied dramatisch. Dreh im Lab den
+    Fanout und beobachte, wie die NCP-Kurve flach bleibt, während die dense-Kurve quadratisch davonläuft.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-scale">
+      <div class="lab-head"><span class="led"></span><span class="title">Sparsity zahlt sich aus · Kantenzahl vs. Fanout</span><span class="sub" id="scl-status">fanout = 4</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-scale"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Fanout pro Quellknoten <span class="val" id="scl-fan-v">4</span></label><input type="range" id="scl-fan" class="acc-ncp" min="1" max="16" step="1" value="4"></div>
+          <div class="ctrl"><label>Schichtgröße n (sym. Brücke n→n) <span class="val" id="scl-n-v">16</span></label><input type="range" id="scl-n" class="acc-ncp" min="4" max="40" step="1" value="16"></div>
+          <div class="lab-readout">
+            dense-Kanten n·n <span class="k" id="scl-edense">—</span><br>
+            NCP-Kanten n·fanout <span class="big k" id="scl-encp">—</span><br>
+            Ersparnis <span class="k" id="scl-save">—</span>
+          </div>
+          <div class="lab-task">Lass den Fanout auf einem kleinen Wert (z. B. 4) und zieh die <b>Schichtgröße</b>
+          hoch: die graue dense-Kurve explodiert quadratisch, die <b style="color:var(--ncp)">violette
+          NCP-Kurve</b> bleibt fast flach. Das ist der Mechanismus hinter dem 19-Neuronen-Argument.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">x-Achse: Schichtgröße n. Grau: dense (n²). Violett: NCP-Brücke (n · fanout). Die Schere zwischen beiden ist die Sparsity-Ersparnis. <span class="src src-classic">klassisch</span> · Argument: <span class="src src-paper">lechner2020neural</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 5 · SYNTHESE ============================ -->
+<section id="synthesis" data-toc="Direktvergleich">
+  <div class="wrap">
+    <div class="eyebrow reveal"><span class="section-num">05</span> &nbsp;Nebeneinander</div>
+    <h2 class="reveal">Dense vs. NCP im Direktvergleich</h2>
+    <p class="reveal">Beide Verdrahtungen tragen dieselbe Zelle. Der Unterschied liegt allein in der
+    Topologie und ihren Folgen für Parameterzahl und Lesbarkeit.</p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>Aspekt</th>
+        <th><span class="cmp-head"><span class="dot" style="background:var(--ct)"></span>dense</span></th>
+        <th><span class="cmp-head"><span class="dot" style="background:var(--ncp)"></span>NCP</span></th></tr></thead>
+      <tbody>
+        <tr><th>Schichten</th><td>1 RNN, units = 16</td><td>3 RNN: inter 16 · command 8 · motor 2</td></tr>
+        <tr><th>Konnektivität (innen)</th><td>dicht</td><td>dicht (recurrent je Schicht)</td></tr>
+        <tr><th>Konnektivität (zwischen)</th><td class="mono">— (eine Schicht)</td><td class="good">spärlich (SparseLinear-Maske)</td></tr>
+        <tr><th>Maske</th><td class="mono">keine</td><td>fix, binär, aus C.-elegans-Wiring</td></tr>
+        <tr><th>Gradient an Maskennull</th><td class="mono">—</td><td class="good">permanent 0 (sparsity bleibt)</td></tr>
+        <tr><th>Interpretierbarkeit</th><td class="bad">geringer (alles redet)</td><td class="good">höher (klare Pfade, „auditable“)</td></tr>
+        <tr><th>orthogonal zur Zelle?</th><td>ja</td><td>ja (cell_cls beliebig)</td></tr>
+        <tr><th>Quelle</th><td><span class="src src-code">dense.py</span></td><td><span class="src src-code">ncp.py</span> · <span class="src src-paper">lechner2020neural</span></td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="lab-caption reveal">Konfiguration aus <code>run_benchmark.py</code>: DENSE_UNITS = 16, NCP_CONFIG = {inter:16, command:8, motor:2}. <span class="src src-code">Code · run_benchmark.py:64-67</span></p>
+
+    <div class="callout insight reveal">
+      <div class="ctag" style="color:var(--ncp)">Die Forschungsfrage dieser Vorlesung — im Wortlaut</div>
+      <p style="margin-bottom:.6em"><strong>RQ3 — Wiring:</strong> <em>„Does bio-inspired wiring (NCP) provide
+      complementary benefits independent of the neuron model, and how do neuron type and wiring architecture
+      interact in determining performance and interpretability?“</em></p>
+      <p style="margin-bottom:0">Weil das Wiring orthogonal zur Zelle steht, lässt sich die zweite Achse sauber
+      messen: das Experiment durchläuft alle vier Zelltypen <em>jeweils</em> dense und ncp. So zeigt sich, ob
+      die Sparsity einen eigenen Beitrag liefert — und ob sie mit bestimmten Neuronentypen besser harmoniert
+      als mit anderen.</p>
+    </div>
+
+    <div class="callout good reveal">
+      <div class="ctag" style="color:var(--data)">Wohin als Nächstes</div>
+      <p style="margin-bottom:0">Damit ist die Modell-Seite komplett: Zelltypen (01–05) und Verdrahtung (06).
+      Die nächste Vorlesung <strong>07 · Benchmarks &amp; Datensätze</strong> wechselt die Perspektive — von
+      der Architektur zu den Aufgaben, an denen all diese Kombinationen gemessen werden.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ QUELLEN ============================ -->
+<section id="sources" data-toc="Quellen">
+  <div class="wrap">
+    <div class="eyebrow reveal">Belege</div>
+    <h2 class="reveal">Quellen dieser Vorlesung</h2>
+    <div class="bib reveal">
+      <div class="bib-item"><div class="bib-key">lechner2020neural</div><div class="bib-cite">
+        <div class="t">Neural circuit policies enabling auditable autonomy</div>
+        <div class="meta">Lechner, Hasani, Amini, Henzinger, Rus, Grosu · Nature Machine Intelligence 2 (10), 2020</div>
+        <div class="where">4-schichtiges Wiring, 19-Neuronen-Lane-Keeping, Auditierbarkeit · Vault: Literature/references.bib</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Wicks1996</div><div class="bib-cite">
+        <div class="t">A dynamic network simulation of the nematode tap withdrawal circuit</div>
+        <div class="meta">Wicks, Roehrig, Rankin · Journal of Neuroscience 16 (12), 4017–4031, 1996</div>
+        <div class="where">C.-elegans-Tap-Withdrawal-Schaltkreis als dynamisches Netzwerk · Vault: Literature/references.bib</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">farsang2024learning</div><div class="bib-cite">
+        <div class="t">Learning with Chemical versus Electrical Synapses — Does it Make a Difference?</div>
+        <div class="meta">Farsang, Lechner, Lung, Hasani, Rus, Grosu · ICRA 2024, 15106–15112</div>
+        <div class="where">Wiring orthogonal zum Synapsen-/Neuronenmodell · Vault: Literature/references.bib</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Code</div><div class="bib-cite">
+        <div class="t">Eigene Implementierung</div>
+        <div class="meta">code/src/wirings/ncp.py · dense.py · experiments/run_benchmark.py</div>
+        <div class="where">SparseLinear (ncp.py:7-33), NCPWiring (ncp.py:36-123), Benchmark-Konfig (run_benchmark.py:64-70) — wörtlich zitiert</div>
+      </div></div>
+    </div>
+    <p class="note reveal">Die Labs zeichnen den Wiring-<em>Graphen</em> und die Kanten-Skalierung mit den echten
+    Konfigurations-Zahlen; sie rechnen keine Zell-Dynamik. Die NCP-Maske im ersten Lab ist eine
+    deterministische (rng(42)) Nachbildung der spärlichen Verbindungslogik — sie folgt der Fanout-Regel aus
+    <code>run_benchmark.py</code>, nicht bitgenau dem internen RNG von <code>ncps.wirings.NCP</code>. Die
+    <em>Struktur</em> (vier Schichten, dicht innen, spärlich dazwischen, permanente Maskennullen) ist identisch
+    mit dem Code.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="f-title">Vorlesung 06 · NCP — Neural Circuit Policies</div>
+  <p>Teil der interaktiven Lernreihe zur Masterarbeit. Das Wiring ist orthogonal zum Neuronenmodell.</p>
+  <p class="mono">ncp.py · dense.py · run_benchmark.py · Lechner 2020 · Wicks 1996</p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
+<script src="assets/engine.js"></script>
+<script>
+/* ============================================================
+   Geteilte Helfer für die Graph-Labs
+   Schichten: sensory(in) · inter 16 · command 8 · motor 2  (run_benchmark.py:64-70)
+   ============================================================ */
+const NCP_LAYERS = [
+  {key:'sensory', n:6,  label:'sensory'},   // visuelle Stellvertreter für den Eingang
+  {key:'inter',   n:16, label:'inter 16'},
+  {key:'command', n:8,  label:'command 8'},
+  {key:'motor',   n:2,  label:'motor 2'},
+];
+
+/* Knotenpositionen (Datenkoordinaten x∈[0,1], y∈[0,1]) je Schicht */
+function layerNodes(layer, xi){
+  const pts=[]; const N=layer.n;
+  for(let i=0;i<N;i++){
+    const y = N===1 ? 0.5 : 0.06 + 0.88*(i/(N-1));
+    pts.push([xi, y]);
+  }
+  return pts;
+}
+
+/* ============================================================
+   LAB 1 · Wiring-Graph — dense vs. NCP-Maske
+   Zeichnet vier Knotenspalten; dense = alle Kanten,
+   ncp = deterministische spärliche Maske (rng(42) + fanout//2 pro Quellknoten).
+   Reine Scope-Primitive (dot/seg/label) — keine Zell-Mathematik.
+   ============================================================ */
+function initWiring(){
+  const sc=new Scope('cv-wiring',{l:14,r:14,t:30,b:18});
+  const P={mode:'ncp', fanout:4};
+  const xcols=[0.08, 0.37, 0.66, 0.93];
+
+  /* baue die spärliche NCP-Maske deterministisch:
+     pro Quellknoten min(fanout//2 +1, ndst) Ziele, ausgewählt via rng(42). */
+  function buildMask(srcLayer, dstLayer){
+    const r=rng(42 + srcLayer.n*100 + dstLayer.n); // stabil je Schichtpaar
+    const ndst=dstLayer.n;
+    const perSrc = Math.max(1, Math.min(ndst, Math.floor(P.fanout/2)+1));
+    const edges=[];
+    for(let s=0;s<srcLayer.n;s++){
+      const chosen=new Set();
+      while(chosen.size<perSrc){ chosen.add(Math.floor(r()*ndst)); }
+      chosen.forEach(d=>edges.push([s,d]));
+    }
+    return edges;
+  }
+  function denseEdges(srcLayer,dstLayer){
+    const e=[]; for(let s=0;s<srcLayer.n;s++) for(let d=0;d<dstLayer.n;d++) e.push([s,d]); return e;
+  }
+
+  function counts(){
+    let dE=0, nE=0;
+    for(let L=0;L<NCP_LAYERS.length-1;L++){
+      dE += NCP_LAYERS[L].n*NCP_LAYERS[L+1].n;
+      nE += buildMask(NCP_LAYERS[L], NCP_LAYERS[L+1]).length;
+    }
+    return {dE, nE};
+  }
+
+  function draw(){
+    sc.clear(); sc.range(0,1,0,1);
+    const cols=xcols.map((x,i)=>layerNodes(NCP_LAYERS[i],x));
+    // Kanten zuerst (hinter den Knoten)
+    for(let L=0;L<NCP_LAYERS.length-1;L++){
+      const A=cols[L], B=cols[L+1];
+      const edges = P.mode==='dense' ? denseEdges(NCP_LAYERS[L],NCP_LAYERS[L+1])
+                                     : buildMask(NCP_LAYERS[L],NCP_LAYERS[L+1]);
+      const col = P.mode==='dense' ? COL.line : COL.ncp;
+      sc.ctx.globalAlpha = P.mode==='dense' ? 0.35 : 0.6;
+      edges.forEach(([s,d])=>{ sc.seg(A[s][0],A[s][1],B[d][0],B[d][1],col,P.mode==='dense'?0.6:1.0); });
+      sc.ctx.globalAlpha=1;
+    }
+    // Knoten
+    const cset=[COL.cfc, COL.ncp, COL.lrc, COL.lstm];
+    cols.forEach((pts,i)=>{
+      pts.forEach(p=>{ sc.dot(p[0],p[1], cset[i], 4); sc.ring(p[0],p[1], cset[i], 4.4, 1); });
+      sc.text(NCP_LAYERS[i].label, sc.X(xcols[i]), 18, cset[i], 'center', '600 11px JetBrains Mono');
+    });
+    // Brücken-Hinweise
+    if(P.mode==='ncp'){
+      sc.text('SparseLinear', sc.X(0.515), sc.h-6, COL.sub, 'center', '500 9px JetBrains Mono');
+      sc.text('SparseLinear', sc.X(0.795), sc.h-6, COL.sub, 'center', '500 9px JetBrains Mono');
+    }
+  }
+
+  function refresh(){
+    const c=counts();
+    $('#wir-edense').textContent=c.dE;
+    $('#wir-encp').textContent=c.nE;
+    const sp = c.dE>0 ? (1 - c.nE/c.dE) : 0;
+    $('#wir-sparse').textContent=(sp*100).toFixed(0)+' %';
+    $('#wir-status').textContent = P.mode==='dense' ? 'dense (alle Kanten)' : 'NCP-Maske · '+(sp*100).toFixed(0)+' % spärlich';
+    draw();
+  }
+
+  seg('wir-mode',v=>{ P.mode=v; refresh(); });
+  bind('wir-fan','wir-fan-v',v=>{ P.fanout=Math.round(v); refresh(); },0);
+  whenVisible('lab-wiring', refresh);
+  sc.onresize=draw;
+}
+
+/* ============================================================
+   LAB 2 · Sparsity skaliert — Kantenzahl vs. Fanout
+   Vergleicht n·n (dense) gegen n·fanout (NCP-Brücke) über n.
+   Reine Scope-Primitive — keine Zell-Mathematik.
+   ============================================================ */
+function initScale(){
+  const sc=new Scope('cv-scale',{l:50,r:16,t:18,b:26});
+  const P={fanout:4, n:16};
+  const NMAX=40;
+
+  function draw(){
+    const ymax = NMAX*NMAX; // 1600
+    sc.clear(); sc.range(0,NMAX,0,ymax);
+    sc.grid(4,4,{yd:0,xl:true,xd:0});
+    // dense-Kurve n^2 vs. NCP n*fanout
+    const dPts=[], nPts=[];
+    for(let n=1;n<=NMAX;n++){ dPts.push([n, n*n]); nPts.push([n, n*P.fanout]); }
+    sc.path(dPts, COL.ct, 2.4);
+    sc.area(nPts, COL.ncp, 0, 0.12);
+    sc.path(nPts, COL.ncp, 2.8);
+    // aktueller n-Marker
+    sc.vline(P.n, COL.faint, 1, [4,4]);
+    const ed=P.n*P.n, en=P.n*P.fanout;
+    sc.dot(P.n, ed, COL.ct, 4); sc.dot(P.n, en, COL.ncp, 4.5);
+    sc.label('dense  n·n', NMAX*0.5, ymax*0.78, COL.ct, 'left');
+    sc.label('NCP  n·fanout', NMAX*0.5, en+ymax*0.05, COL.ncp, 'left');
+    sc.text('Schichtgröße n', sc.w/2, sc.h-4, COL.sub, 'center', '500 10px JetBrains Mono');
+  }
+
+  function refresh(){
+    const ed=P.n*P.n, en=P.n*P.fanout;
+    $('#scl-edense').textContent=ed;
+    $('#scl-encp').textContent=en;
+    const save = ed>0 ? (1-en/ed)*100 : 0;
+    $('#scl-save').textContent=save.toFixed(0)+' %';
+    $('#scl-status').textContent='fanout = '+P.fanout+' · n = '+P.n;
+    draw();
+  }
+
+  bind('scl-fan','scl-fan-v',v=>{ P.fanout=Math.round(v); refresh(); },0);
+  bind('scl-n','scl-n-v',v=>{ P.n=Math.round(v); refresh(); },0);
+  whenVisible('lab-scale', refresh);
+  sc.onresize=draw;
+}
+
+LR.boot([initWiring, initScale]);
+</script>
+</body>
+</html>

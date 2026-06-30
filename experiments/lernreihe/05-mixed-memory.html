@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>05 · Mixed Memory (ODE-LSTM)</title>
+<meta name="description" content="Vorlesung 05: Mixed Memory (ODE-LSTM) — ein LSTM-Speicherpfad c wird um eine innere ODE-Zelle (LTC oder LRC) gelegt, sodass der Gradient entlang c nie durch die ODE-Jacobi muss. Der architektonische Fix gegen vanishing/exploding bei BPTT durch die ODE, interaktiv erklärt.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lecture="05">
+
+<!-- ============================ HERO ============================ -->
+<header class="hero">
+  <canvas class="hero-canvas" data-c1="#0f9d6b" data-c2="#be123c" data-c3="#2563eb"></canvas>
+  <div class="hero-inner">
+    <div class="hero-kicker reveal"><span class="lecnum">Vorlesung 05</span> Liquide Zellen · Hybrid-Architektur</div>
+    <h1 class="hero-title reveal">Mixed Memory:<br>ein Gedächtnis, das die ODE <span class="liquid">umfährt</span></h1>
+    <p class="hero-sub reveal">In Vorlesung 01 war das Problem der vanishing gradient durch das Jacobi-Produkt.
+    In 02 löste das LSTM es mit einem additiven Speicherpfad <em>c</em>. Jetzt kommt beides zusammen:
+    Der LSTM-Speicher <em>c</em> hält die Erinnerung über einen geraden Highway, eine innere ODE-Zelle
+    (LTC oder LRC) übernimmt nur die kontinuierliche Dynamik in <em>h</em>. Der Gradient nimmt den Highway —
+    nie die Jacobi des Solvers.</p>
+    <div class="hero-meta reveal">
+      <span class="hero-pill"><span class="dot" style="background:var(--lstm)"></span>c-Pfad · reines LSTM-Gating</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--cfc)"></span>h-Pfad · innere ODE (LTC/LRC)</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--ct)"></span>ODE-LSTM · Lechner &amp; Hasani 2020</span>
+    </div>
+  </div>
+  <div class="scroll-hint"><span>Scrollen</span><span class="line"></span></div>
+</header>
+
+<!-- ============================ 0 · EINSTIEG ============================ -->
+<section id="intro" data-toc="Einstieg">
+  <div class="wrap">
+    <div class="eyebrow reveal">Worum es geht</div>
+    <h2 class="reveal">Zwei Lösungen, eine Architektur</h2>
+    <p class="lead reveal">Die letzten Vorlesungen haben zwei Probleme und zwei Antworten geliefert. Vorlesung 01:
+    Ein gewöhnliches RNN vergisst, weil der Gradient über viele Schritte durch ein Produkt von Jacobi-Matrizen
+    läuft und schrumpft oder explodiert. Vorlesung 02: Das LSTM rettet die Erinnerung über einen <em>additiven</em>
+    Speicherpfad <span class="mono">c</span>, das Constant Error Carousel. Vorlesung 03/04: Liquide Zellen
+    bringen kontinuierliche Zeit ins Spiel — aber ihre Dynamik <em>ist</em> eine ODE, und der Gradient durch
+    einen ODE-Solver hat wieder genau das Jacobi-Problem.</p>
+
+    <p class="reveal">Mixed Memory verbindet beides in einer Zelle. Das LSTM behält den Speicher
+    <span class="mono">c</span> und seinen geraden Gradientenpfad. Die ODE-Zelle wird <em>innen</em>
+    eingehängt und kümmert sich nur um die kontinuierliche Entwicklung des Zustands <span class="mono">h</span>.
+    Entscheidend: Der Gradient, der die Erinnerung über die Zeit trägt, läuft über <span class="mono">c</span> —
+    und <strong>der c-Pfad berührt die ODE nie</strong>.</p>
+
+    <div class="callout reveal">
+      <div class="ctag">Das Versprechen dieser Seite</div>
+      <p style="margin-bottom:.6em">Am Ende verstehst du drei Dinge konkret: <strong>(1)</strong> wie die
+      Zelle Schritt für Schritt rechnet — erst LSTM-Gates, dann innere ODE — und warum die Reihenfolge wichtig
+      ist; <strong>(2)</strong> warum der Speicher <span class="mono">c</span> die ODE-Box buchstäblich
+      <em>umgeht</em>, sodass kein Solver-Jacobi im Gradientenpfad steht; <strong>(3)</strong> warum dasselbe
+      <span class="mono">c</span> bei verschiedenem <span class="mono">Δt</span> identisch bleibt, der Zustand
+      <span class="mono">h</span> aber nicht — ein Eigenschafts-Beweis aus deinem Test.</p>
+      <p style="margin-bottom:0">Jedes Lab nutzt die echten Integratoren <code>stepLSTM</code> (für c) und
+      <code>stepLTC</code> (für die h-Evolution) aus der Engine.</p>
+    </div>
+
+    <div class="legend reveal">
+      <div class="li"><span class="src src-paper">Paper</span> Originalarbeit / Paper-Notiz</div>
+      <div class="li"><span class="src src-code">Code</span> exakt aus deiner Implementierung</div>
+      <div class="li"><span class="src src-dr">Deep-Research</span> LLM-Recherche, zu prüfen</div>
+      <div class="li"><span class="src src-classic">klassisch</span> Lehrbuchwissen</div>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 1 · DER SCHRITT ============================ -->
+<section id="step" data-toc="Der Schritt">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--lstm);color:var(--lstm)"><span class="section-num">01</span> &nbsp;Was ein Schritt konkret tut</div>
+    <h2 class="reveal">Erst gaten, dann fließen lassen</h2>
+    <p class="reveal">Die Mixed-Memory-Zelle folgt dem ODE-LSTM-Muster von
+    <span class="src src-paper" title="Lechner & Hasani, Learning Long-Term Dependencies in Irregularly-Sampled Time Series, NeurIPS 2020, arXiv:2006.04418">Paper · Lechner&amp;Hasani 2020</span>.
+    Ein Schritt zerfällt in drei Teile, wörtlich aus deinem Code
+    <span class="src src-code" title="mixed_memory_cell.py:62-76 — call()">Code · mixed_memory_cell.py:62</span>:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">mixed_memory_cell.py · call</span><span class="ref">Zeilen 62–76</span></div>
+<pre><span class="k">def</span> <span class="f">call</span>(self, inputs, states):
+    <span class="c"># ... inputs ggf. als (x, elapsed_time) für irreguläres Sampling</span>
+    h, c = states
+
+<span class="hl">    _, lstm_states = self._lstm(x, [h, c])     <span class="c"># 1) LSTM-Gates aus (x,[h,c])</span></span>
+<span class="hl">    h_cand, new_c = lstm_states                <span class="c">#    -> Kandidat h_cand und neuer Speicher new_c</span></span>
+
+<span class="hl">    output, inner_states = self._inner(inner_inputs, [h_cand])  <span class="c"># 2) innere ODE evolviert h_cand</span></span>
+<span class="hl">    new_h = inner_states[0]                     <span class="c">#    über elapsed_time -> new_h</span></span>
+    <span class="k">return</span> output, [new_h, new_c]          <span class="c"># 3) Rückgabe-State [new_h, new_c]</span></pre>
+    </div>
+    <p class="code-cap reveal">Drei Zeilen, drei Aussagen. <span class="mono">new_c</span> entsteht <em>allein</em> aus dem
+    LSTM-Gating. <span class="mono">new_h</span> entsteht aus dem Kandidaten <span class="mono">h_cand</span>,
+    den die innere ODE über die verstrichene Zeit weiterintegriert.
+    <span class="src src-code">Code · mixed_memory_cell.py:62</span></p>
+
+    <div class="eq reveal" style="--accent:var(--lstm)">
+      <div class="eq-label"><span>Mixed-Memory-Schritt · zwei getrennte Aktualisierungen</span><span class="src src-code">Code</span></div>
+      <div data-eq="\big(h_{\text{cand}},\,c_{t+1}\big) = \mathrm{LSTM}\big(x_t,[h_t,c_t]\big)\,,\qquad h_{t+1} = \mathrm{ODE}\big(h_{\text{cand}};\,x_t,\Delta t\big)"></div>
+    </div>
+
+    <p class="reveal">Der Zustandsvektor der Zelle ist also <em>zweigeteilt</em>:
+    <span class="src src-code" title="mixed_memory_cell.py:38-40 state_size = [units, units]">Code · mixed_memory_cell.py:38</span></p>
+
+    <div class="eq reveal" style="--accent:var(--lstm)">
+      <div class="eq-label"><span>State-Size = [units, units] = [h, c]</span><span class="src src-code">Code</span></div>
+      <div data-eq="\texttt{state\_size} = [\,\underbrace{\text{units}}_{h\ \text{(ODE-Pfad)}}\,,\ \underbrace{\text{units}}_{c\ \text{(LSTM-Speicher)}}\,]"></div>
+    </div>
+
+    <p class="reveal">Zwei Subklassen unterscheiden sich nur in der inneren Zelle
+    <span class="src src-code" title="mixed_memory_cell.py:79-90 MM_LTC_Cell(inner=LTC_Cell), MM_LRC_Cell(inner=LRC_Cell)">Code · mixed_memory_cell.py:79</span>:
+    <span class="mono" style="color:var(--ltc)">MM_LTC_Cell</span> hängt eine
+    <a href="03-ltc-lrc.html" style="color:var(--ltc)">LTC</a> als ODE ein,
+    <span class="mono" style="color:var(--lrc)">MM_LRC_Cell</span> eine
+    <a href="03-ltc-lrc.html" style="color:var(--lrc)">LRC</a>. Der LSTM-Speicherpfad bleibt in beiden Fällen
+    identisch — er kommt direkt aus Vorlesung <a href="02-lstm-gru.html" style="color:var(--lstm)">02</a>.</p>
+
+    <div class="callout reveal">
+      <div class="ctag">Warum die Reihenfolge zählt</div>
+      <p style="margin-bottom:0">Das LSTM sieht den <em>alten</em> Zustand <span class="mono">[h, c]</span> und
+      produziert <span class="mono">h_cand</span> und <span class="mono">new_c</span>. Die ODE bekommt
+      <span class="mono">h_cand</span> als Startwert ihres Zustands-Slots — der ODE-Zustand <em>ist</em> der
+      verborgene Zustand <span class="mono">h</span>. Der Speicher <span class="mono">new_c</span> wird danach
+      unverändert weitergereicht. Damit liegt die kontinuierliche Dynamik komplett in <span class="mono">h</span>,
+      und das additive Gedächtnis komplett in <span class="mono">c</span>.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 2 · ARCHITEKTUR-DIAGRAMM ============================ -->
+<section id="arch" data-toc="Architektur">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--cfc);color:var(--cfc)"><span class="section-num">02</span> &nbsp;Der c-Highway, der die ODE umgeht</div>
+    <h2 class="reveal">Das Diagramm, das alles erklärt</h2>
+    <p class="reveal">Eine Box-und-Pfeil-Skizze macht den entscheidenden Punkt sichtbar. Die Eingabe
+    <span class="mono">x</span> und der alte Zustand <span class="mono">[h, c]</span> gehen in die LSTM-Gates.
+    Daraus fallen zwei Dinge: ein Kandidat <span class="mono">h_cand</span> und der neue Speicher
+    <span class="mono">new_c</span>. Nur <span class="mono">h_cand</span> läuft in die innere ODE-Box und wird
+    zu <span class="mono">new_h</span>. Der Speicher <span class="mono">new_c</span> nimmt einen
+    <strong>geraden Weg um die ODE-Box herum</strong> — den c-Highway.</p>
+
+    <p class="reveal">Im Lab wandert ein Token durch die Architektur. Schalte auf den
+    <strong>Gradientenpfad</strong>, und du siehst, welchen Weg die Erinnerung rückwärts nimmt: über den
+    Highway, nie durch die ODE.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-arch">
+      <div class="lab-head"><span class="led"></span><span class="title">Architektur · der c-Pfad umfährt die ODE</span><span class="sub" id="arch-status">Vorwärtspass</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-arch"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Innere ODE-Zelle</label>
+            <div class="seg" id="arch-inner"><button data-v="ltc" class="on">LTC</button><button data-v="lrc">LRC</button></div>
+          </div>
+          <div class="ctrl"><label>Fluss zeigen</label>
+            <div class="seg" id="arch-flow"><button data-v="fwd" class="on">Vorwärts (Daten)</button><button data-v="bwd">Rückwärts (Gradient)</button></div>
+          </div>
+          <div class="ctrl"><label>Token-Tempo <span class="val" id="arch-spd-v">1.0</span></label><input type="range" id="arch-spd" class="acc-cfc" min="0.3" max="2.5" step="0.1" value="1.0"></div>
+          <div class="lab-readout" id="arch-read">
+            Pfad <span class="big k" id="arch-path">c-Highway</span><br>
+            <span class="dim" id="arch-note">Der Speicher c geht an der ODE-Box vorbei.</span>
+          </div>
+          <div class="lab-task">Schalte auf <b>Rückwärts (Gradient)</b>: der Token nimmt den
+          <b style="color:var(--lstm)">c-Highway</b> und passiert die <b style="color:var(--cfc)">ODE-Box nie</b>.
+          Genau deshalb sieht der Gradient entlang c keine Solver-Jacobi — der Fix gegen
+          vanishing/exploding aus Vorlesung <a href="01-rnn-vanishing-gradient.html">01</a>.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Boxen und Pfeile mit Scope-Primitiven gezeichnet, keine Zell-Mathematik.
+  Rot: c-Pfad (LSTM-Speicher). Grün: ODE-Box. Der Token zeigt die Flussrichtung.
+  <span class="src src-code">Code · mixed_memory_cell.py:62-76</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 3 · THEORIE GRADIENT ============================ -->
+<section id="theory" data-toc="Gradient & Jacobi">
+  <div class="wrap">
+    <div class="eyebrow reveal"><span class="section-num">03</span> &nbsp;Warum das gegen vanishing/exploding hilft</div>
+    <h2 class="reveal">Der Gradient sieht keine ODE-Jacobi</h2>
+    <p class="reveal">Vorlesung 01 hat die Wurzel gezeigt: Bei BPTT wandert der Fehler rückwärts durch ein
+    Produkt von Jacobi-Matrizen <span class="mono">∂h_{t}/∂h_{t-1}</span>. Ist das Produkt im Mittel kleiner
+    als 1, verschwindet der Gradient; größer als 1, explodiert er. Bei einer reinen ODE-Zelle ist jede dieser
+    Jacobi die <em>Ableitung des Solver-Schritts</em> — und genau die kann steif werden (Vorlesung 03,
+    fused Solver, ode_unfolds).</p>
+
+    <p class="reveal">Im Mixed-Memory-Pfad ist der Speicher-Update <span class="mono">c</span> aber rein additiv-gegatet
+    — das Constant Error Carousel aus Vorlesung <a href="02-lstm-gru.html" style="color:var(--lstm)">02</a>.
+    Der Gradient, der die lange Zeitabhängigkeit trägt, fließt über <span class="mono">c</span>, und auf
+    diesem Weg steht <strong>keine ODE-Jacobi</strong>:</p>
+
+    <div class="eq reveal" style="--accent:var(--lstm)">
+      <div class="eq-label"><span>Gradient entlang des c-Highways — ohne Solver-Jacobi</span><span class="src src-paper">Paper</span></div>
+      <div data-eq="\frac{\partial c_{t}}{\partial c_{t-1}} = \underbrace{f_t}_{\text{forget-gate}} \quad\not\supseteq\quad \frac{\partial}{\partial h}\,\mathrm{ODE}(\cdot)\ \text{(Jacobi des Solvers)}"></div>
+    </div>
+
+    <p class="reveal">Lechner &amp; Hasani begründen das formal: Weil der additive Gedächtnispfad und die
+    kontinuierliche Dynamik <em>getrennte</em> Zustände bewohnen, kann der Gradient entlang
+    <span class="mono">c</span> nie durch die Jacobi des ODE-Solvers laufen. Das ist der
+    <strong>architektonische Fix</strong> für das vanishing/exploding-Problem bei BPTT durch die ODE.
+    <span class="src src-paper" title="Lechner & Hasani 2020, ODE-LSTM, arXiv:2006.04418, Theorem 1/2 — der Speicherpfad isoliert den Gradienten von den Solver-Jacobi-Matrizen">Paper · Lechner&amp;Hasani 2020, Thm 1/2</span></p>
+
+    <div class="callout insight reveal">
+      <div class="ctag">Der Kern in einem Satz</div>
+      <p style="margin-bottom:0">Eine reine ODE-Zelle <em>muss</em> ihren Gradienten durch den Solver schicken;
+      eine Mixed-Memory-Zelle bietet dem Gradienten einen zweiten, geraden Weg über <span class="mono">c</span>.
+      Die ODE liefert weiterhin die kontinuierliche Ausdruckskraft in <span class="mono">h</span> — aber sie ist
+      nicht mehr der einzige Tunnel, durch den die Erinnerung zurückmuss.</p>
+    </div>
+
+    <div class="callout warn reveal">
+      <div class="ctag">Vereinfachung im Lab — ehrlich markiert</div>
+      <p style="margin-bottom:0">Die Engine-Integratoren <code>stepLSTM</code> und <code>stepLTC</code> sind
+      skalare Reduktionen (1 Neuron). Die <em>Form</em> der Trennung — c rein additiv-gegatet, h durch die ODE —
+      ist identisch mit dem Vektor-Code. Das Backprop-Argument selbst wird nicht numerisch nachgerechnet,
+      sondern als Eigenschaft des Vorwärtspasses gezeigt: Wenn c im Vorwärtspass die ODE nicht berührt
+      (nächstes Lab), kann es auch der Gradient nicht.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 4 · DT-INVARIANZ ============================ -->
+<section id="dtinv" data-toc="dt-Invarianz von c">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--lstm);color:var(--lstm)"><span class="section-num">04</span> &nbsp;Der Beweis, dass c die ODE nicht sieht</div>
+    <h2 class="reveal">Gleiches x, anderes Δt — c bleibt gleich, h nicht</h2>
+    <p class="reveal">Die saubere Probe, dass der Speicher die ODE wirklich umgeht: Halte
+    <span class="mono">x</span> und den alten Zustand <span class="mono">[h, c]</span> fest und variiere nur das
+    Zeitintervall <span class="mono">Δt</span>. Dein Test prüft genau das
+    <span class="src src-code" title="tests/neurons/test_cells.py:383-393 test_mm_memory_path_isolated_from_ode">Code · test · mixed_memory_cell.py</span>:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">test_cells.py · test_mm_memory_path_isolated_from_ode</span><span class="ref">Zeilen 383–393</span></div>
+<pre><span class="c"># gleiches x, gleicher Zustand (h,c) — nur dt unterschiedlich</span>
+_, s1 = cell((x, <span class="s">1.0</span>), state)
+_, s2 = cell((x, <span class="s">0.1</span>), state)
+<span class="hl"><span class="c"># new_c IDENTISCH über dt: c ist reines LSTM-Gating, dt-unabhängig</span></span>
+<span class="hl"><span class="k">assert</span> <span class="f">all</span>(<span class="f">abs</span>(s1[<span class="s">1</span>] - s2[<span class="s">1</span>]) &lt; 1e-7)        <span class="c"># s[1] = new_c</span></span>
+<span class="c"># Gegenprobe (test_mm_ltc_irregular_sampling):</span>
+<span class="c"># new_h UNTERSCHEIDLICH über dt — h geht durch die ODE</span>
+<span class="k">assert</span> <span class="k">not</span> <span class="f">all</span>(<span class="f">abs</span>(s1[<span class="s">0</span>] - s2[<span class="s">0</span>]) &lt; 1e-7)  <span class="c"># s[0] = new_h</span></pre>
+    </div>
+    <p class="code-cap reveal">Zwei Tests, eine Aussage: <span class="mono">new_c</span> ist über
+    <span class="mono">Δt</span> identisch (kein <span class="mono">dt</span> im LSTM-Update),
+    <span class="mono">new_h</span> variiert (geht durch die ODE).
+    <span class="src src-code">Code · tests/neurons/test_cells.py:371-393</span></p>
+
+    <p class="reveal">Im Lab rechnest du dasselbe mit den echten Integratoren nach: <span class="mono">stepLSTM</span>
+    für den Speicher (nutzt <em>kein</em> <span class="mono">dt</span>), <span class="mono">stepLTC</span> für die
+    h-Evolution (nutzt <span class="mono">dt</span>). Dreh am Δt-Slider und beobachte: die roten c-Balken
+    stehen still, die grünen h-Balken wandern.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-dt">
+      <div class="lab-head"><span class="led"></span><span class="title">dt-Invarianz · c steht, h wandert</span><span class="sub" id="dt-status">Δt variiert</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-dt"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Aktuelles Δt <span class="val" id="dt-dt-v">1.00</span></label><input type="range" id="dt-dt" class="acc-lstm" min="0.05" max="2.0" step="0.05" value="1.0"></div>
+          <div class="ctrl"><label>Eingabe x <span class="val" id="dt-x-v">0.80</span></label><input type="range" id="dt-x" class="acc-lstm" min="-1.5" max="1.5" step="0.05" value="0.8"></div>
+          <div class="lab-readout">
+            new_c bei diesem Δt <span class="big k" id="dt-c">—</span><br>
+            new_h bei diesem Δt <span class="big" style="color:var(--cfc)" id="dt-h">—</span><br>
+            <span class="dim">c-Spanne über alle Δt <span class="k" id="dt-cspan">—</span> · h-Spanne <span style="color:var(--cfc)" id="dt-hspan">—</span></span>
+          </div>
+          <div class="lab-task">Dreh <b>Δt</b> von klein nach groß. Die <b style="color:var(--lstm)">roten c-Balken</b>
+          bleiben deckungsgleich (c-Spanne ≈ 0), die <b style="color:var(--cfc)">grünen h-Balken</b> spreizen sich
+          (h-Spanne &gt; 0). Genau das prüft <code>test_mm_memory_path_isolated_from_ode</code>.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Pro Δt-Wert ein Balkenpaar: rot = <span class="mono">new_c</span> (stepLSTM, kein dt),
+  grün = <span class="mono">new_h</span> (stepLTC, evolviert über dt). Die graue Linie verbindet die c-Balken —
+  sie liegt waagrecht. <span class="src src-code">Code · mixed_memory_cell.py · test_cells.py</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 5 · SYNTHESE ============================ -->
+<section id="synthesis" data-toc="mm_ltc vs mm_lrc">
+  <div class="wrap">
+    <div class="eyebrow reveal"><span class="section-num">05</span> &nbsp;Zwei Pfade, zwei Aufgaben</div>
+    <h2 class="reveal">mm_ltc und mm_lrc — was c hält, was h evolviert</h2>
+    <p class="reveal">Beide Varianten teilen denselben LSTM-Speicherpfad und unterscheiden sich nur in der
+    inneren ODE-Zelle. Die Tabelle trennt sauber, welcher Pfad welche Aufgabe übernimmt und wie er von
+    <span class="mono">Δt</span> abhängt.</p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>Aspekt</th>
+        <th><span class="cmp-head"><span class="dot" style="background:var(--lstm)"></span>c-Pfad (Speicher)</span></th>
+        <th><span class="cmp-head"><span class="dot" style="background:var(--cfc)"></span>h-Pfad (innere ODE)</span></th></tr></thead>
+      <tbody>
+        <tr><th>Was passiert</th><td>LSTM-Gating, additiver Speicher (CEC)</td><td>kontinuierliche ODE-Dynamik</td></tr>
+        <tr><th>Update-Quelle</th><td class="mono">self._lstm(x,[h,c])</td><td class="mono">self._inner(inputs,[h_cand])</td></tr>
+        <tr><th>Δt-Abhängigkeit</th><td class="good">keine — c identisch über Δt</td><td class="mono">ja — h evolviert über elapsed_time</td></tr>
+        <tr><th>Gradient sieht…</th><td class="good">keine Solver-Jacobi (Highway)</td><td>ODE-Jacobi (lokal, kurzer Pfad)</td></tr>
+        <tr><th>mm_ltc · innere Zelle</th><td>identisches LSTM</td><td><span style="color:var(--ltc)">LTC</span> · fused, ode_unfolds=6</td></tr>
+        <tr><th>mm_lrc · innere Zelle</th><td>identisches LSTM</td><td><span style="color:var(--lrc)">LRC</span> · Sättigung + elastance ε</td></tr>
+        <tr><th>Quelle</th><td><span class="src src-code">mixed_memory_cell.py:71</span></td><td><span class="src src-code">mixed_memory_cell.py:74</span></td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="lab-caption reveal"><span class="mono">MM_LTC_Cell</span> / <span class="mono">MM_LRC_Cell</span> setzen
+    nur die innere Zelle (LTC bzw. LRC); der Speicherpfad ist in beiden gleich.
+    <span class="src src-code">Code · mixed_memory_cell.py:79-90</span></p>
+
+    <div class="callout good reveal">
+      <div class="ctag" style="color:var(--ncp)">Wohin als Nächstes</div>
+      <p style="margin-bottom:0">Bis hier ging es um <em>eine</em> Zelle und <em>einen</em> Speicher. Vorlesung
+      <strong>06 · NCP</strong> wechselt die Perspektive: nicht <em>was</em> ein Neuron rechnet, sondern
+      <em>wie</em> viele Neuronen spärlich verdrahtet werden — sensory → inter → command → motor, mit fixer
+      Maske statt voller Verbindung.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ QUELLEN ============================ -->
+<section id="sources" data-toc="Quellen">
+  <div class="wrap">
+    <div class="eyebrow reveal">Belege</div>
+    <h2 class="reveal">Quellen dieser Vorlesung</h2>
+    <div class="bib reveal">
+      <div class="bib-item"><div class="bib-key">Lechner&amp;Hasani 2020</div><div class="bib-cite">
+        <div class="t">Learning Long-Term Dependencies in Irregularly-Sampled Time Series (ODE-LSTM)</div>
+        <div class="meta">Lechner, Hasani · NeurIPS 2020 · arXiv:2006.04418</div>
+        <div class="where">Mixed-Memory-Muster: LSTM-Speicherpfad c + innere CT-Zelle für h; Gradient umgeht die ODE-Jacobi (Thm 1/2). Referenzimplementierung github.com/mlech26l/ode-lstms · in references.bib prüfen</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Hasani2020</div><div class="bib-cite">
+        <div class="t">Liquid Time-constant Networks</div>
+        <div class="meta">Hasani, Lechner, Amini, Rus, Grosu · AAAI 2021 · arXiv:2006.04439</div>
+        <div class="where">Innere ODE-Zelle von MM_LTC: Conductance-ODE, fused Solver, ode_unfolds · Vorlesung 03</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">farsang2024liquid</div><div class="bib-cite">
+        <div class="t">Liquid Resistance Liquid Capacitance Networks</div>
+        <div class="meta">Farsang, Neubauer, Grosu · NeuroAI@NeurIPS 2024 · arXiv:2403.08791</div>
+        <div class="where">Innere ODE-Zelle von MM_LRC: Sättigung + liquid elastance ε · Vorlesung 03</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Code</div><div class="bib-cite">
+        <div class="t">Eigene Implementierung</div>
+        <div class="meta">code/src/neurons/mixed_memory_cell.py · tests/neurons/test_cells.py</div>
+        <div class="where">call() Zeilen 62–76, state_size Zeilen 38–40, MM_LTC/MM_LRC Zeilen 79–90, dt-Invarianz-Test Zeilen 383–393 — wörtlich zitiert</div>
+      </div></div>
+    </div>
+    <p class="note reveal">Die Labs reduzieren die echten Vektor-Updates auf ein Neuron: <code>stepLSTM</code> hält den
+    Speicher <span class="mono">c</span> (rein gegatet, kein <span class="mono">dt</span>), <code>stepLTC</code>
+    evolviert den Zustand <span class="mono">h</span> über <span class="mono">Δt</span>. Das Architektur-Diagramm
+    ist mit Scope-Primitiven gezeichnet und enthält keine Zell-Mathematik. Die <em>Trennung</em> der beiden
+    Pfade — additiver Speicher vs. ODE-Dynamik — ist identisch mit dem Code.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="f-title">Vorlesung 05 · Mixed Memory (ODE-LSTM)</div>
+  <p>Teil der interaktiven Lernreihe zur Masterarbeit. Der c-Highway umfährt die ODE — der Gradient nimmt ihn.</p>
+  <p class="mono">mixed_memory_cell.py · Lechner &amp; Hasani 2020 · arXiv:2006.04418</p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
+<script src="assets/engine.js"></script>
+<script>
+/* ============================================================
+   LAB 1 · Architektur-Diagramm — der c-Pfad umfährt die ODE
+   Nur Scope-Primitive (seg/arrow/dot/label/text). Keine Zell-Mathematik.
+   ============================================================ */
+function initArch(){
+  const sc=new Scope('cv-arch',{l:10,r:10,t:14,b:14});
+  const P={inner:'ltc', flow:'fwd', spd:1.0};
+  // Box-Layout in Datenkoordinaten [0..100] x [0..100]
+  const B={
+    x:    {x:8,  y:50, w:11, h:14, lab:'x', col:COL.data},
+    state:{x:8,  y:22, w:13, h:12, lab:'[h, c]', col:COL.sub},
+    gate: {x:34, y:50, w:18, h:22, lab:'LSTM-Gates', col:COL.lstm},
+    ode:  {x:70, y:66, w:20, h:18, lab:'innere ODE', col:COL.cfc},
+    newc: {x:90, y:24, w:9,  h:12, lab:'new_c', col:COL.lstm},
+    newh: {x:94, y:66, w:8,  h:12, lab:'new_h', col:COL.cfc},
+  };
+  function box(b){
+    const c=sc.ctx;
+    c.save();
+    c.fillStyle=b.col; c.strokeStyle=b.col; c.lineWidth=2;
+    const x0=sc.X(b.x-b.w), y0=sc.Y(b.y+b.h), w=sc.X(b.x+b.w)-x0, h=sc.Y(b.y-b.h)-y0;
+    c.beginPath();
+    if(c.roundRect) c.roundRect(x0,y0,w,h,8); else c.rect(x0,y0,w,h);
+    c.globalAlpha=0.10; c.fill(); c.globalAlpha=1; c.stroke();
+    c.restore();
+    sc.label(b.lab, b.x, b.y, b.col, 'center', '600 12px JetBrains Mono');
+  }
+  // Wegpunkte für die animierten Token (Datenkoordinaten)
+  function paths(){
+    // c-Highway: state -> gate -> (hoch, über die ODE hinweg) -> new_c
+    const hwy=[ [21,22],[27,30],[34,40],[52,55],[64,62],[74,30],[86,24] ];
+    // ode-Pfad: gate(h_cand) -> ode -> new_h
+    const odePath=[ [52,50],[60,58],[60,66],[90,66] ];
+    return {hwy, odePath};
+  }
+  let raf, phase=0;
+  function tokenAt(arr, u){
+    // u in [0,1] entlang der Polylinie
+    const segN=arr.length-1; const s=clamp(u,0,1)*segN; const i=Math.min(Math.floor(s),segN-1); const f=s-i;
+    return [ lerp(arr[i][0],arr[i+1][0],f), lerp(arr[i][1],arr[i+1][1],f) ];
+  }
+  function draw(){
+    B.ode.lab = (P.inner==='ltc')?'LTC-ODE':'LRC-ODE';
+    B.ode.col = (P.inner==='ltc')?COL.ltc:COL.lrc;
+    sc.clear(); sc.range(0,100,0,100);
+    const {hwy, odePath}=paths();
+    const back = (P.flow==='bwd');
+
+    // --- Verbindungen ---
+    // x -> gate
+    sc.arrow(B.x.x+B.x.w, B.x.y, B.gate.x-B.gate.w, B.gate.y+4, COL.data, 2);
+    // state -> gate
+    sc.arrow(B.state.x+B.state.w, B.state.y, B.gate.x-B.gate.w, B.gate.y-12, COL.sub, 1.8);
+    // gate -> ode (nur h_cand)
+    sc.arrow(B.gate.x+B.gate.w, B.gate.y-2, B.ode.x-B.ode.w, B.ode.y+2, B.ode.col, 2.2);
+    sc.label('h_cand', (B.gate.x+B.ode.x)/2+1, (B.gate.y+B.ode.y)/2+9, B.ode.col, 'center','500 10px JetBrains Mono');
+    // ode -> new_h
+    sc.arrow(B.ode.x+B.ode.w, B.ode.y, B.newh.x-B.newh.w, B.newh.y, B.ode.col, 2.2);
+    // c-Highway: gate -> über die ODE hinweg -> new_c (dicker, markiert)
+    sc.seg(B.gate.x+B.gate.w-2, B.gate.y+12, 52, 55, COL.lstm, 3.4);
+    sc.seg(52,55, 64,62, COL.lstm, 3.4);
+    sc.seg(64,62, 74,30, COL.lstm, 3.4);
+    sc.arrow(74,30, B.newc.x-B.newc.w, B.newc.y, COL.lstm, 3.4);
+    sc.label('c-Highway (umgeht ODE)', 56, 70, COL.lstm, 'center','600 11px JetBrains Mono');
+
+    // --- Boxen ---
+    [B.x,B.state,B.gate,B.ode,B.newc,B.newh].forEach(b=>box(b));
+
+    // --- animierte Token ---
+    const u = (phase%1+1)%1;
+    const uu = back ? (1-u) : u;
+    // Token auf dem Highway
+    const tH = tokenAt(hwy, uu);
+    sc.dot(tH[0],tH[1], COL.lstm, 5.5); sc.ring(tH[0],tH[1], back?COL.accent:COL.lstm, 8, 2);
+    // Token auf dem ODE-Pfad
+    const tO = tokenAt(odePath, uu);
+    sc.dot(tO[0],tO[1], B.ode.col, back?3.5:5);
+
+    // Richtungs-Label am Highway-Token
+    sc.text(back?'Gradient':'Daten', sc.X(tH[0])+10, sc.Y(tH[1])-8, back?COL.accent:COL.lstm, 'left','600 10px JetBrains Mono');
+
+    // Readout
+    const path=$('#arch-path'), note=$('#arch-note'), st=$('#arch-status');
+    if(back){
+      path.textContent='c-Highway ← '; path.style.color=COL.accent;
+      note.innerHTML='Der Gradient läuft rückwärts über c — <b>nie durch die ODE-Jacobi</b>.';
+      st.textContent='Rückwärtspass (Gradient)';
+    } else {
+      path.textContent='c-Highway → '; path.style.color=COL.lstm;
+      note.innerHTML='Der Speicher c geht an der ODE-Box vorbei.';
+      st.textContent='Vorwärtspass (Daten)';
+    }
+  }
+  function frame(){
+    phase += 0.004*P.spd;
+    draw();
+    raf=requestAnimationFrame(frame);
+  }
+  seg('arch-inner', v=>{ P.inner=v; });
+  seg('arch-flow', v=>{ P.flow=v; });
+  bind('arch-spd','arch-spd-v', v=>P.spd=v, 1);
+  whenVisible('lab-arch', ()=>{ if(!raf) frame(); });
+}
+
+/* ============================================================
+   LAB 2 · dt-Invarianz des Speichers
+   c via stepLSTM (kein dt) ; h via stepLTC (über dt evolviert).
+   Konzeptuell faithful: der c-Pfad nutzt KEIN dt.
+   ============================================================ */
+function initDtInv(){
+  const sc=new Scope('cv-dt',{l:44,r:16,t:18,b:30});
+  const P={dt:1.0, x:0.8};
+  // feste LSTM-Parameter (ein Neuron) — Speicherpfad, dt-unabhängig
+  const lstmP={wix:1.3,wih:0.4,bi:0.1, wfx:0.6,wfh:0.5,bf:0.8, wox:1.0,woh:0.3,bo:0.0, wgx:1.4,wgh:0.2,bg:0.0};
+  // feste LTC-Parameter (ein Neuron) — h-Evolution, dt-abhängig
+  const ltcP={tau:1.4, gain:2.5, win:1.6, wrec:0.0, b:-0.2, A:0.0, solver:'fused', unfolds:6};
+  // fester alter Zustand (h0,c0)
+  const h0=0.25, c0=0.40;
+  // die Δt-Stützstellen, an denen Balkenpaare gezeichnet werden
+  const DTS=[0.1,0.3,0.5,0.8,1.1,1.5,2.0];
+
+  function computeAt(dt){
+    const x=P.x;
+    // 1) LSTM-Gating: new_c hängt NUR von (x,h0,c0) ab, NICHT von dt
+    const ls=stepLSTM({h:h0,c:c0}, x, lstmP);
+    const newC=ls.c;
+    const hCand=ls.h;                 // Kandidat = LSTM-Ausgabe h
+    // 2) innere ODE evolviert hCand über dt -> new_h (dt-abhängig)
+    const lp=Object.assign({}, ltcP, {A:x});
+    const newH=stepLTC(hCand, x, dt, lp);
+    return {newC, newH};
+  }
+  function draw(){
+    sc.clear(); sc.range(-0.5, DTS.length-0.5, -0.2, 1.2);
+    sc.grid(0,5,{yd:1,yl:true});
+    // x-Achsen-Beschriftung (Δt-Werte) in Pixel
+    DTS.forEach((d,i)=>{ sc.text('Δt='+d.toFixed(1), sc.X(i), sc.h-10, COL.faint, 'center','500 9px JetBrains Mono','alphabetic'); });
+    sc.text('new_c (stepLSTM, kein dt)  vs.  new_h (stepLTC, über dt)', sc.pad.l, 12, COL.sub, 'left','600 10px JetBrains Mono','alphabetic');
+
+    let cmn=1e9,cmx=-1e9,hmn=1e9,hmx=-1e9;
+    const cPts=[];
+    DTS.forEach((d,i)=>{
+      const r=computeAt(d);
+      cmn=Math.min(cmn,r.newC); cmx=Math.max(cmx,r.newC);
+      hmn=Math.min(hmn,r.newH); hmx=Math.max(hmx,r.newH);
+      // Balkenpaar: c links (rot), h rechts (grün)
+      sc.bars([{x:i-0.16, h:r.newC, color:COL.lstm, w:0.14, alpha:0.9}], 0);
+      sc.bars([{x:i+0.16, h:r.newH, color:COL.cfc,  w:0.14, alpha:0.9}], 0);
+      cPts.push([i-0.16, r.newC]);
+    });
+    // graue Verbindungslinie der c-Spitzen — liegt waagrecht
+    sc.path(cPts, COL.faint, 1.4, {dash:[5,4], alpha:0.8});
+    sc.label('c-Spitzen: waagrecht', DTS.length-1-0.16, (cmn+cmx)/2+0.12, COL.faint, 'right','500 10px JetBrains Mono');
+
+    // aktueller Δt-Marker (nächster Stützpunkt)
+    let near=0, nd=1e9; DTS.forEach((d,i)=>{ const dd=Math.abs(d-P.dt); if(dd<nd){nd=dd;near=i;} });
+    sc.vline(near, COL.accent, 1.2, [3,4]);
+
+    // Readouts für aktuelles Δt
+    const cur=computeAt(P.dt);
+    $('#dt-c').textContent=cur.newC.toFixed(4);
+    $('#dt-h').textContent=cur.newH.toFixed(4);
+    $('#dt-cspan').textContent=(cmx-cmn).toFixed(4);
+    $('#dt-hspan').textContent=(hmx-hmn).toFixed(4);
+    $('#dt-status').textContent='Δt='+P.dt.toFixed(2)+' · c-Spanne '+(cmx-cmn).toFixed(3);
+  }
+  bind('dt-dt','dt-dt-v', v=>{P.dt=v; draw();}, 2);
+  bind('dt-x','dt-x-v', v=>{P.x=v; draw();}, 2);
+  whenVisible('lab-dt', draw);
+}
+
+LR.boot([initArch, initDtInv]);
+</script>
+</body>
+</html>

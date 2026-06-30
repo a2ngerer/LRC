@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>04 · CfC — Closed-form Continuous-time</title>
+<meta name="description" content="Vorlesung 04: Closed-form Continuous-time Networks — die LTC-ODE nicht integrieren, sondern ihre Lösung als Sigmoid-Zeitgate zwischen zwei gelernten Regimen direkt hinschreiben. Mit eingesetzten Zahlenbeispielen, interaktiv erklärt.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lecture="04">
+
+<!-- ============================ HERO ============================ -->
+<header class="hero">
+  <canvas class="hero-canvas" data-c1="#0f9d6b" data-c2="#2563eb" data-c3="#c2710c"></canvas>
+  <div class="hero-inner">
+    <div class="hero-kicker reveal"><span class="lecnum">Vorlesung 04</span> Liquide Zellen · Die ODE ohne Solver</div>
+    <h1 class="hero-title reveal">CfC: die Lösung<br>direkt <span class="liquid">hinschreiben</span></h1>
+    <p class="hero-sub reveal">LTC und LRC integrieren eine ODE Schritt für Schritt. CfC fragt: Wozu?
+    Wenn die Lösung der linearen Membran-ODE eine Exponentialfunktion ist, schreib das Ergebnis sofort hin —
+    ersetzt durch ein <em>Sigmoid-Zeitgate</em>, das zwischen zwei gelernten Regimen interpoliert.
+    Kein Solver, kein <span class="mono">ode_unfolds</span>, kein steifes Schwingen. Hier mit eingesetzten Zahlen.</p>
+    <div class="hero-meta reveal">
+      <span class="hero-pill"><span class="dot" style="background:var(--cfc)"></span>ff1 / ff2 · zwei Regime</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--lrc)"></span>σ(t_a·Δt + t_b) · Zeitgate</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--ltc)"></span>kein ODE-Solver</span>
+    </div>
+  </div>
+  <div class="scroll-hint"><span>Scrollen</span><span class="line"></span></div>
+</header>
+
+<!-- ============================ 0 · EINSTIEG ============================ -->
+<section id="intro" data-toc="Einstieg">
+  <div class="wrap">
+    <div class="eyebrow reveal">Worum es geht</div>
+    <h2 class="reveal">Die radikale Abkürzung</h2>
+    <p class="lead reveal">In Vorlesung 03 hat LRC die Steifheit der LTC-ODE gebändigt, indem sie die ODE
+    <em>umgebaut</em> hat — Sättigung, Elastance-Gate, ruhigere Hand. CfC geht den radikaleren Weg: die ODE wird
+    gar nicht erst integriert. Statt eines Solvers steht direkt eine geschlossene Formel da, die das Ergebnis
+    eines ganzen Zeitschritts in einem Rutsch liefert.</p>
+
+    <p class="reveal">Erinnerung an das Fallbeispiel der Reihe: ein Auto folgt einer Landstraße, die Kamera
+    liefert ein kontinuierliches Signal, und das Neuron soll sein Reaktionstempo der Situation anpassen. LTC
+    macht das, indem sie die effektive Zeitkonstante laufend neu berechnet und sechsmal pro Schritt integriert.
+    Die Frage dieser Vorlesung: <em>Was, wenn das Neuron das Ergebnis der Integration auswendig gelernt hätte
+    und es einfach abrufen könnte?</em></p>
+
+    <div class="callout reveal">
+      <div class="ctag">Das Versprechen dieser Seite</div>
+      <p style="margin-bottom:.6em">Am Ende verstehst du vier Dinge konkret: <strong>(1)</strong> warum die
+      exakte Lösung der linearen Membran-ODE eine Exponentialfunktion ist und welcher Faktor darin den Gradienten
+      verschwinden lässt; <strong>(2)</strong> wie CfC diesen Faktor durch ein <em>Sigmoid-Zeitgate</em> ersetzt;
+      <strong>(3)</strong> wie aus <em>einem</em> Backbone <em>vier</em> Köpfe werden — <span class="mono">ff1</span>,
+      <span class="mono">ff2</span>, <span class="mono">time_a</span>, <span class="mono">time_b</span>; und
+      <strong>(4)</strong> warum Δt hier <em>nur</em> im Zeitgate steht und deshalb nichts explodieren kann.</p>
+      <p style="margin-bottom:0">Das Kernstück — der Block <em>„Mit Zahlen eingesetzt“</em> — rechnet die
+      Update-Regel aus <code>cfc_cell.py</code> mit konkreten Werten Schritt für Schritt vor.</p>
+    </div>
+
+    <div class="legend reveal">
+      <div class="li"><span class="src src-paper">Paper</span> Originalarbeit / Paper-Notiz</div>
+      <div class="li"><span class="src src-code">Code</span> exakt aus deiner Implementierung</div>
+      <div class="li"><span class="src src-dr">Deep-Research</span> LLM-Recherche, zu prüfen</div>
+      <div class="li"><span class="src src-classic">klassisch</span> Lehrbuchwissen</div>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 1 · DIE IDEE ============================ -->
+<section id="idee" data-toc="Die Closed-form-Idee">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--cfc);color:var(--cfc)"><span class="section-num">01</span> &nbsp;Von der Exponential-Lösung zum Zeitgate</div>
+    <h2 class="reveal">Die ODE hat eine geschlossene Lösung — also nutze sie</h2>
+    <p class="reveal">Halte den Leitwert einer LTC-Synapse für einen Moment konstant. Dann ist die Membran-ODE
+    <em>linear</em>, und lineare ODEs haben eine exakte Lösung in geschlossener Form: eine abklingende
+    Exponentialfunktion, die vom Startzustand zum Zielzustand gleitet
+    <span class="src src-paper" title="Hasani, Lechner et al. 2022, Closed-form continuous-time neural networks, Nature Machine Intelligence 4(11), arXiv:2106.13898">Paper · Hasani2022</span>:</p>
+
+    <div class="eq accent-cfc reveal">
+      <div class="eq-label"><span>Exakte Lösung der linearen Membran-ODE</span><span class="src src-classic">klassisch</span></div>
+      <div data-eq="v(t)\;=\;\underbrace{v_{\infty}}_{\text{Zielzustand}}\;+\;\big(v_0-v_{\infty}\big)\,\underbrace{e^{-t/\tau}}_{\text{Abkling-Faktor}}"></div>
+    </div>
+
+    <p class="reveal">Das ist exakt — kein Solver-Fehler, keine sechs Teilschritte. Aber der markierte Faktor
+    <span class="mono">e^{−t/τ}</span> hat einen Haken: er geht für große <span class="mono">t</span> oder kleine
+    <span class="mono">τ</span> sehr schnell gegen null. Beim Rückwärtsdurchlauf wird genau dieser Faktor zum
+    Gradienten — und ein Faktor nahe null ist die Wurzel des <strong>Vanishing-Gradient-Problems</strong> aus
+    Vorlesung 01 <span class="src src-paper" title="cfc_cell.py:30 — 'replaces the exponential decay ... avoids its vanishing-gradient factor'">Paper · Hasani2022 · §3</span>.</p>
+
+    <p class="reveal">CfC behält die Struktur — ein Gleiten von einem Zustand zum anderen — ersetzt aber die feste
+    Exponentialfunktion durch ein <strong>gelerntes Sigmoid-Zeitgate</strong>. Statt <span class="mono">e^{−t/τ}</span>
+    steht jetzt <span class="mono">σ(t_a·Δt + t_b)</span>, und das Gleiten geht nicht zwischen
+    <span class="mono">v_0</span> und <span class="mono">v_∞</span>, sondern zwischen zwei <em>gelernten Regimen</em>
+    <span class="mono" style="color:var(--cfc)">ff1</span> und <span class="mono" style="color:var(--cfc)">ff2</span>:</p>
+
+    <div class="eq accent-cfc reveal">
+      <div class="eq-label"><span>CfC · Kern-Update (gated mode)</span><span class="src src-code">Code · cfc_cell.py:90-91</span></div>
+      <div data-eq="t_{\text{interp}}=\sigma\!\big(t_a\cdot\Delta t + t_b\big)\,,\qquad h_{t+1}=\underbrace{ff_1\,(1-t_{\text{interp}})}_{\text{Regime: halten}}\;+\;\underbrace{t_{\text{interp}}\cdot ff_2}_{\text{Regime: Ziel}}"></div>
+    </div>
+
+    <p class="reveal">Lies das wie einen Schieberegler. Das Zeitgate <span class="mono">t_interp</span> liegt immer
+    zwischen 0 und 1. Bei <span class="mono">t_interp = 0</span> ist der Ausgang ganz das Halte-Regime
+    <span class="mono">ff1</span>; bei <span class="mono">t_interp = 1</span> ganz das Ziel-Regime
+    <span class="mono">ff2</span>; dazwischen eine konvexe Mischung. Es gibt keinen Solver, keine Akkumulation,
+    keinen unbeschränkten Leitwert. <span class="src src-code" title="cfc_cell.py:74-92 — call(), new_state = ff1*(1-t_interp) + t_interp*ff2, kein ODE-Solver">Code · cfc_cell.py:74-92</span></p>
+
+    <div class="callout good reveal">
+      <div class="ctag" style="color:var(--cfc)">Warum das den Gradienten rettet</div>
+      <p style="margin-bottom:0">In der exakten Lösung ist der Abkling-Faktor an die Zeitkonstante gekettet:
+      kleines <span class="mono">τ</span> erzwingt einen winzigen Gradienten. Im CfC ist das Zeitgate dagegen
+      <em>frei gelernt</em> über <span class="mono">t_a</span> und <span class="mono">t_b</span> — das Netz kann
+      ein Gate nahe 0,5 wählen, wo die Ableitung des Sigmoids maximal ist, und so den Gradientenfluss
+      offenhalten. Das ist derselbe Trick wie das Constant Error Carousel der LSTM (Vorlesung 02), nur in
+      kontinuierlicher Zeit. <span class="src src-paper">Hasani2022</span></p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 2 · DER BACKBONE & 4 KÖPFE ============================ -->
+<section id="backbone" data-toc="Backbone & 4 Köpfe">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--cfc);color:var(--cfc)"><span class="section-num">02</span> &nbsp;Ein Rumpf, vier Köpfe</div>
+    <h2 class="reveal">Woher ff1, ff2, t_a und t_b kommen</h2>
+    <p class="reveal">Die vier Größen aus dem Update fallen nicht vom Himmel — sie sind vier lineare Köpfe auf
+    einem gemeinsamen <strong>Backbone</strong>. Der Backbone bekommt die Verkettung aus Eingabe und altem
+    Zustand <span class="mono">[x, h]</span> und schickt sie durch eine <em>lecun-tanh</em>-Aktivierung
+    <span class="src src-code" title="cfc_cell.py:12-14 — _lecun_tanh(x) = 1.7159*tanh(0.666*x)">Code · cfc_cell.py:12</span>:</p>
+
+    <div class="eq accent-cfc reveal">
+      <div class="eq-label"><span>Backbone-Aktivierung (lecun-tanh)</span><span class="src src-code">Code · cfc_cell.py:12-14</span></div>
+      <div data-eq="\text{lecun\_tanh}(x)\;=\;1.7159\cdot\tanh\!\big(0.666\,x\big)\,,\qquad z=\text{Backbone}\big([\,x,\;h\,]\big)"></div>
+    </div>
+
+    <p class="reveal">Die zwei magischen Zahlen sind kein Zufall: <span class="mono">1.7159</span> und
+    <span class="mono">0.666</span> halten Varianz und Ableitung der Aktivierung in einem gut konditionierten
+    Bereich (LeCuns selbstnormalisierende tanh-Skalierung). Auf diesem Backbone-Ausgang <span class="mono">z</span>
+    sitzen vier <em>Dense</em>-Köpfe — zwei für die Regime, zwei für das Zeitgate
+    <span class="src src-code" title="cfc_cell.py:63-72 — _head() baut ff1, ff2, time_a, time_b">Code · cfc_cell.py:43-72</span>:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">cfc_cell.py · build() &amp; call()</span><span class="ref">Zeilen 12–92</span></div>
+<pre><span class="k">def</span> <span class="f">_lecun_tanh</span>(x):
+    <span class="k">return</span> <span class="s">1.7159</span> * tf.math.<span class="f">tanh</span>(<span class="s">0.666</span> * x)     <span class="c"># cfc_cell.py:12-14</span>
+
+<span class="c"># build(): vier lineare Köpfe auf dem geteilten Backbone</span>
+self._ff1    = _head(<span class="s">'ff1'</span>)        <span class="c"># Regime 1 — „halten“</span>
+self._ff2    = _head(<span class="s">'ff2'</span>)        <span class="c"># Regime 2 — „Ziel“</span>
+self._time_a = _head(<span class="s">'time_a'</span>)     <span class="c"># Steilheit des Zeitgates</span>
+self._time_b = _head(<span class="s">'time_b'</span>)     <span class="c"># Verschiebung des Zeitgates</span>
+
+<span class="c"># call(): ein Backbone-Durchlauf, dann vier Köpfe, dann Mischung</span>
+x = tf.<span class="f">concat</span>([inputs, states[<span class="s">0</span>]], axis=-<span class="s">1</span>)   <span class="c"># [x, h]</span>
+<span class="k">for</span> layer <span class="k">in</span> self._backbone:  x = <span class="f">layer</span>(x)        <span class="c"># lecun-tanh-Rumpf</span>
+
+ff1 = self.<span class="f">_ff1</span>(x);  ff2 = self.<span class="f">_ff2</span>(x)
+t_a = self.<span class="f">_time_a</span>(x);  t_b = self.<span class="f">_time_b</span>(x)
+<span class="hl">t_interp  = tf.nn.<span class="f">sigmoid</span>(t_a * elapsed_time + t_b)</span>
+<span class="hl">new_state = ff1 * (<span class="s">1.0</span> - t_interp) + t_interp * ff2</span>   <span class="c"># KEIN ODE-Solver</span>
+<span class="k">return</span> new_state, [new_state]</pre>
+    </div>
+    <p class="code-cap reveal">Vergleiche mit der LTC aus Vorlesung 03: dort eine <span class="mono">for</span>-Schleife über
+    sechs <span class="mono">ode_unfolds</span> mit einem Nenner-Trick. Hier <em>keine</em> Schleife — zwei Zeilen,
+    fertig. <span class="src src-code">Code · cfc_cell.py:90-92</span></p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>Kopf</th><th>liefert</th><th>Rolle im Update</th></tr></thead>
+      <tbody>
+        <tr><th class="mono">ff1</th><td>Regime 1</td><td>der Zustand, zu dem bei <span class="mono">t_interp → 0</span> gehalten wird</td></tr>
+        <tr><th class="mono">ff2</th><td>Regime 2</td><td>der Zielzustand, zu dem bei <span class="mono">t_interp → 1</span> gegangen wird</td></tr>
+        <tr><th class="mono">time_a</th><td>t_a — Steilheit</td><td>wie schnell das Gate auf verstrichene Zeit Δt reagiert</td></tr>
+        <tr><th class="mono">time_b</th><td>t_b — Bias</td><td>der Arbeitspunkt des Gates bei Δt = 0</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="lab-caption reveal">Die vier Köpfe teilen sich einen Backbone — das ist der ganze Parametersatz pro Zelle. <span class="src src-code">Code · cfc_cell.py:63-91</span></p>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 3 · MIT ZAHLEN EINGESETZT ============================ -->
+<section id="zahlen" data-toc="Mit Zahlen eingesetzt">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--cfc);color:var(--cfc)"><span class="section-num">03</span> &nbsp;Die Formel zum Anfassen</div>
+    <h2 class="reveal">Mit Zahlen eingesetzt: was Δt am Mischverhältnis dreht</h2>
+    <p class="reveal">Genug Symbole — jetzt mit Zahlen. Halte die vier Kopf-Ausgaben für einen Moment fest. Sagen
+    wir, das Netz hat für den aktuellen Schritt diese Werte produziert:</p>
+
+    <div class="eq accent-cfc reveal">
+      <div class="eq-label"><span>Festgehaltene Kopf-Ausgaben für das Beispiel</span><span class="src src-code">Code-Form</span></div>
+      <div data-eq="ff_1 = 0{,}2\,,\quad ff_2 = 0{,}9\,,\quad t_a = 1{,}5\,,\quad t_b = -0{,}5"></div>
+    </div>
+
+    <p class="reveal">Jetzt setzen wir nur die verstrichene Zeit <span class="mono">Δt</span> ein und beobachten, wie
+    sich Gate und Ausgang verschieben. Drei Fälle, alle von Hand nachgerechnet.</p>
+
+    <div class="eq accent-cfc reveal">
+      <div class="eq-label"><span>Fall A · Δt = 1,0 (voller Zeitschritt)</span><span class="src src-code">eingesetzt in cfc_cell.py:90-91</span></div>
+      <div data-eq="\begin{aligned} t_{\text{interp}} &= \sigma(1{,}5\cdot 1{,}0 - 0{,}5)=\sigma(1{,}0)=0{,}731\\[2pt] h &= 0{,}2\cdot(1-0{,}731) + 0{,}9\cdot 0{,}731 = 0{,}2\cdot 0{,}269 + 0{,}9\cdot 0{,}731 = \mathbf{0{,}712} \end{aligned}"></div>
+    </div>
+
+    <div class="eq accent-cfc reveal">
+      <div class="eq-label"><span>Fall B · Δt = 0,2 (kurzer Zeitschritt)</span><span class="src src-code">eingesetzt in cfc_cell.py:90-91</span></div>
+      <div data-eq="\begin{aligned} t_{\text{interp}} &= \sigma(1{,}5\cdot 0{,}2 - 0{,}5)=\sigma(-0{,}2)=0{,}450\\[2pt] h &= 0{,}2\cdot 0{,}550 + 0{,}9\cdot 0{,}450 = 0{,}110 + 0{,}405 = \mathbf{0{,}515} \end{aligned}"></div>
+    </div>
+
+    <div class="eq accent-cfc reveal">
+      <div class="eq-label"><span>Fall C · Δt = 3,0 (langer Zeitschritt)</span><span class="src src-code">eingesetzt in cfc_cell.py:90-91</span></div>
+      <div data-eq="\begin{aligned} t_{\text{interp}} &= \sigma(1{,}5\cdot 3{,}0 - 0{,}5)=\sigma(4{,}0)=0{,}982\\[2pt] h &= 0{,}2\cdot 0{,}018 + 0{,}9\cdot 0{,}982 = 0{,}004 + 0{,}884 = \mathbf{0{,}887} \end{aligned}"></div>
+    </div>
+
+    <div class="callout insight reveal">
+      <div class="ctag">Was die drei Fälle zeigen</div>
+      <p style="margin-bottom:.6em">Mehr verstrichene Zeit (<span class="mono">Δt</span> größer) schiebt das Gate
+      Richtung 1 und damit den Ausgang Richtung <span class="mono">ff2 = 0,9</span> — das Ziel-Regime. Bei
+      <span class="mono">Δt = 0,2</span> ist erst weniger als die Hälfte des Wegs zurückgelegt
+      (<span class="mono">0,515</span>); bei <span class="mono">Δt = 3,0</span> ist der Ausgang schon fast ganz beim
+      Ziel (<span class="mono">0,887</span>). Genau das soll ein zeitkontinuierliches Neuron tun: länger
+      verstrichene Zeit bedeutet weiter Richtung Gleichgewicht.</p>
+      <p style="margin-bottom:0">Der entscheidende Punkt: egal wie groß <span class="mono">Δt</span> wird, der
+      Ausgang bleibt im Intervall <span class="mono">[ff1, ff2] = [0,2, 0,9]</span> eingesperrt — denn
+      <span class="mono">σ</span> sättigt bei 1. <strong>Es gibt keinen Wert von Δt, der das Neuron explodieren
+      lässt.</strong> Das ist der Kernunterschied zum expliziten Euler aus Vorlesung 03.</p>
+    </div>
+
+    <p class="reveal">Vergleiche das mit einem expliziten Euler-Integrator <span class="mono">v ← v + Δt·v̇</span>.
+    Dort steht <span class="mono">Δt</span> als <em>Multiplikator</em> vor der Steigung; verdopple
+    <span class="mono">Δt</span>, und der Schritt verdoppelt sich linear — bei zu großem
+    <span class="mono">Δt</span> überschießt und explodiert er. Im CfC steht <span class="mono">Δt</span>
+    <strong>nur im Inneren des Sigmoids</strong>. Verdopple es, und das Gate rückt höchstens näher an 1; mehr
+    nicht. Es gibt keine Akkumulation von Integrationsfehlern über die Schritte, weil gar nicht integriert
+    wird. <span class="src src-paper">Hasani2022</span></p>
+
+    <div class="eq accent-cfc reveal">
+      <div class="eq-label"><span>Wo Δt steht: Euler vs. CfC</span><span class="src src-classic">Kontrast</span></div>
+      <div data-eq="\underbrace{v_{t+1}=v_t+\Delta t\cdot \dot v}_{\text{Euler: }\Delta t\text{ als Multiplikator}\;\to\;\text{kann explodieren}}\qquad\text{vs.}\qquad \underbrace{h_{t+1}=ff_1(1-\sigma(t_a\Delta t+t_b))+\sigma(t_a\Delta t+t_b)\,ff_2}_{\text{CfC: }\Delta t\text{ nur im Sigmoid}\;\to\;\text{beschränkt}}"></div>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 4 · LAB CfC-SPIELPLATZ ============================ -->
+<section id="spielplatz" data-toc="Lab · CfC-Spielplatz">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--cfc);color:var(--cfc)"><span class="section-num">04</span> &nbsp;Das Zeitgate steuern</div>
+    <h2 class="reveal">CfC-Spielplatz: t_a und t_b am eigenen Signal</h2>
+    <p class="reveal">Schick ein Signal durch eine echte CfC-Zelle (grün) und beobachte gleichzeitig das Zeitgate
+    <span class="mono">t_interp</span>, das in jedem Schritt zwischen Halten und Ziel entscheidet. Die zwei Regler
+    sind <span class="mono">time_a</span> (wie steil das Gate auf Δt reagiert) und <span class="mono">time_b</span>
+    (sein Arbeitspunkt). Das Lab rechnet die skalare Reduktion von <code>stepCFC</code> aus der Engine — dieselbe
+    Form wie <code>cfc_cell.py:90-91</code>.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-cfc">
+      <div class="lab-head"><span class="led"></span><span class="title">CfC-Spielplatz · das Zeitgate in Aktion</span><span class="sub" id="cfc-status">t_interp folgt time_a · time_b</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-cfc"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Eingangssignal</label>
+            <div class="seg" id="cfc-sig"><button data-s="step" class="on">Stufe</button><button data-s="sine">Sinus</button><button data-s="pulse">Puls</button></div>
+          </div>
+          <div class="ctrl"><label>time_a (t_a) <span class="val" id="cfc-ta-v">1.5</span></label><input type="range" id="cfc-ta" class="acc-cfc" min="-2" max="4" step="0.1" value="1.5"></div>
+          <div class="ctrl"><label>time_b (t_b) <span class="val" id="cfc-tb-v">-0.5</span></label><input type="range" id="cfc-tb" class="acc-cfc" min="-3" max="3" step="0.1" value="-0.5"></div>
+          <div class="lab-readout">
+            t<span class="dim">interp</span> jetzt <span class="big k" id="cfc-gate">—</span><br>
+            Spanne über das Fenster <span class="k" id="cfc-gate-range">—</span><br>
+            <span class="dim">0 → ganz ff1 (halten) · 1 → ganz ff2 (Ziel)</span>
+          </div>
+          <div class="lab-task">Dreh <b>time_b</b> nach oben: das Gate verschiebt sich Richtung 1, der
+          <b style="color:var(--cfc)">CfC</b>-Ausgang springt schneller zum Ziel-Regime. Mach <b>time_a</b>
+          negativ: das Gate dreht sich um — verstrichene Zeit zieht jetzt Richtung Halten. Nichts explodiert je.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Grün: CfC-Ausgang. Blau (dünn): das Zeitgate t<sub>interp</sub> ∈ [0,1], skaliert ins Bild. Gestrichelt: das Eingangssignal. <span class="src src-code">Code · cfc_cell.py:90-91</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 5 · LAB ZWEI REGIME ============================ -->
+<section id="regime" data-toc="Lab · Zwei Regime">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--cfc);color:var(--cfc)"><span class="section-num">05</span> &nbsp;Zwischen ff1 und ff2 gleiten</div>
+    <h2 class="reveal">Zwei Regime interpolieren — und Δt regiert nur das Gate</h2>
+    <p class="reveal">Dieses Lab macht die Formel aus Abschnitt 03 sichtbar. Zwei Niveaus sind gesetzt: das
+    Halte-Regime <span class="mono" style="color:var(--ltc)">ff1</span> (unten) und das Ziel-Regime
+    <span class="mono" style="color:var(--cfc)">ff2</span> (oben). Der Ausgang ist genau die konvexe Mischung
+    <span class="mono">ff1·(1−t_interp) + t_interp·ff2</span> und gleitet zwischen den beiden Linien. Der Regler
+    ist die verstrichene Zeit <span class="mono">Δt</span> — und du siehst den Readout
+    <span class="mono">t_interp = σ(t_a·Δt + t_b)</span> mitlaufen.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-mix">
+      <div class="lab-head"><span class="led"></span><span class="title">Zwei Regime · das Gate mischt sie</span><span class="sub" id="mix-status">t_interp = σ(t_a·Δt + t_b)</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-mix"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>verstrichene Zeit Δt <span class="val" id="mix-dt-v">1.00</span></label><input type="range" id="mix-dt" class="acc-cfc" min="0" max="4" step="0.05" value="1.0"></div>
+          <div class="ctrl"><label>time_a (t_a) <span class="val" id="mix-ta-v">1.5</span></label><input type="range" id="mix-ta" class="acc-cfc" min="-2" max="4" step="0.1" value="1.5"></div>
+          <div class="ctrl"><label>time_b (t_b) <span class="val" id="mix-tb-v">-0.5</span></label><input type="range" id="mix-tb" class="acc-cfc" min="-3" max="3" step="0.1" value="-0.5"></div>
+          <div class="lab-readout">
+            t<span class="dim">interp</span> = σ(t_a·Δt + t_b) <span class="big k" id="mix-gate">—</span><br>
+            Ausgang h = ff1·(1−t) + t·ff2 <span class="k" id="mix-out">—</span><br>
+            <span class="dim">ff1 = 0,20 (halten) · ff2 = 0,90 (Ziel)</span>
+          </div>
+          <div class="lab-task">Schieb <b>Δt</b> von 0 nach 4: der Ausgang gleitet von der <b style="color:var(--ltc)">ff1</b>-Linie
+          zur <b style="color:var(--cfc)">ff2</b>-Linie und bleibt <b>immer dazwischen</b> — nie darüber, nie
+          darunter. Genau die drei Fälle A/B/C von oben kannst du hier abfahren (Δt = 0,2 / 1,0 / 3,0).</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Orange Linie: ff1-Niveau (0,20). Grüne Linie: ff2-Niveau (0,90). Punkt: der aktuelle Ausgang, vom Gate dazwischen positioniert. <span class="src src-code">Code · cfc_cell.py:91</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 6 · LAB Δt-INVARIANZ ============================ -->
+<section id="invarianz" data-toc="Lab · Δt-Invarianz">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--cfc);color:var(--cfc)"><span class="section-num">06</span> &nbsp;Was bei wachsendem Δt passiert</div>
+    <h2 class="reveal">Δt-Invarianz: CfC bleibt glatt, wo der Euler kippt</h2>
+    <p class="reveal">Der direkte Beweis für die Behauptung aus Abschnitt 03. Beide Modelle bekommen dasselbe
+    Sprungsignal und dieselbe wachsende Schrittweite <span class="mono">Δt</span>. Links rechnet eine echte CfC
+    (<code>stepCFC</code>), rechts ein expliziter Euler-Integrator derselben linearen Membran-ODE
+    (<code>v ← v + Δt·(−v + Antrieb)/τ</code>). Dreh <span class="mono">Δt</span> hoch und beobachte, wer
+    schwingt.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-dt">
+      <div class="lab-head"><span class="led"></span><span class="title">Δt-Invarianz · CfC vs. expliziter Euler</span><span class="sub" id="dt-status">beide stabil</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-dt"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Schrittweite Δt <span class="val" id="dt-dt-v">0.50</span></label><input type="range" id="dt-dt" class="acc-cfc" min="0.1" max="2.6" step="0.05" value="0.5"></div>
+          <div class="ctrl"><label>Basis-τ des Eulers <span class="val" id="dt-tau-v">0.7</span></label><input type="range" id="dt-tau" class="acc-cfc" min="0.3" max="2.0" step="0.05" value="0.7"></div>
+          <div class="lab-readout">
+            Euler-Stabilitätsmaß <span class="k">Δt/τ</span><br>
+            <span class="big" id="dt-crit">0.00</span> <span id="dt-verdict" class="ok">&lt; 2 → stabil</span><br>
+            <span class="dim">CfC hat diese Schranke nicht.</span>
+          </div>
+          <div class="lab-task">Dreh <b>Δt</b> hoch (oder <b>τ</b> runter), bis <b>Δt/τ &gt; 2</b>: der
+          <b style="color:var(--ltc)">Euler</b> beginnt zu schwingen und explodiert. Die
+          <b style="color:var(--cfc)">CfC</b> bleibt bei jedem Δt glatt — sie integriert nicht, sie
+          interpoliert.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Grün: CfC. Orange: expliziter Euler. Der Euler ist nur stabil, solange Δt/τ &lt; 2; CfC kennt die Schranke nicht. <span class="src src-paper">Paper · Hasani2022</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 7 · CfC vs LTC ============================ -->
+<section id="vergleich" data-toc="CfC vs. LTC">
+  <div class="wrap">
+    <div class="eyebrow reveal"><span class="section-num">07</span> &nbsp;Dieselbe ODE, anderer Umgang</div>
+    <h2 class="reveal">CfC und LTC im Direktvergleich</h2>
+    <p class="reveal">Beide stammen aus derselben Membran-ODE. LTC integriert sie, CfC schreibt ihre Lösung hin.
+    Daraus folgt jeder einzelne Unterschied der Tabelle.</p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>Aspekt</th>
+        <th><span class="cmp-head"><span class="dot" style="background:var(--ltc)"></span>LTC (Vorlesung 03)</span></th>
+        <th><span class="cmp-head"><span class="dot" style="background:var(--cfc)"></span>CfC</span></th></tr></thead>
+      <tbody>
+        <tr><th>Solver</th><td class="bad">fused semi-impliziter Euler</td><td class="good">keiner — geschlossene Formel</td></tr>
+        <tr><th>ode_unfolds</th><td class="mono">6 Teilschritte / Schritt</td><td class="good mono">0 — ein Backbone-Durchlauf</td></tr>
+        <tr><th>Δt-Rolle</th><td>Multiplikator im Integrationsschritt</td><td>steht nur im Zeitgate σ(t_a·Δt + t_b)</td></tr>
+        <tr><th>Steifheit</th><td class="bad">ja — winziges τ erzwingt kleine Schritte</td><td class="good">keine — keine Integration</td></tr>
+        <tr><th>Gradientenfaktor</th><td class="bad">exponentieller Abkling-Faktor e^{−t/τ}</td><td class="good">freies Sigmoid-Gate, kann nahe 0,5 bleiben</td></tr>
+        <tr><th>gelernte Bausteine</th><td>gleak, vleak, cm, w, σ, μ, erev</td><td>Backbone + 4 Köpfe (ff1, ff2, t_a, t_b)</td></tr>
+        <tr><th>Aktivierung</th><td>σ am Synapsen-Leitwert</td><td>lecun-tanh = 1,7159·tanh(0,666·x)</td></tr>
+        <tr><th>Quelle</th><td><span class="src src-paper">Hasani2020</span></td><td><span class="src src-paper">Hasani2022</span></td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="lab-caption reveal">Die ganze Tabelle folgt aus einer Zeile: LTC integriert, CfC interpoliert. <span class="src src-code">Code · cfc_cell.py vs. ltc_cell.py</span></p>
+
+    <div class="callout reveal">
+      <div class="ctag">Einordnung in die Reihe</div>
+      <p style="margin-bottom:.6em"><strong>Vorlesung 01</strong> hat gezeigt, wie der wiederholte
+      Jacobian-Faktor den Gradienten verschwinden lässt. <strong>Vorlesung 03</strong> hat das Steifheits-Problem
+      der LTC mit einem aufwendigen Solver gelöst, LRC mit einem Elastance-Umbau. CfC umgeht beides an der Wurzel:
+      ohne Integration gibt es keine Steifheit, und das frei gelernte Zeitgate ersetzt den schädlichen
+      Exponentialfaktor.</p>
+      <p style="margin-bottom:0">Damit ist der Preis aber auch klar markiert: die geschlossene Form ist nur eine
+      <em>Approximation</em> der LTC-Lösung — sie hält den Leitwert über den Schritt konstant. Ob das in der
+      Praxis schadet, ist genau eine der Fragen, die der Benchmark dieser Thesis empirisch beantwortet.
+      <span class="src src-dr">Deep-Research · zu prüfen am Messergebnis</span></p>
+    </div>
+
+    <div class="callout good reveal">
+      <div class="ctag" style="color:var(--cfc)">Wohin als Nächstes</div>
+      <p style="margin-bottom:0">CfC löst die Steifheit, indem sie die ODE gar nicht erst integriert. Die nächste
+      Vorlesung <strong>05 · Mixed Memory (ODE-LSTM)</strong> kombiniert die liquide Zelle mit dem additiven
+      LSTM-Speicherpfad — der Gradient umgeht dann sogar die ODE-Jacobi komplett.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ QUELLEN ============================ -->
+<section id="sources" data-toc="Quellen">
+  <div class="wrap">
+    <div class="eyebrow reveal">Belege</div>
+    <h2 class="reveal">Quellen dieser Vorlesung</h2>
+    <div class="bib reveal">
+      <div class="bib-item"><div class="bib-key">Hasani2022</div><div class="bib-cite">
+        <div class="t">Closed-form continuous-time neural networks</div>
+        <div class="meta">Hasani, Lechner, Amini, Liebenwein, Ray, Tschaikowski, Teschl, Rus · Nature Machine Intelligence 4(11), 2022 · arXiv:2106.13898</div>
+        <div class="where">Closed-form-Lösung der LTC-ODE, Sigmoid-Zeitgate ersetzt den Exponential-Abkling-Faktor, vermeidet vanishing gradient (§3) · Vault: Papers/hasani2022-cfc.md</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Hasani2020</div><div class="bib-cite">
+        <div class="t">Liquid Time-constant Networks</div>
+        <div class="meta">Hasani, Lechner, Amini, Rus, Grosu · AAAI 2021 · arXiv:2006.04439</div>
+        <div class="where">Die LTC-ODE, deren Lösung CfC in geschlossener Form approximiert — Bezugspunkt der Vergleichstabelle</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Code</div><div class="bib-cite">
+        <div class="t">Eigene Implementierung</div>
+        <div class="meta">code/src/neurons/cfc_cell.py</div>
+        <div class="where">_lecun_tanh (Z. 12-14), build() mit vier Köpfen ff1/ff2/time_a/time_b (Z. 43-72), call() mit t_interp = sigmoid(t_a·Δt + t_b) und new_state = ff1·(1−t_interp) + t_interp·ff2 (Z. 74-92) — wörtlich zitiert</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">ncps-ref</div><div class="bib-cite">
+        <div class="t">ncps · Referenzimplementierung (mlech26l)</div>
+        <div class="meta">github.com/mlech26l/ncps · ncps/tf/cfc_cell.py (default/gated mode)</div>
+        <div class="where">Vorbild für den gated CfC-Modus; Gate-Vorzeichen vor finaler Zitation gegen das Paper prüfen (Code-Kommentar Z. 5-6)</div>
+      </div></div>
+    </div>
+    <p class="note reveal">Die Labs reduzieren das echte Vektor-Update auf ein Neuron: Gewichtsmatrizen werden zu
+    skalaren Faktoren, der Backbone zu einer einzelnen lecun-tanh-Aktivierung. Die <em>Form</em> der
+    Closed-form-Regel — ein Sigmoid-Zeitgate, das zwei Regime mischt, mit Δt ausschließlich im Gate — ist
+    identisch mit <code>cfc_cell.py</code>. Die Zahlenbeispiele in Abschnitt 03 setzen feste Kopf-Ausgaben an,
+    um die Δt-Abhängigkeit isoliert zu zeigen; im trainierten Netz hängen ff1, ff2, t_a, t_b zusätzlich vom
+    Backbone-Eingang [x, h] ab.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="f-title">Vorlesung 04 · CfC — Closed-form Continuous-time</div>
+  <p>Teil der interaktiven Lernreihe zur Masterarbeit. Jeder Regler rechnet die echte Update-Regel.</p>
+  <p class="mono">cfc_cell.py · Hasani 2022 · arXiv:2106.13898</p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
+<script src="assets/engine.js"></script>
+<script>
+/* ============================================================
+   LAB 1 · CfC-Spielplatz — das Zeitgate t_interp
+   stepCFC aus der Engine (cfc_cell.py:90-91, skalare Reduktion)
+   ============================================================ */
+function initCfcPlay(){
+  const sc=new Scope('cv-cfc',{l:44,r:16,t:16,b:24});
+  const P={sig:'step', ta:1.5, tb:-0.5};
+  const T=14, DT=0.05;
+  const CFG={win:1.4, wrec:0.3, b:-0.2, a1:0.9, c1:0.1, a2:1.1, c2:0.0};
+  let t=0, h=0;
+  const tin=[], tout=[], tgate=[];
+  function signal(tt){
+    const ph=((tt%9)/9);
+    if(P.sig==='step') return ph<0.5? -0.6 : 0.9;
+    if(P.sig==='sine') return 0.85*Math.sin(tt*1.1);
+    return (ph<0.12)?1.0:(ph<0.5?-0.4:(ph<0.62?0.8:-0.2)); // pulse
+  }
+  // gate exakt wie in stepCFC: ta_eff = ta*(1+0.4*|x|), gate = sig(ta_eff*dt + tb)
+  function gateNow(x){ const ta_eff=P.ta*(1+0.4*Math.abs(x)); return sig(ta_eff*DT + P.tb); }
+  function frame(){
+    t+=DT; const x=signal(t);
+    h=stepCFC(h,x,DT,{win:CFG.win,wrec:CFG.wrec,b:CFG.b,a1:CFG.a1,c1:CFG.c1,a2:CFG.a2,c2:CFG.c2,ta:P.ta,tb:P.tb});
+    const g=gateNow(x);
+    tin.push([t,x]); tout.push([t,h]); tgate.push([t,g]);
+    while(tin.length && tin[0][0]<t-T){ tin.shift(); tout.shift(); tgate.shift(); }
+    let mn=1e9,mx=-1e9; tgate.forEach(p=>{if(p[1]<mn)mn=p[1];if(p[1]>mx)mx=p[1];});
+    $('#cfc-gate').textContent=g.toFixed(3);
+    $('#cfc-gate-range').textContent=mn.toFixed(2)+' … '+mx.toFixed(2);
+    $('#cfc-status').textContent='t_interp '+mn.toFixed(2)+'–'+mx.toFixed(2);
+    draw();
+    raf=requestAnimationFrame(frame);
+  }
+  function draw(){
+    sc.clear(); sc.range(t-T,t,-1.3,1.3); sc.grid(4,4,{yd:1});
+    // Eingangssignal
+    sc.path(tin,COL.faint,1.4,{dash:[4,4],alpha:.8});
+    // Zeitgate t_interp in [0,1] -> ins Bild auf [-1.2 .. 1.2] skaliert (0->-1.2, 1->1.2)
+    const gscaled=tgate.map(p=>[p[0], -1.2 + 2.4*p[1]]);
+    sc.path(gscaled,COL.lrc,1.4,{alpha:.55});
+    sc.hline(-1.2,COL.line,1,[3,3]); sc.hline(1.2,COL.line,1,[3,3]);
+    // CfC-Ausgang
+    sc.path(tout,COL.cfc,2.6);
+    sc.label('CfC',t-0.3,tout.length?tout[tout.length-1][1]:0,COL.cfc,'right');
+    sc.label('t_interp',t-0.3,(gscaled.length?gscaled[gscaled.length-1][1]:0)-0.1,COL.lrc,'right','600 10px JetBrains Mono');
+  }
+  let raf;
+  bind('cfc-ta','cfc-ta-v',v=>P.ta=v,1);
+  bind('cfc-tb','cfc-tb-v',v=>P.tb=v,1);
+  seg('cfc-sig',s=>{P.sig=s;});
+  whenVisible('lab-cfc',()=>{ if(!raf) frame(); });
+}
+
+/* ============================================================
+   LAB 2 · Zwei Regime interpolieren — ff1, ff2 fix, Δt regiert das Gate
+   reine Formel cfc_cell.py:90-91 mit festen Kopf-Ausgaben
+   ============================================================ */
+function initMix(){
+  const sc=new Scope('cv-mix',{l:44,r:16,t:16,b:24});
+  const FF1=0.20, FF2=0.90;                 // feste Regime-Niveaus (wie Abschnitt 03)
+  const P={dt:1.0, ta:1.5, tb:-0.5};
+  let phase=0;
+  // t_interp = sigmoid(t_a*dt + t_b)   (exakt cfc_cell.py:90)
+  function gate(){ return sig(P.ta*P.dt + P.tb); }
+  function out(){ const g=gate(); return FF1*(1-g) + g*FF2; }
+  function draw(){
+    const g=gate(), o=out();
+    sc.clear(); sc.range(0,1,0,1.1); sc.grid(0,4,{yd:1,yl:true});
+    // ff2-Niveau (Ziel, grün) und ff1-Niveau (halten, orange)
+    sc.hline(FF2,COL.cfc,2,[6,5]); sc.label('ff2 = 0,90 (Ziel)',0.02,FF2+0.05,COL.cfc,'left','600 11px JetBrains Mono');
+    sc.hline(FF1,COL.ltc,2,[6,5]); sc.label('ff1 = 0,20 (halten)',0.02,FF1-0.06,COL.ltc,'left','600 11px JetBrains Mono');
+    // Mischlinie von ff1 nach ff2, Punkt am aktuellen Ausgang
+    const xc=0.5 + 0.18*Math.sin(phase*0.04);   // sanfte horizontale Wanderung, rein dekorativ
+    sc.seg(xc,FF1,xc,FF2,COL.line,2,[2,3]);
+    sc.dot(xc,o,COL.cfc,7); sc.ring(xc,o,'#ffffff',9,1.5);
+    sc.label('h = '+o.toFixed(3),xc+0.04,o,COL.ink,'left','700 12px JetBrains Mono');
+    // Gate-Anzeige als Text oben links (Pixelkoordinaten)
+    sc.text('t_interp = '+g.toFixed(3), sc.pad.l, 14, COL.lrc, 'left', '700 11px JetBrains Mono');
+    $('#mix-gate').textContent=g.toFixed(3);
+    $('#mix-out').textContent=o.toFixed(3);
+    $('#mix-status').textContent='t_interp = '+g.toFixed(3)+' → h = '+o.toFixed(3);
+  }
+  function frame(){ phase++; draw(); raf=requestAnimationFrame(frame); }
+  let raf;
+  bind('mix-dt','mix-dt-v',v=>{P.dt=v;},2);
+  bind('mix-ta','mix-ta-v',v=>{P.ta=v;},1);
+  bind('mix-tb','mix-tb-v',v=>{P.tb=v;},1);
+  whenVisible('lab-mix',()=>{ if(!raf) frame(); });
+}
+
+/* ============================================================
+   LAB 3 · Δt-Invarianz — CfC vs. expliziter Euler
+   CfC: stepCFC  ·  Euler: v <- v + dt*(-v + tanh(antrieb))/tau
+   ============================================================ */
+function initDtInvar(){
+  const sc=new Scope('cv-dt',{l:44,r:16,t:16,b:24});
+  const P={dt:0.5, tau:0.7};
+  const CFG={win:1.4, wrec:0.2, b:-0.2, a1:0.9, c1:0.1, a2:1.1, c2:0.0, ta:1.6, tb:-0.3};
+  const STEPS=70;
+  function inputAt(i){ return (i*P.dt < 2.0) ? -0.6 : 0.9; }  // Stufe bei t=2
+  function runCfc(){
+    const pts=[]; let h=0;
+    for(let i=0;i<=STEPS;i++){
+      const x=inputAt(i);
+      h=stepCFC(h,x,P.dt,{win:CFG.win,wrec:CFG.wrec,b:CFG.b,a1:CFG.a1,c1:CFG.c1,a2:CFG.a2,c2:CFG.c2,ta:CFG.ta,tb:CFG.tb});
+      pts.push([i*P.dt, h]);
+    }
+    return pts;
+  }
+  function runEuler(){
+    const pts=[]; let v=0;
+    for(let i=0;i<=STEPS;i++){
+      const x=inputAt(i);
+      const drive=Math.tanh(1.4*x - 0.2);
+      v = v + P.dt*(-v + drive)/P.tau;       // expliziter Euler der linearen Membran-ODE
+      if(!isFinite(v)||Math.abs(v)>3){ for(let k=i;k<=STEPS;k++) pts.push([k*P.dt, Math.sign(v||1)*3]); break; }
+      pts.push([i*P.dt, v]);
+    }
+    return pts;
+  }
+  function draw(){
+    const cfcP=runCfc(), eulP=runEuler(), crit=P.dt/P.tau;
+    sc.clear(); sc.range(0,STEPS*P.dt,-3,3); sc.grid(4,3,{yd:0,xl:true,xd:0});
+    sc.hline(0,COL.line,1);
+    sc.path(eulP,COL.ltc,2.2);
+    sc.path(cfcP,COL.cfc,2.6);
+    sc.label('Euler',STEPS*P.dt*0.5,(eulP.length?eulP[eulP.length-1][1]:0),COL.ltc,'left');
+    sc.label('CfC',STEPS*P.dt-0.4,(cfcP.length?cfcP[cfcP.length-1][1]:0),COL.cfc,'right');
+    $('#dt-crit').textContent=crit.toFixed(2);
+    const v=$('#dt-verdict'), st=$('#dt-status');
+    if(crit>2){ v.className='bad'; v.textContent='> 2 → Euler explodiert'; st.textContent='Euler instabil — CfC glatt'; }
+    else { v.className='ok'; v.textContent='< 2 → Euler stabil'; st.textContent='beide stabil'; }
+  }
+  bind('dt-dt','dt-dt-v',x=>{P.dt=x; draw();},2);
+  bind('dt-tau','dt-tau-v',x=>{P.tau=x; draw();},2);
+  whenVisible('lab-dt',draw);
+}
+
+LR.boot([initCfcPlay, initMix, initDtInvar]);
+</script>
+</body>
+</html>

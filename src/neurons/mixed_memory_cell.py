@@ -10,6 +10,8 @@ import tensorflow as tf
 from .base_cell import BaseCell
 from .ltc_cell import LTC_Cell
 from .lrc_cell import LRC_Cell
+from .cfc_cell import CfC_Cell
+from .cfc_lrc_cell import CfC_LRC_Cell
 
 
 class MixedMemoryCell(BaseCell):
@@ -88,3 +90,35 @@ class MM_LRC_Cell(MixedMemoryCell):
 
     def __init__(self, units, **kwargs):
         super().__init__(units, LRC_Cell, **kwargs)
+
+
+class CfC_MM_LRC_Cell(MixedMemoryCell):
+    """Mixed-memory closed-form LRC: LSTM memory path + CfC_LRC (closed-form,
+    elastance-gated) dynamics for the hidden state.
+
+    The 2x2 partner cell: numerical-vs-closed-form x plain-vs-mixed-memory on the
+    LRC. {lrc, cfc_lrc, mm_lrc, cfc_mm_lrc} cross those two axes, so any pair
+    isolates one architectural choice. Inner kwargs (e.g. elastance_type) are
+    forwarded to CfC_LRC_Cell, exactly as MM_LRC_Cell forwards to LRC_Cell.
+    """
+
+    def __init__(self, units, **kwargs):
+        super().__init__(units, CfC_LRC_Cell, **kwargs)
+
+
+class CfC_MM_LTC_Cell(MixedMemoryCell):
+    """Mixed-memory closed-form LTC: LSTM memory path + CfC (the closed-form
+    analogue of LTC) dynamics for the hidden state.
+
+    The LTC-family partner of CfC_MM_LRC_Cell. Together they complete the
+    cross-family 2x2 {numerical, closed-form} x {plain, mixed-memory}:
+      LTC family: ltc, cfc (= closed-form LTC), mm_ltc, cfc_mm_ltc
+      LRC family: lrc, cfc_lrc,                 mm_lrc, cfc_mm_lrc
+    so the v3.x LRC architecture-fix results can be tested for generality on the
+    LTC family (benchmark v4). CfC_Cell takes no elastance_type kwarg; any inner
+    kwargs (e.g. backbone_units) forward unchanged, exactly as MM_LTC_Cell does
+    for LTC_Cell.
+    """
+
+    def __init__(self, units, **kwargs):
+        super().__init__(units, CfC_Cell, **kwargs)

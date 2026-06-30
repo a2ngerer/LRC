@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>08 · Der Trainings-Code</title>
+<meta name="description" content="Vorlesung 08: Der Trainings-Code Zeile für Zeile — euler_odeint als Forward-Pass, das ODEFuncModel als gelernte Ableitung, der Mini-Batch-Sampler, GradientTape, Gradient-Clipping und Adam. Mit den exakten Hyperparametern aus run_benchmark.py.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lecture="08">
+
+<!-- ============================ HERO ============================ -->
+<header class="hero">
+  <canvas class="hero-canvas" data-c1="#0891b2" data-c2="#0f9d6b" data-c3="#c2710c"></canvas>
+  <div class="hero-inner">
+    <div class="hero-kicker reveal"><span class="lecnum">Vorlesung 08</span> Das Experiment · Trainings-Code</div>
+    <h1 class="hero-title reveal">Der Trainings-Code,<br>Zeile für <span class="liquid">Zeile</span></h1>
+    <p class="hero-sub reveal">Vorlesung 07 hat die Daten gebaut. Hier wird gelernt. Vier kurze Funktionen tragen
+    den ganzen Benchmark: <em>euler_odeint</em> integriert vorwärts, das <em>ODEFuncModel</em> stellt die gelernte
+    Ableitung, <em>get_batch</em> schneidet Trainingsfenster, und der Loop schiebt alles durch GradientTape,
+    Gradient-Clipping und Adam. Jede Zeile steht wörtlich aus deinem Repository daneben.</p>
+    <div class="hero-meta reveal">
+      <span class="hero-pill"><span class="dot" style="background:var(--data)"></span>euler_odeint · Forward-Pass</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--cfc)"></span>get_batch · batch_time = 16</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--ltc)"></span>Adam · clip_by_global_norm</span>
+    </div>
+  </div>
+  <div class="scroll-hint"><span>Scrollen</span><span class="line"></span></div>
+</header>
+
+<!-- ============================ 0 · EINSTIEG ============================ -->
+<section id="intro" data-toc="Einstieg">
+  <div class="wrap">
+    <div class="eyebrow reveal">Worum es geht</div>
+    <h2 class="reveal">Vier Funktionen, ein Experiment</h2>
+    <p class="lead reveal">Der gesamte Benchmark — alle Zelltypen, alle sechs ODE-Systeme, alle Seeds — läuft durch
+    denselben kleinen Trainings-Kern. Wer ihn versteht, versteht jede Zahl in Vorlesung 09 und 10. Es lohnt
+    sich, langsam zu lesen: hier wird nichts versteckt.</p>
+
+    <p class="reveal">Die Aufgabe ist ungewöhnlich für ein neuronales Netz. Das Modell soll keine Klassen
+    vorhersagen, sondern eine <strong>Ableitung</strong>. Gegeben ein Zustand <span class="mono">y</span>,
+    liefert das Netz <span class="mono">dy/dt</span> — wie schnell und in welche Richtung sich das System
+    gerade ändert. Diese gelernte Ableitung wird dann integriert, und die so erzeugte Bahn wird mit der
+    echten Trajektorie verglichen. Das ist die Idee des <em>Neural ODE</em>.</p>
+
+    <div class="callout reveal">
+      <div class="ctag">Das Versprechen dieser Seite</div>
+      <p style="margin-bottom:.6em">Am Ende kannst du den Forward-Pass mitrechnen: <strong>(1)</strong> wie
+      <code>euler_odeint</code> aus <span class="mono">y0</span> plus der gelernten Ableitung eine ganze Bahn baut
+      und warum ein grobes <span class="mono">Δt</span> Fehler erzeugt, <strong>(2)</strong> wie
+      <code>get_batch</code> aus einer langen Trajektorie zufällige kurze Fenster schneidet, und
+      <strong>(3)</strong> wie der Loop aus <code>tf.GradientTape</code>, optionalem
+      <code>clip_by_global_norm</code> und <code>Adam</code> einen Gradientenschritt macht.</p>
+      <p style="margin-bottom:0">Jedes Lab rechnet mit demselben <code>eulerOdeint</code> und denselben sechs
+      <code>SYSTEMS</code> wie der echte Code — kein Ersatz, keine Vereinfachung der Integration.</p>
+    </div>
+
+    <div class="legend reveal">
+      <div class="li"><span class="src src-paper">Paper</span> Originalarbeit / Paper-Notiz</div>
+      <div class="li"><span class="src src-code">Code</span> exakt aus deiner Implementierung</div>
+      <div class="li"><span class="src src-dr">Deep-Research</span> LLM-Recherche, zu prüfen</div>
+      <div class="li"><span class="src src-classic">klassisch</span> Lehrbuchwissen</div>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 1 · DAS ODEFUNCMODEL ============================ -->
+<section id="model" data-toc="Gelernte Ableitung">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--data);color:var(--data)"><span class="section-num">01</span> &nbsp;Was das Netz lernt</div>
+    <h2 class="reveal">Das Netz modelliert die Ableitung, nicht den Zustand</h2>
+    <p class="reveal">Bevor irgendetwas integriert wird, muss klar sein, <em>was</em> das Modell überhaupt ausgibt.
+    Das <span class="mono">ODEFuncModel</span> <span class="src src-code" title="code/src/tasks/neural_ode/ode_model.py:26-50">Code · ode_model.py</span>
+    ist eine kleine Pipeline aus drei Schichten. Eingang ist ein Zustand, Ausgang ist eine Ableitung
+    gleicher Form:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">ode_model.py · ODEFuncModel</span><span class="ref">Zeilen 40–50</span></div>
+<pre>self.dense_in  = <span class="f">Dense</span>(units)            <span class="c"># Projektion: features -&gt; units</span>
+self.rnn       = <span class="f">make_dense_model</span>(neuron_type, units=units, **cell_kwargs)
+self.dense_out = <span class="f">Dense</span>(features)         <span class="c"># Projektion zurück: units -&gt; features</span>
+
+<span class="k">def</span> <span class="f">call</span>(self, t, state):           <span class="c"># t ungenutzt: autonome ODE</span>
+    h  = self.<span class="f">dense_in</span>(state)        <span class="c"># (batch, 1, units)</span>
+<span class="hl">    dh = self.<span class="f">rnn</span>(h)               <span class="c"># die Zelle (LTC/LRC/CfC/…) rechnet hier</span></span>
+<span class="hl">    dy = self.<span class="f">dense_out</span>(dh)         <span class="c"># dy = f(state): die ABLEITUNG</span></span>
+    <span class="k">return</span> dy</pre>
+    </div>
+    <p class="code-cap reveal">Der Rückgabewert von <span class="mono">call</span> ist <span class="mono">dy</span> — die rechte Seite
+    der ODE. Genau diese Funktion bekommt <code>euler_odeint</code> als <span class="mono">func</span> übergeben.
+    <span class="src src-code">Code · ode_model.py</span></p>
+
+    <div class="eq accent-cfc reveal">
+      <div class="eq-label"><span>Das, was das Netz darstellt</span><span class="src src-code">Code</span></div>
+      <div data-eq="\frac{dy}{dt} \;=\; f_\theta(y) \;=\; W_{\text{out}}\,\big[\,\text{Zelle}\big(W_{\text{in}}\,y\big)\big] \qquad\text{(autonom: kein expliziter } t\text{-Eingang)}"></div>
+    </div>
+
+    <p class="reveal">Welche Zelle in der Mitte sitzt, entscheidet <code>neuron_type</code>: eine LTC aus Vorlesung 03,
+    eine LRC, eine CfC aus 04, ein LSTM aus 02. Die Hülle bleibt immer dieselbe. Damit ist der Vergleich fair —
+    nur der Kern wechselt, der Rest des Trainings ist für alle identisch.</p>
+
+    <div class="callout reveal">
+      <div class="ctag">Warum „autonom“ und warum <span class="mono">t</span> ungenutzt ist</div>
+      <p style="margin-bottom:0">Die sechs Benchmark-Systeme aus Vorlesung 07 sind <em>autonom</em>: ihre rechte
+      Seite hängt nur vom Zustand <span class="mono">y</span> ab, nicht direkt von der Zeit <span class="mono">t</span>
+      <span class="src src-code" title="code/src/tasks/neural_ode/datasets.py — f:(y)=>[…]">Code · datasets.py</span>. Deshalb
+      ignoriert <code>call(t, state)</code> das Argument <span class="mono">t</span> und füttert nur den Zustand
+      durch das Netz. Das Argument bleibt nur stehen, damit die Signatur zu <code>euler_odeint</code> passt.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 2 · EULER_ODEINT ============================ -->
+<section id="solver" data-toc="euler_odeint">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--data);color:var(--data)"><span class="section-num">02</span> &nbsp;Der Forward-Pass</div>
+    <h2 class="reveal">euler_odeint baut die Trajektorie</h2>
+    <p class="reveal">Das Netz liefert nur die Steigung an einem einzigen Punkt. Eine ganze Bahn entsteht erst, wenn
+    man diese Steigung Schritt für Schritt aufsummiert. Genau das macht <code>euler_odeint</code>
+    <span class="src src-code" title="code/src/tasks/neural_ode/solver.py:4-22">Code · solver.py</span> — der explizite Euler,
+    in seiner kürzesten ehrlichen Form:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">solver.py · euler_odeint</span><span class="ref">Zeilen 17–22</span></div>
+<pre>ys = [y0]
+<span class="k">for</span> i <span class="k">in</span> <span class="f">range</span>(t.shape[<span class="s">0</span>] - <span class="s">1</span>):
+<span class="hl">    dt = t[i + <span class="s">1</span>] - t[i]                  <span class="c"># Schrittweite aus dem Zeitgitter</span></span>
+<span class="hl">    dy = func(t[i], ys[-<span class="s">1</span>])              <span class="c"># Steigung am aktuellen Punkt</span></span>
+<span class="hl">    ys.append(ys[-<span class="s">1</span>] + dt * dy)         <span class="c"># ein Euler-Schritt vorwärts</span></span>
+<span class="k">return</span> tf.stack(ys, axis=<span class="s">0</span>)</pre>
+    </div>
+    <p class="code-cap reveal">Drei Zeilen Mathematik. <span class="mono">func</span> ist das <code>ODEFuncModel</code> aus Abschnitt 01;
+    <span class="mono">y0</span> ist der Startzustand, <span class="mono">t</span> das Zeitgitter. Die Engine dieser
+    Lernreihe hat exakt dieselbe Funktion als <code>eulerOdeint</code>. <span class="src src-code">Code · solver.py</span></p>
+
+    <div class="eq accent-data reveal">
+      <div class="eq-label"><span>Expliziter Euler · ein Schritt</span><span class="src src-classic">klassisch</span></div>
+      <div data-eq="y_{i+1} \;=\; y_i \;+\; \Delta t\cdot f_\theta(y_i)\,,\qquad \Delta t = t_{i+1}-t_i"></div>
+    </div>
+
+    <p class="reveal">Der Euler ist die einfachste denkbare Integration: nimm die Steigung am Startpunkt und gehe ein
+    Stück <span class="mono">Δt</span> in diese Richtung. Das ist exakt, wenn die Bahn eine Gerade wäre — und sie
+    ist es nie. Der Fehler pro Schritt wächst mit der Krümmung und mit <span class="mono">Δt</span>. Im Training
+    ist das absichtlich so: der Solver ist Teil des Modells, das Netz lernt die Ableitung, die <em>diesem</em>
+    Euler die richtige Bahn beschert.</p>
+
+    <div class="callout warn reveal">
+      <div class="ctag">Warum kein <span class="mono">@tf.function</span>, kein adaptiver Solver</div>
+      <p style="margin-bottom:0">Der Code baut die Bahn mit einer Python-Schleife und <code>tf.stack</code>, im Eager
+      Mode <span class="src src-code" title="solver.py:15 — „eager mode only; no @tf.function“">Code · solver.py:15</span>.
+      Kein adaptiver Schrittweiten-Regler, keine RK4-Korrektur. Das hält die Berechnung durchschaubar und den
+      Gradienten kurz — der Preis ist der Euler-Fehler, den das nächste Lab sichtbar macht.</p>
+    </div>
+
+    <p class="reveal">Im Lab baust du die Bahn selbst auf. Wähl ein System, setz die Schrittzahl klein
+    (grobes <span class="mono">Δt</span>) und sieh, wie die Euler-Bahn von der feinen Referenz abdriftet. Mehr
+    Schritte → kleineres <span class="mono">Δt</span> → die Bahnen fallen zusammen.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-euler">
+      <div class="lab-head"><span class="led"></span><span class="title">euler_odeint · Schritt für Schritt zur Bahn</span><span class="sub" id="eu-status">grob vs. fein</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-euler"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Dynamisches System</label>
+            <div class="seg" id="eu-sys"><button data-s="spiral" class="on">Spiral</button><button data-s="periodic_predator_prey">Lotka-Volterra</button><button data-s="duffing">Duffing</button></div>
+          </div>
+          <div class="ctrl"><label>Anzahl Euler-Schritte <span class="val" id="eu-n-v">20</span></label><input type="range" id="eu-n" class="acc-data" min="8" max="400" step="1" value="20"></div>
+          <div class="ctrl"><label>Ansicht</label>
+            <div class="seg" id="eu-view"><button data-v="phase" class="on">Phasenraum</button><button data-v="time">Zeitreihe</button></div>
+          </div>
+          <div class="lab-readout">
+            Schrittweite <span class="k">Δt</span> <span class="big k" id="eu-dt">—</span><br>
+            NRMSE gegen Referenz <span class="k" id="eu-err">—</span><br>
+            <span class="dim">Referenz: feine RK4-Bahn (= scipy DOP853 im Code).</span>
+          </div>
+          <div class="lab-task">Setz die Schrittzahl auf das Minimum: die <b style="color:var(--data)">Euler-Bahn</b>
+          (Punkte) schneidet die Kurven der echten Bahn ab — der NRMSE steigt. Schieb die Schrittzahl hoch:
+          <b>Δt</b> schrumpft, der Fehler fällt gegen null. Das ist genau der Forward-Pass des Trainings.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Hell durchgezogen: feine Referenz (RK4). Cyan-Punkte: euler_odeint mit deinem gewählten Δt. Die Lücke ist der Euler-Diskretisierungsfehler. <span class="src src-code">Code · solver.py / datasets.py</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 3 · GET_BATCH ============================ -->
+<section id="batch" data-toc="Mini-Batch">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--cfc);color:var(--cfc)"><span class="section-num">03</span> &nbsp;Trainingsfenster schneiden</div>
+    <h2 class="reveal">get_batch: kurze Fenster statt der ganzen Bahn</h2>
+    <p class="reveal">Auf der vollen Trajektorie über 1000 Punkte zu trainieren wäre teuer und liefert nur ein
+    einziges Lernsignal pro Schritt. Stattdessen schneidet <code>get_batch</code>
+    <span class="src src-code" title="code/src/tasks/neural_ode/trainer.py:11-39">Code · trainer.py:11</span> bei jeder
+    Iteration <span class="mono">batch_size</span> zufällige Startpunkte und nimmt von dort jeweils ein
+    <span class="mono">batch_time</span> Schritte langes Stück heraus:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">trainer.py · get_batch</span><span class="ref">Zeilen 27–39</span></div>
+<pre>data_size = <span class="f">len</span>(t)
+<span class="hl">s = rng.choice(data_size - batch_time, batch_size, replace=<span class="k">False</span>)</span>  <span class="c"># zufällige Starts</span>
+
+y0 = y[s][:, np.newaxis, :]                       <span class="c"># (batch_size, 1, 2): Startzustände</span>
+<span class="hl">t_batch = t[:batch_time]                          <span class="c"># IMMER t[:batch_time] (autonom)</span></span>
+<span class="hl">y_batch = np.stack(
+    [y[s_i:s_i + batch_time, np.newaxis, :] <span class="k">for</span> s_i <span class="k">in</span> s], axis=<span class="s">1</span>
+)</span>  <span class="c"># (batch_time, batch_size, 1, 2): Ziel-Teilbahnen</span>
+<span class="k">return</span> y0, t_batch, y_batch</pre>
+    </div>
+    <p class="code-cap reveal">Zwei Feinheiten: die Starts werden <span class="mono">ohne Zurücklegen</span> gezogen
+    (<code>replace=False</code>), und das Zeitgitter ist immer <span class="mono">t[:batch_time]</span> — weil die
+    Systeme autonom sind, zählt nur die <em>Länge</em> des Fensters, nicht seine absolute Position.
+    <span class="src src-code">Code · trainer.py</span></p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>Rückgabe</th><th>Form</th><th>Bedeutung</th></tr></thead>
+      <tbody>
+        <tr><th>y0</th><td class="mono">(batch_size, 1, 2)</td><td>Startzustand jedes Fensters</td></tr>
+        <tr><th>t_batch</th><td class="mono">(batch_time,)</td><td>festes Zeitgitter <span class="mono">t[:batch_time]</span></td></tr>
+        <tr><th>y_batch</th><td class="mono">(batch_time, batch_size, 1, 2)</td><td>echte Ziel-Teilbahn je Fenster</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="lab-caption reveal">Formen der drei Rückgabewerte von <code>get_batch</code>. <span class="src src-code">Code · trainer.py:33-37</span></p>
+
+    <p class="reveal">Im Loop wird genau dieses <span class="mono">y0</span> durch <code>euler_odeint</code> über
+    <span class="mono">t_batch</span> gerollt und das Ergebnis mit <span class="mono">y_batch</span> verglichen. Jede
+    Iteration sieht also andere Ausschnitte der Bahn — das gibt dem Optimierer Vielfalt, ohne je die volle
+    Trajektorie zu integrieren.</p>
+
+    <p class="reveal">Das Lab zeigt die volle Trajektorie als Zeitreihe und hebt <span class="mono">batch_size</span>
+    zufällige Fenster der Länge <span class="mono">batch_time</span> hervor. Die Auswahl ist deterministisch über
+    einen Seed — derselbe Seed, dieselben Fenster, exakt wie <code>rng.choice</code> im Code.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-batch">
+      <div class="lab-head"><span class="led"></span><span class="title">Mini-Batch-Sampler · get_batch in Aktion</span><span class="sub" id="ba-status">16 Fenster · batch_time 16</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-batch"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Dynamisches System</label>
+            <div class="seg" id="ba-sys"><button data-s="periodic_predator_prey" class="on">Lotka-Volterra</button><button data-s="spiral">Spiral</button><button data-s="limited_predator_prey">Limited Pred-Prey</button></div>
+          </div>
+          <div class="ctrl"><label>batch_size (Anzahl Fenster) <span class="val" id="ba-bs-v">16</span></label><input type="range" id="ba-bs" class="acc-cfc" min="1" max="24" step="1" value="16"></div>
+          <div class="ctrl"><label>batch_time (Fensterlänge) <span class="val" id="ba-bt-v">16</span></label><input type="range" id="ba-bt" class="acc-cfc" min="4" max="60" step="1" value="16"></div>
+          <div class="ctrl"><label>RNG-Seed <span class="val" id="ba-seed-v">0</span></label><input type="range" id="ba-seed" class="acc-cfc" min="0" max="40" step="1" value="0"></div>
+          <div class="ctrl"><label>&nbsp;</label>
+            <div class="seg" id="ba-reroll"><button data-v="next">Neu würfeln (Seed +1)</button></div>
+          </div>
+          <div class="lab-readout">
+            gezogene Starts <span class="k" id="ba-starts">—</span><br>
+            abgedeckter Anteil der Bahn <span class="big k" id="ba-cov">—</span>
+          </div>
+          <div class="lab-task">Würfle den <b>Seed</b> neu: andere Fenster, aber bei gleichem Seed immer dieselben —
+          deterministisch wie <code>rng.choice</code>. Dreh <b>batch_time</b> hoch: längere Fenster, mehr Kontext
+          pro Schritt. Im echten Lauf sind es <b>16 Fenster à 16 Schritte</b>, 2000-mal neu gezogen.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Graue Linie: die volle Trajektorie (Komponente y0). Cyan-Segmente mit Startpunkt: die per Seed gezogenen Mini-Batch-Fenster. <span class="src src-code">Code · trainer.py · datasets.py</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 4 · DER LOOP ============================ -->
+<section id="loop" data-toc="Trainings-Loop">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--ltc);color:var(--ltc)"><span class="section-num">04</span> &nbsp;Der Gradientenschritt</div>
+    <h2 class="reveal">GradientTape, Clipping, Adam</h2>
+    <p class="reveal">Jetzt fügt sich alles zusammen. Pro Iteration: ein Batch ziehen, vorwärts integrieren, den
+    Verlust messen, den Gradienten zurückrechnen, optional clippen, einen Adam-Schritt machen. Der Kern des
+    Loops <span class="src src-code" title="code/src/tasks/neural_ode/trainer.py:71-103">Code · trainer.py:71</span>,
+    wörtlich:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">trainer.py · train (Loop-Kern)</span><span class="ref">Zeilen 77–95</span></div>
+<pre><span class="k">with</span> tf.<span class="f">GradientTape</span>() <span class="k">as</span> tape:
+<span class="hl">    pred = <span class="f">euler_odeint</span>(model, y0_tf, t_tf)        <span class="c"># Forward-Pass = Integration</span></span>
+<span class="hl">    loss_value = loss_fn(pred, y_true)                <span class="c"># MSE(pred, ziel)</span></span>
+
+<span class="hl">grads = tape.<span class="f">gradient</span>(loss_value, model.trainable_variables)</span>
+<span class="k">if</span> clip_norm:
+<span class="hl">    applied_grads, pre_clip_norm = tf.<span class="f">clip_by_global_norm</span>(grads, clip_norm)</span>
+<span class="k">else</span>:
+    applied_grads = grads
+<span class="k">if</span> gradient_tracker <span class="k">is</span> <span class="k">not</span> <span class="k">None</span> <span class="k">and</span> gradient_tracker.<span class="f">should_log</span>(itr):
+    gradient_tracker.<span class="f">record</span>(itr, model, grads)        <span class="c"># RQ4: pre-clip Norm protokollieren</span>
+    <span class="k">if</span> clip_norm:
+        gradient_tracker.<span class="f">record_clip</span>(itr, <span class="f">float</span>(pre_clip_norm.numpy()), clip_norm)
+<span class="hl">optimizer.<span class="f">apply_gradients</span>(<span class="f">zip</span>(applied_grads, model.trainable_variables))</span></pre>
+    </div>
+    <p class="code-cap reveal">Fünf hervorgehobene Zeilen sind das ganze Lernen. Der Rest ist Buchhaltung für den
+    Gradient-Tracker. <span class="src src-code">Code · trainer.py</span></p>
+
+    <p class="reveal">Geh die fünf Schritte einzeln durch — jeder hat einen klaren Zweck:</p>
+
+    <div class="eq accent-ltc reveal">
+      <div class="eq-label"><span>Verlust · MSE über das Fenster</span><span class="src src-code">Code · trainer.py:6</span></div>
+      <div data-eq="\mathcal{L} \;=\; \frac{1}{N}\sum_{k}\big\lVert \hat y_k - y_k \big\rVert^2 \qquad \hat y = \text{euler\_odeint}(f_\theta, y_0, t)"></div>
+    </div>
+
+    <p class="reveal"><strong>1 · GradientTape.</strong> Das <code>with tf.GradientTape()</code> zeichnet jede Operation
+    auf, die <span class="mono">loss_value</span> berührt — einschließlich aller <span class="mono">batch_time</span>
+    Euler-Schritte. Genau deshalb ist ein kurzer Solver gut: der Tape muss durch die ganze Integration
+    zurückdifferenzieren. Das ist das Backprop-through-time aus Vorlesung 01, nur dass die „Zeitschritte“ hier
+    Euler-Schritte sind.</p>
+
+    <p class="reveal"><strong>2 · Loss.</strong> <code>loss_fn</code> ist im Benchmark MSE
+    <span class="src src-code" title="trainer.py:6 — 'mse': reduce_mean(square(pred-true))">Code · trainer.py:6</span>:
+    der mittlere quadratische Abstand zwischen der gerollten Bahn <span class="mono">pred</span> und der echten
+    Teilbahn <span class="mono">y_true</span>. <code>'mae'</code> existiert als Alt-Option, wird im Thesis-Lauf
+    aber nicht genutzt.</p>
+
+    <p class="reveal"><strong>3 · tape.gradient.</strong> Der Tape liefert <span class="mono">∂L/∂θ</span> für alle
+    trainierbaren Variablen — die Gewichte der drei Schichten <em>und</em> die Zell-Parameter. Diese rohen
+    Gradienten gehen unverändert an den Tracker, damit RQ4 die echte Pathologie sieht
+    <span class="src src-code" title="trainer.py:88 — 'recorded pre-clip so RQ4 sees the raw gradient pathology'">Code · trainer.py:88</span>.</p>
+
+    <p class="reveal"><strong>4 · clip_by_global_norm.</strong> Optional. Ist <code>clip_norm</code> gesetzt, wird der
+    <em>globale</em> Gradient (alle Variablen als ein langer Vektor) auf diese Norm skaliert, falls er sie
+    übersteigt. Das ist der Schalter, der den v1- vom v2-Lauf trennt — dazu gleich der eigene Abschnitt.</p>
+
+    <p class="reveal"><strong>5 · Adam.</strong> <code>optimizer.apply_gradients</code> macht einen Adam-Schritt mit
+    Lernrate <span class="mono">1e-3</span>. Adam skaliert jede Komponente mit ihren laufenden ersten und zweiten
+    Momenten — robust gegen unterschiedlich große Gradienten der verschiedenen Parameter
+    <span class="src src-classic" title="Kingma & Ba 2015, Adam">klassisch</span>.</p>
+
+    <div class="callout insight reveal">
+      <div class="ctag">Der Gradient-Tracker — warum vor dem Clip protokolliert wird</div>
+      <p style="margin-bottom:.6em">Alle <span class="mono">log_every = 25</span> Iterationen ruft der Loop
+      <code>tracker.record</code> auf <span class="src src-code" title="gradient_flow.py:36-37 — should_log: itr % log_every == 0">Code · gradient_flow.py:36</span>.
+      Aufgezeichnet werden die <strong>rohen</strong> Gradienten — vor dem Clipping. So zeigt RQ4 die echte
+      Gradientenpathologie der Zellen (Vanishing/Exploding aus Vorlesung 01), während
+      <code>record_clip</code> separat festhält, <em>wann</em> und <em>wie hart</em> der Clip eingriff.</p>
+      <p style="margin-bottom:0">Aus dieser Spur entsteht in Vorlesung 09 der Gradient-Flow-Plot.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 5 · CLIPPING-LAB ============================ -->
+<section id="clip" data-toc="Clipping">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--ltc);color:var(--ltc)"><span class="section-num">05</span> &nbsp;v1 gegen v2</div>
+    <h2 class="reveal">Gradient-Clipping: derselbe Code, ein Schalter</h2>
+    <p class="reveal">Der Benchmark läuft in zwei Profilen. <strong>v1</strong> trainiert die liquiden Kernzellen
+    ohne Clipping (<span class="mono">clip_norm = 0.0</span>, also <code>None</code>). <strong>v2</strong> setzt
+    <span class="mono">clip_norm = 1.0</span> und isoliert damit, ob das Clipping allein die Instabilität der
+    Roh-Zellen behebt <span class="src src-code" title="run_benchmark.py:62,99-106 — V2_CLIP_NORM=1.0; [360,480): ltc/lrc mit clip">Code · run_benchmark.py:62</span>.</p>
+
+    <div class="eq accent-ltc reveal">
+      <div class="eq-label"><span>clip_by_global_norm</span><span class="src src-classic">klassisch</span></div>
+      <div data-eq="g \;\leftarrow\; g\cdot\frac{c}{\max\!\big(c,\;\lVert g\rVert_2\big)}\,,\qquad c = \texttt{clip\_norm} \;(=1.0\text{ in v2})"></div>
+    </div>
+
+    <p class="reveal">Lies die Formel: solange die globale Norm <span class="mono">‖g‖</span> unter
+    <span class="mono">c</span> bleibt, ist der Faktor 1 — nichts passiert. Übersteigt sie <span class="mono">c</span>,
+    wird der ganze Gradient auf Länge <span class="mono">c</span> zurückskaliert, <em>Richtung bleibt erhalten</em>.
+    Ein einzelner explodierender Schritt kann das Training so nicht mehr aus der Bahn werfen.</p>
+
+    <p class="reveal">Das Lab zeigt eine synthetische Gradientennorm-Folge mit gelegentlichen Spitzen. Schieb die
+    Schwelle <span class="mono">c</span> und sieh, wie der angewandte Gradient gedeckelt wird — und wie oft der
+    Clip in v2 (<span class="mono">c = 1.0</span>) tatsächlich greift.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-clip">
+      <div class="lab-head"><span class="led"></span><span class="title">clip_by_global_norm · Roh-Norm gegen gedeckelte Norm</span><span class="sub" id="cl-status">c = 1.0 (v2)</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-clip"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>clip_norm c <span class="val" id="cl-c-v">1.0</span></label><input type="range" id="cl-c" class="acc-ltc" min="0.2" max="6" step="0.1" value="1.0"></div>
+          <div class="ctrl"><label>Spitzenhäufigkeit <span class="val" id="cl-spk-v">0.18</span></label><input type="range" id="cl-spk" class="acc-ltc" min="0" max="0.5" step="0.02" value="0.18"></div>
+          <div class="ctrl"><label>Profil</label>
+            <div class="seg" id="cl-prof"><button data-v="v1" class="on">v1 (clip aus)</button><button data-v="v2">v2 (c = 1.0)</button></div>
+          </div>
+          <div class="lab-readout">
+            Clip greift bei <span class="big k" id="cl-rate">—</span> der protokollierten Schritte<br>
+            <span class="dim">Roh-Norm (hell) vs. angewandte Norm (orange).</span>
+          </div>
+          <div class="lab-task">Im Profil <b>v1</b> ist der Clip aus — die Spitzen bleiben stehen, der Optimierer
+          bekommt sie voll ab. Schalt auf <b>v2</b> (<span class="mono">c = 1.0</span>): alle Schritte über der
+          Linie werden auf <b>c</b> gekappt. Dreh die <b>Spitzenhäufigkeit</b> hoch und beobachte die Clip-Rate.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Hell: rohe globale Gradientennorm (das, was record sieht). Orange: nach clip_by_global_norm angewandte Norm. Gestrichelte Linie: die Schwelle c. <span class="src src-code">Code · trainer.py:84-95</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 6 · HYPERPARAMETER ============================ -->
+<section id="hyper" data-toc="Hyperparameter">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--data);color:var(--data)"><span class="section-num">06</span> &nbsp;Die Zahlen festnageln</div>
+    <h2 class="reveal">Die Hyperparameter des Benchmarks</h2>
+    <p class="reveal">Damit jeder Lauf vergleichbar ist, sind alle Stellschrauben in
+    <code>run_benchmark.py</code> festgeschrieben <span class="src src-code" title="run_benchmark.py:64-73 — DEFAULTS, DENSE_UNITS, NCP_CONFIG">Code · run_benchmark.py:64</span>.
+    Nur der Zelltyp, die Verschaltung, das System und der Seed variieren — der Trainings-Aufbau bleibt fix:</p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>Parameter</th><th>Wert</th><th>Rolle</th></tr></thead>
+      <tbody>
+        <tr><th>n_iters</th><td class="mono">2000</td><td>Trainingsiterationen pro Lauf</td></tr>
+        <tr><th>batch_size</th><td class="mono">16</td><td>zufällige Fenster pro Iteration</td></tr>
+        <tr><th>batch_time</th><td class="mono">16</td><td>Schritte pro Fenster</td></tr>
+        <tr><th>lr</th><td class="mono">1e-3</td><td>Adam-Lernrate</td></tr>
+        <tr><th>loss</th><td class="mono">mse</td><td>Trainingsverlust (Thesis-Metrik)</td></tr>
+        <tr><th>data_size</th><td class="mono">1000</td><td>Punkte der vollen Trajektorie (V. 07)</td></tr>
+        <tr><th>dense_units</th><td class="mono">16</td><td>Breite der RNN-Zelle (Dense-Wiring)</td></tr>
+        <tr><th>ncp</th><td class="mono">inter 16 · command 8 · motor 2</td><td>NCP-Wiring (V. 06)</td></tr>
+        <tr><th>grad_log_every</th><td class="mono">25</td><td>Logging-Intervall des Trackers</td></tr>
+        <tr><th>seeds</th><td class="mono">0,1,2,3,4</td><td>fünf Wiederholungen je Zelle</td></tr>
+        <tr><th>clip_norm</th><td class="mono">v1: 0.0 · v2: 1.0</td><td>Gradient-Clip-Schwelle</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="lab-caption reveal">Hyperparameter-Matrix. <span class="src src-code">Code · run_benchmark.py:55-73</span></p>
+
+    <div class="callout reveal">
+      <div class="ctag">Wie viele Läufe das ergibt</div>
+      <p style="margin-bottom:.6em">Der <strong>v1-Lauf</strong> ist die Thesis-Matrix
+      <span class="mono">{ltc, lrc, gru, lstm} × {dense, ncp} × 6 Systeme × 5 Seeds = 240</span> Runs
+      <span class="src src-code" title="run_benchmark.py:45-55,240 — CELLS×WIRINGS×SYSTEMS×SEEDS">Code · run_benchmark.py:240</span>.
+      Der <strong>v2-Lauf</strong> deckt die reparierten Zellen plus die Clip-Achse ab und zählt
+      <span class="mono">480</span> Runs <span class="src src-code" title="run_benchmark.py:94-106 — [0,180)+[180,360)+[360,480)">Code · run_benchmark.py:94</span>.</p>
+      <p style="margin-bottom:0">Jeder einzelne Run ist eine SLURM-Array-Task: ein Aufruf, ein Training, eine
+      JSON-Datei <span class="src src-code" title="run_benchmark.py:6-7 — 'One invocation = one training run = one JSON result file'">Code · run_benchmark.py:6</span>.
+      Aus diesen JSONs entstehen die Plots von Vorlesung 09 und die Statistik von Vorlesung 10.</p>
+    </div>
+
+    <div class="callout good reveal">
+      <div class="ctag" style="color:var(--lrc)">Wohin als Nächstes</div>
+      <p style="margin-bottom:0">Der Trainings-Code produziert pro Run eine JSON-Datei mit Lernkurve,
+      Gradient-Flow und der vollen Rollout-Bahn. Die nächste Vorlesung <strong>09 · Ergebnisse lesen &amp;
+      animieren</strong> zeigt, wie aus diesen Zahlen Phasenporträt, Lernkurve und Gradient-Flow-Plot werden —
+      Schritt für Schritt aufgebaut.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ QUELLEN ============================ -->
+<section id="sources" data-toc="Quellen">
+  <div class="wrap">
+    <div class="eyebrow reveal">Belege</div>
+    <h2 class="reveal">Quellen dieser Vorlesung</h2>
+    <div class="bib reveal">
+      <div class="bib-item"><div class="bib-key">solver.py</div><div class="bib-cite">
+        <div class="t">euler_odeint — expliziter Euler-Integrator</div>
+        <div class="meta">code/src/tasks/neural_ode/solver.py · Zeilen 4–22</div>
+        <div class="where">Forward-Pass des Trainings: ys.append(ys[-1] + dt·func(t,ys[-1])), eager mode</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">ode_model.py</div><div class="bib-cite">
+        <div class="t">ODEFuncModel — die gelernte Ableitung</div>
+        <div class="meta">code/src/tasks/neural_ode/ode_model.py · Zeilen 26–50</div>
+        <div class="where">dense_in → rnn(Zelle) → dense_out; call(t,state) gibt dy = f(state)</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">trainer.py</div><div class="bib-cite">
+        <div class="t">get_batch + train — Sampler und Trainings-Loop</div>
+        <div class="meta">code/src/tasks/neural_ode/trainer.py · Zeilen 11–103</div>
+        <div class="where">Mini-Batch-Sampling, GradientTape, MSE, clip_by_global_norm, Adam, Gradient-Tracker</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">run_benchmark.py</div><div class="bib-cite">
+        <div class="t">Benchmark-Runner — Hyperparameter und Matrix</div>
+        <div class="meta">code/experiments/run_benchmark.py · Zeilen 45–106, 240</div>
+        <div class="where">n_iters 2000, batch 16×16, lr 1e-3, units 16, NCP 16/8/2, seeds 0–4, v1=240 / v2=480 Runs, clip 0.0/1.0</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">gradient_flow.py</div><div class="bib-cite">
+        <div class="t">GradientFlowTracker — RQ4-Werkzeug</div>
+        <div class="meta">code/src/evaluation/gradient_flow.py · Zeilen 16–74</div>
+        <div class="where">should_log: itr % log_every (=25) == 0; record() protokolliert rohe Gradienten vor dem Clip</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Kingma2015</div><div class="bib-cite">
+        <div class="t">Adam: A Method for Stochastic Optimization</div>
+        <div class="meta">Kingma &amp; Ba · ICLR 2015 · arXiv:1412.6980</div>
+        <div class="where">Adaptive Momenten-Schätzung — der Optimierer hinter apply_gradients</div>
+      </div></div>
+    </div>
+    <p class="note reveal">Die Labs ersetzen das echte trainierbare Netz durch die <em>bekannte</em> rechte Seite der
+    sechs Benchmark-Systeme, um Solver und Sampler isoliert sichtbar zu machen. Die Integration (euler_odeint),
+    das Sampling (rng.choice ohne Zurücklegen) und das Clipping (auf globale Norm c) sind dabei <em>formgleich</em>
+    mit dem Code. Im Training liefert statt der echten ODE das <code>ODEFuncModel</code> die Ableitung — die
+    gelernte Funktion ist genau das, was der Benchmark optimiert.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="f-title">Vorlesung 08 · Der Trainings-Code</div>
+  <p>Teil der interaktiven Lernreihe zur Masterarbeit. Jeder Regler rechnet mit dem echten Solver und Sampler.</p>
+  <p class="mono">solver.py · ode_model.py · trainer.py · run_benchmark.py · Adam 2015</p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
+<script src="assets/engine.js"></script>
+<script>
+/* ============================================================
+   LAB 1 · euler_odeint baut die Trajektorie
+   Nutzt die echten SYSTEMS + eulerOdeint + trueTrajectory + nrmse.
+   ============================================================ */
+function initEuler(){
+  const sc=new Scope('cv-euler',{l:44,r:16,t:18,b:26});
+  const P={sys:'spiral', n:20, view:'phase'};
+  let raf, animI=0, ref=null, eul=null;
+
+  function recompute(){
+    const S=SYSTEMS[P.sys];
+    ref=trueTrajectory(P.sys, 600);                       // feine Referenz (RK4)
+    const [t0,t1]=S.tspan, n=P.n, dt=(t1-t0)/(n-1);
+    const tg=[]; for(let i=0;i<n;i++) tg.push(t0+i*dt);
+    const ys=eulerOdeint(S.f, S.y0, tg);                  // echter Forward-Pass
+    eul={t:tg, y:ys, dt:dt};
+    // NRMSE: Referenz auf das Euler-Gitter resamplen, dann nrmse (faithful)
+    const refOn=tg.map(tt=>{ const idx=clamp(Math.round((tt-t0)/(t1-t0)*(ref.t.length-1)),0,ref.t.length-1); return ref.y[idx]; });
+    const err=nrmse(refOn, ys);
+    $('#eu-dt').textContent=dt.toFixed(3);
+    $('#eu-err').textContent=err.toFixed(3);
+    $('#eu-status').textContent=(dt>0.25?'grob (Δt='+dt.toFixed(2)+')':'fein (Δt='+dt.toFixed(2)+')');
+    animI=0;
+  }
+  function bounds(){
+    // gemeinsame Achsenspanne aus der Referenz
+    let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
+    ref.y.forEach(p=>{ if(p[0]<x0)x0=p[0]; if(p[0]>x1)x1=p[0]; if(p[1]<y0)y0=p[1]; if(p[1]>y1)y1=p[1]; });
+    const mx=(x1-x0)*0.1||1, my=(y1-y0)*0.1||1;
+    return [x0-mx,x1+mx,y0-my,y1+my];
+  }
+  function draw(){
+    sc.clear();
+    if(P.view==='phase'){
+      const [bx0,bx1,by0,by1]=bounds();
+      sc.range(bx0,bx1,by0,by1); sc.grid(4,4,{yd:1,xl:true,xd:1});
+      sc.path(ref.y.map(p=>[p[0],p[1]]), '#7fd3e6', 1.8, {alpha:.55});
+      const upto=Math.min(animI, eul.y.length);
+      const seg=eul.y.slice(0,upto).map(p=>[p[0],p[1]]);
+      sc.path(seg, COL.data, 2.2);
+      seg.forEach(p=>sc.dot(p[0],p[1],COL.data,2.6));
+      if(upto>0) sc.ring(eul.y[upto-1][0], eul.y[upto-1][1], COL.data, 5, 2);
+      sc.dot(SYSTEMS[P.sys].y0[0], SYSTEMS[P.sys].y0[1], COL.cfc, 4);
+      sc.text('y0',sc.X(SYSTEMS[P.sys].y0[0])+6,sc.Y(SYSTEMS[P.sys].y0[1])-6,COL.cfc,'left');
+      sc.text('Phasenraum · y0 vs y1', sc.pad.l, sc.h-6, COL.faint, 'left', '600 10px JetBrains Mono');
+    } else {
+      const S=SYSTEMS[P.sys];
+      let y0=1e9,y1=-1e9; ref.y.forEach(p=>{ if(p[0]<y0)y0=p[0]; if(p[0]>y1)y1=p[0]; if(p[1]<y0)y0=p[1]; if(p[1]>y1)y1=p[1]; });
+      const m=(y1-y0)*0.1||1;
+      sc.range(S.tspan[0],S.tspan[1],y0-m,y1+m); sc.grid(4,4,{yd:1,xl:true,xd:0});
+      sc.path(ref.t.map((tt,i)=>[tt,ref.y[i][0]]), '#7fd3e6', 1.6, {alpha:.5});
+      sc.path(ref.t.map((tt,i)=>[tt,ref.y[i][1]]), '#7fd3e6', 1.6, {dash:[3,3],alpha:.4});
+      const upto=Math.min(animI, eul.y.length);
+      const s0=eul.t.slice(0,upto).map((tt,i)=>[tt,eul.y[i][0]]);
+      const s1=eul.t.slice(0,upto).map((tt,i)=>[tt,eul.y[i][1]]);
+      sc.path(s0, COL.data, 2.2); s0.forEach(p=>sc.dot(p[0],p[1],COL.data,2.4));
+      sc.path(s1, COL.ltc, 2.0, {dash:[4,3]});
+      sc.text('y0 (durchgezogen) · y1 (gestrichelt)', sc.pad.l, sc.h-6, COL.faint, 'left', '600 10px JetBrains Mono');
+    }
+  }
+  function frame(){
+    if(animI<=eul.y.length) animI+=Math.max(1,Math.round(eul.y.length/90));
+    draw();
+    raf=requestAnimationFrame(frame);
+  }
+  bind('eu-n','eu-n-v',v=>{P.n=Math.round(v); recompute();},0);
+  seg('eu-sys',s=>{P.sys=s; recompute();});
+  seg('eu-view',v=>{P.view=v; draw();});
+  whenVisible('lab-euler',()=>{ recompute(); if(!raf) frame(); });
+}
+
+/* ============================================================
+   LAB 2 · Mini-Batch-Sampler — get_batch
+   Deterministisch via rng(seed); rng.choice ohne Zurücklegen nachgebildet.
+   ============================================================ */
+function initBatch(){
+  const sc=new Scope('cv-batch',{l:44,r:16,t:18,b:26});
+  const P={sys:'periodic_predator_prey', bs:16, bt:16, seed:0};
+  let traj=null, starts=[];
+
+  function sampleStarts(){
+    // rng.choice(data_size - batch_time, batch_size, replace=False), faithful in Form
+    const data=traj.t.length;
+    const pool=[]; for(let i=0;i<data-P.bt;i++) pool.push(i);
+    const rand=rng(P.seed*1000+7);
+    // Fisher-Yates-Teilschritt -> Auswahl ohne Zurücklegen
+    for(let i=pool.length-1;i>0;i--){ const j=Math.floor(rand()*(i+1)); const tmp=pool[i]; pool[i]=pool[j]; pool[j]=tmp; }
+    starts=pool.slice(0,Math.min(P.bs,pool.length)).sort((a,b)=>a-b);
+  }
+  function recompute(){
+    const fine=trueTrajectory(P.sys, 1000);               // data_size = 1000
+    traj=fine;
+    sampleStarts();
+    $('#ba-bs-v').textContent=P.bs; $('#ba-bt-v').textContent=P.bt; $('#ba-seed-v').textContent=P.seed;
+    const cov=Math.min(1, starts.length*P.bt/traj.t.length);
+    $('#ba-cov').textContent=(cov*100).toFixed(0)+'%';
+    $('#ba-starts').textContent=starts.slice(0,6).join(', ')+(starts.length>6?' …':'');
+    $('#ba-status').textContent=P.bs+' Fenster · batch_time '+P.bt;
+    draw();
+  }
+  function draw(){
+    sc.clear();
+    const t0=traj.t[0], t1=traj.t[traj.t.length-1];
+    let y0=1e9,y1=-1e9; traj.y.forEach(p=>{ if(p[0]<y0)y0=p[0]; if(p[0]>y1)y1=p[0]; });
+    const m=(y1-y0)*0.12||1;
+    sc.range(t0,t1,y0-m,y1+m); sc.grid(4,4,{yd:1,xl:true,xd:0});
+    // volle Trajektorie (Komponente y0), grau
+    sc.path(traj.t.map((tt,i)=>[tt,traj.y[i][0]]), COL.line, 1.4, {alpha:.9});
+    // hervorgehobene Fenster
+    starts.forEach(s0=>{
+      const seg=[]; for(let k=0;k<P.bt && s0+k<traj.t.length;k++) seg.push([traj.t[s0+k], traj.y[s0+k][0]]);
+      sc.path(seg, COL.cfc, 2.4);
+      sc.dot(traj.t[s0], traj.y[s0][0], COL.data, 3.2);
+    });
+    sc.text('volle Bahn (grau) · '+starts.length+' Mini-Batch-Fenster (grün)', sc.pad.l, sc.h-6, COL.faint, 'left', '600 10px JetBrains Mono');
+  }
+  bind('ba-bs','ba-bs-v',v=>{P.bs=Math.round(v); recompute();},0);
+  bind('ba-bt','ba-bt-v',v=>{P.bt=Math.round(v); recompute();},0);
+  bind('ba-seed','ba-seed-v',v=>{P.seed=Math.round(v); recompute();},0);
+  seg('ba-sys',s=>{P.sys=s; recompute();});
+  seg('ba-reroll',()=>{ P.seed=(P.seed+1)%41; const el=$('#ba-seed'); if(el) el.value=P.seed; recompute(); });
+  whenVisible('lab-batch',()=>{ recompute(); });
+}
+
+/* ============================================================
+   LAB 3 · clip_by_global_norm — Roh- vs. angewandte Gradientennorm
+   Synthetische Norm-Folge; Clipping formgleich zu trainer.py:84-95.
+   ============================================================ */
+function initClip(){
+  const sc=new Scope('cv-clip',{l:44,r:16,t:18,b:26});
+  const P={c:1.0, spk:0.18, prof:'v1'};
+  const N=120;
+  let rawSeq=[];
+  function rebuild(){
+    const rand=rng(20260613);
+    rawSeq=[];
+    let base=0.45;
+    for(let i=0;i<N;i++){
+      base += (rand()-0.5)*0.12; base=clamp(base,0.2,0.9);
+      let v=base + Math.abs(Math.sin(i*0.21))*0.15;
+      if(rand()<P.spk) v += 1.5 + rand()*4.5;            // gelegentliche Explosion
+      rawSeq.push(v);
+    }
+  }
+  function applied(v){
+    if(P.prof==='v1') return v;                          // clip aus -> roh durchgereicht
+    return v * (P.c / Math.max(P.c, v));                 // clip_by_global_norm
+  }
+  function draw(){
+    sc.clear(); sc.range(0, N, 0, 6.2); sc.grid(4,4,{yd:0,xl:true,xd:0});
+    if(P.prof==='v2'){ sc.hline(P.c, COL.faint, 1.4, [5,5]); sc.label('c = '+P.c.toFixed(1), N*0.02, P.c+0.25, COL.faint, 'left'); }
+    sc.path(rawSeq.map((v,i)=>[i,v]), '#9fb6c8', 1.6, {alpha:.85});
+    sc.path(rawSeq.map((v,i)=>[i,applied(v)]), COL.ltc, 2.4);
+    // Clip-Rate: Anteil protokollierter Schritte (alle 25) mit Norm > c
+    let logged=0, clipped=0;
+    for(let i=25;i<=N;i+=25){ logged++; if(P.prof==='v2' && rawSeq[i-1]>P.c) clipped++; }
+    const rate=logged?clipped/logged:0;
+    $('#cl-rate').textContent=(P.prof==='v1')?'0 %':(rate*100).toFixed(0)+' %';
+    $('#cl-status').textContent=(P.prof==='v1')?'v1 · clip aus':('v2 · c = '+P.c.toFixed(1));
+    sc.text('Iteration', sc.w/2, sc.h-4, COL.faint, 'center', '600 10px JetBrains Mono');
+    sc.text('‖g‖', sc.pad.l-34, sc.pad.t+6, COL.faint, 'left', '600 10px JetBrains Mono');
+  }
+  bind('cl-c','cl-c-v',v=>{P.c=v; draw();},1);
+  bind('cl-spk','cl-spk-v',v=>{P.spk=v; rebuild(); draw();},2);
+  seg('cl-prof',v=>{ P.prof=v; if(v==='v2'){ P.c=1.0; const el=$('#cl-c'); if(el) el.value=1.0; const lab=$('#cl-c-v'); if(lab) lab.textContent='1.0'; } draw(); });
+  whenVisible('lab-clip',()=>{ rebuild(); draw(); });
+}
+
+LR.boot([initEuler, initBatch, initClip]);
+</script>
+</body>
+</html>

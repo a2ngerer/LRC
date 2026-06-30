@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>02 · LSTM &amp; GRU — die gegateten Klassiker</title>
+<meta name="description" content="Vorlesung 02: Wie LSTM und GRU das Vanishing-Gradient-Problem lösen — das Constant Error Carousel als additiver Speicherpfad, Input/Forget/Output-Gate, GRU als schlanke Variante, und warum die Thesis-Wrapper die elapsed_time verwerfen.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lecture="02">
+
+<!-- ============================ HERO ============================ -->
+<header class="hero">
+  <canvas class="hero-canvas" data-c1="#be123c" data-c2="#e0903a" data-c3="#2563eb"></canvas>
+  <div class="hero-inner">
+    <div class="hero-kicker reveal"><span class="lecnum">Vorlesung 02</span> Klassische Baselines · gegatete RNNs</div>
+    <h1 class="hero-title reveal">LSTM &amp; GRU:<br>das Neuron lernt zu <span class="liquid">behalten</span></h1>
+    <p class="hero-sub reveal">Vorlesung 01 hat gezeigt, <em>warum</em> ein gewöhnliches RNN vergisst:
+    der Gradient läuft durch ein Produkt vieler Jacobi-Matrizen und schrumpft auf null. LSTM und GRU
+    lösen das nicht mit einem Kniff, sondern mit einem <em>zweiten Pfad</em>: einem additiven Speicher,
+    durch den der Fehler ungedämpft zurückfließt — das Constant Error Carousel.</p>
+    <div class="hero-meta reveal">
+      <span class="hero-pill"><span class="dot" style="background:var(--lstm)"></span>LSTM · 4 Gates, State [h, c]</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--cfc)"></span>GRU · 3 Gates, State [h]</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--ct)"></span>CEC · additiver Pfad</span>
+    </div>
+  </div>
+  <div class="scroll-hint"><span>Scrollen</span><span class="line"></span></div>
+</header>
+
+<!-- ============================ 0 · EINSTIEG ============================ -->
+<section id="intro" data-toc="Einstieg">
+  <div class="wrap">
+    <div class="eyebrow reveal">Worum es geht</div>
+    <h2 class="reveal">Eine Tür, die der Fehler offen findet</h2>
+    <p class="lead reveal">Stell dir einen Notizzettel vor, den ein Sachbearbeiter über viele Schritte
+    weiterreicht. Beim gewöhnlichen RNN wird der Zettel bei jeder Übergabe neu abgeschrieben — und mit
+    jeder Abschrift verblasst er, bis nach zwanzig Stationen nichts mehr lesbar ist. Das LSTM legt
+    daneben eine <em>geschützte Schublade</em>: Was hineingelegt wird, bleibt dort liegen, bis ein Gate
+    es bewusst löscht. Der Fehler-Gradient findet diese Schublade beim Rückwärtslaufen offen.</p>
+
+    <p class="reveal">Diese Vorlesung baut die Brücke von Vorlesung 01 zu allem, was folgt. Das
+    Vanishing-Gradient-Problem war dort die <em>Wurzel</em>; hier steht die erste echte Lösung. Und der
+    additive Speicherpfad <span class="mono">c</span>, den wir gleich herleiten, ist genau der Pfad, um
+    den Vorlesung 05 (Mixed Memory) später eine ODE-Zelle legt.</p>
+
+    <div class="callout reveal">
+      <div class="ctag">Das Versprechen dieser Seite</div>
+      <p style="margin-bottom:.6em">Am Ende verstehst du drei Dinge konkret: <strong>(1)</strong> warum
+      der additive Zellzustand <span class="mono">c_t = f·c_{t-1} + i·g</span> den Gradienten rettet
+      (das CEC), <strong>(2)</strong> wie Input-, Forget- und Output-Gate diesen Speicher steuern und
+      wie die GRU dasselbe mit weniger Bauteilen erreicht, und <strong>(3)</strong> dass die LSTM/GRU im
+      Thesis-Code <em>diskret</em> sind — sie werfen die verstrichene Zeit weg, anders als die
+      kontinuierlich-zeitlichen ODE-Zellen.</p>
+      <p style="margin-bottom:0">Jedes Lab rechnet die skalare Reduktion der echten Gate-Gleichungen
+      aus <code>stepLSTM</code> bzw. <code>stepGRU</code> der geteilten Engine.</p>
+    </div>
+
+    <div class="legend reveal">
+      <div class="li"><span class="src src-paper">Paper</span> Originalarbeit / Paper-Notiz</div>
+      <div class="li"><span class="src src-code">Code</span> exakt aus deiner Implementierung</div>
+      <div class="li"><span class="src src-dr">Deep-Research</span> LLM-Recherche, zu prüfen</div>
+      <div class="li"><span class="src src-classic">klassisch</span> Lehrbuchwissen</div>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 1 · DAS PROBLEM AUS VL 01 ============================ -->
+<section id="problem" data-toc="Rückblick VL 01">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--ct);color:var(--ct)"><span class="section-num">01</span> &nbsp;Woher das Problem kam</div>
+    <h2 class="reveal">Der Gradient läuft durch ein Produkt — und stirbt</h2>
+    <p class="reveal">Kurzer Rückblick auf Vorlesung 01: Beim Backpropagation Through Time entsteht der
+    Gradient über viele Zeitschritte als <strong>Produkt von Jacobi-Matrizen</strong>. Jeder Faktor
+    enthält die Ableitung der <span class="mono">tanh</span>-Aktivierung, und die liegt zwischen 0 und 1.
+    Ein Produkt aus vielen Zahlen kleiner 1 geht gegen null <span class="src src-paper" title="Hochreiter & Schmidhuber 1997, Long Short-Term Memory">Paper · Hochreiter1997</span>.</p>
+
+    <div class="eq accent-ct reveal">
+      <div class="eq-label"><span>Vanilla-RNN · BPTT-Gradient (aus VL 01)</span><span class="src src-classic">klassisch</span></div>
+      <div data-eq="\frac{\partial \mathcal{L}_T}{\partial h_k} \;=\; \frac{\partial \mathcal{L}_T}{\partial h_T}\prod_{t=k+1}^{T}\underbrace{\frac{\partial h_t}{\partial h_{t-1}}}_{=\,W_h^\top\,\mathrm{diag}\,\tanh'(\cdot)}\;\xrightarrow[\;|\cdot|<1\;]{T-k\ \text{groß}}\;0"></div>
+    </div>
+
+    <p class="reveal">Die Kernidee von LSTM dreht genau diesen einen Faktor um. Statt eines
+    <span class="mono">tanh</span>-Updates, das den Zustand bei jedem Schritt komplett neu schreibt, gibt
+    es einen Zustand, der sich <strong>additiv</strong> fortpflanzt: <span class="mono">c_t = f·c_{t-1} + …</span>.
+    Wenn das Forget-Gate <span class="mono">f≈1</span> ist, ist die Ableitung
+    <span class="mono">∂c_t/∂c_{t-1}=f≈1</span> — der Produktfaktor wird nicht mehr kleiner. Das ist das
+    <strong>Constant Error Carousel</strong>.</p>
+
+    <div class="callout insight reveal">
+      <div class="ctag" style="color:var(--lstm)">Die eine Zeile, auf die es ankommt</div>
+      <p style="margin-bottom:0">Vanilla-RNN: <span class="mono">∂h_t/∂h_{t-1}</span> enthält
+      <span class="mono">tanh'·W_h</span> → typischerweise &lt; 1 → Produkt zerfällt. LSTM:
+      <span class="mono">∂c_t/∂c_{t-1} = f_t</span>, ein Gate-Wert nahe 1 → Produkt bleibt nahe 1.
+      Der Gradient hat eine <em>Datenautobahn</em> bekommen.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 2 · LSTM-GLEICHUNGEN ============================ -->
+<section id="lstm" data-toc="LSTM · die Gleichungen">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--lstm);color:var(--lstm)"><span class="section-num">02</span> &nbsp;Vier Gates, ein Speicher</div>
+    <h2 class="reveal">LSTM: drei Türen für eine Schublade</h2>
+    <p class="reveal">Das Long Short-Term Memory <span class="src src-paper" title="Hochreiter & Schmidhuber, Long Short-Term Memory, Neural Computation 1997">Paper · Hochreiter1997</span>
+    führt einen zusätzlichen Zustand ein: die <strong>Zelle</strong> <span class="mono">c</span>, getrennt
+    vom sichtbaren <strong>Hidden State</strong> <span class="mono">h</span>. Drei <em>Sigmoid-Gates</em>
+    entscheiden, was geschrieben, behalten und gelesen wird; ein <span class="mono">tanh</span> liefert
+    den Kandidaten:</p>
+
+    <div class="eq accent-lstm reveal">
+      <div class="eq-label"><span>LSTM · die vier Tore</span><span class="src src-paper">Paper</span></div>
+      <div data-eq="\begin{aligned}
+        i_t &amp;= \sigma\!\big(W_{ix}x_t + W_{ih}h_{t-1} + b_i\big) &amp;&amp;\text{Input-Gate (was schreiben?)}\\
+        f_t &amp;= \sigma\!\big(W_{fx}x_t + W_{fh}h_{t-1} + b_f\big) &amp;&amp;\text{Forget-Gate (was behalten?)}\\
+        o_t &amp;= \sigma\!\big(W_{ox}x_t + W_{oh}h_{t-1} + b_o\big) &amp;&amp;\text{Output-Gate (was lesen?)}\\
+        g_t &amp;= \tanh\!\big(W_{gx}x_t + W_{gh}h_{t-1} + b_g\big) &amp;&amp;\text{Kandidat (Inhalt)}
+      \end{aligned}"></div>
+    </div>
+
+    <div class="eq accent-lstm reveal">
+      <div class="eq-label"><span>LSTM · Speicher- und Lese-Schritt (der CEC steckt hier)</span><span class="src src-paper">Paper</span></div>
+      <div data-eq="\underbrace{c_t = f_t\odot c_{t-1} + i_t\odot g_t}_{\text{additiver Speicherpfad}}\,,\qquad h_t = o_t\odot\tanh(c_t)"></div>
+    </div>
+
+    <p class="reveal">Lies die erste Gleichung als zwei Hebel auf derselben Schublade: <span class="mono">f_t</span>
+    bestimmt, <em>wie viel vom Alten überlebt</em>, <span class="mono">i_t·g_t</span>, <em>wie viel Neues
+    dazukommt</em>. Steht <span class="mono">f≈1</span> und <span class="mono">i≈0</span>, bleibt der Inhalt
+    Schritt für Schritt unverändert liegen — perfektes Gedächtnis. Genau das ist im Code so umgesetzt
+    <span class="src src-code" title="engine.js stepLSTM — skalare Reduktion der vier Gates und des additiven c-Pfads">Code · engine.js · stepLSTM</span>:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">engine.js · stepLSTM (skalare Reduktion)</span><span class="ref">vier Gates + c-Pfad</span></div>
+<pre><span class="k">function</span> <span class="f">stepLSTM</span>(state, x, p){
+    <span class="k">const</span> h = state.h||0, c = state.c||0;
+    <span class="k">const</span> i = <span class="f">sig</span>(p.wix*x + p.wih*h + p.bi);   <span class="c">// Input-Gate</span>
+    <span class="k">const</span> f = <span class="f">sig</span>(p.wfx*x + p.wfh*h + p.bf);   <span class="c">// Forget-Gate</span>
+    <span class="k">const</span> o = <span class="f">sig</span>(p.wox*x + p.woh*h + p.bo);   <span class="c">// Output-Gate</span>
+    <span class="k">const</span> g = <span class="f">tanh</span>(p.wgx*x + p.wgh*h + p.bg);  <span class="c">// Kandidat</span>
+<span class="hl">    <span class="k">const</span> nc = f*c + i*g;          <span class="c">// additiver Speicherpfad — der CEC</span></span>
+    <span class="k">const</span> nh = o*<span class="f">tanh</span>(nc);
+    <span class="k">return</span> {h:nh, c:nc, i, f, o, g};
+}</pre>
+    </div>
+    <p class="code-cap reveal">Die hervorgehobene Zeile ist das Herz: <span class="mono">f*c</span> ist die
+    direkte Durchreichung des alten Speichers — keine Matrixmultiplikation, kein <span class="mono">tanh</span>
+    dazwischen. <span class="src src-code">Code · engine.js · stepLSTM</span></p>
+
+    <p class="reveal">Dreh am ersten Lab: schick ein Signal durch die LSTM und beobachte die drei Gates
+    live. Schalte das Signal auf still und stell das <strong>Forget-Bias</strong> hoch — der
+    Zellzustand <span class="mono">c</span> bleibt eingefroren stehen. Das ist die Schublade in Aktion.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-lstm">
+      <div class="lab-head"><span class="led"></span><span class="title">LSTM-Gates live · der Speicher hält</span><span class="sub" id="lstm-status">f, i, o folgen dem Signal</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-lstm"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Eingangssignal</label>
+            <div class="seg" id="lstm-sig"><button data-s="hold" class="on">Puls&rarr;still</button><button data-s="step">Stufe</button><button data-s="sine">Sinus</button></div>
+          </div>
+          <div class="ctrl"><label>Forget-Bias b<sub>f</sub> <span class="val" id="lstm-bf-v">2.0</span></label><input type="range" id="lstm-bf" class="acc-lstm" min="-2" max="5" step="0.1" value="2.0"></div>
+          <div class="ctrl"><label>Input-Bias b<sub>i</sub> <span class="val" id="lstm-bi-v">0.0</span></label><input type="range" id="lstm-bi" class="acc-lstm" min="-4" max="3" step="0.1" value="0.0"></div>
+          <div class="lab-readout">
+            Gate-Werte jetzt:<br>
+            f <span class="big k" id="lstm-f">—</span>&nbsp; i <span class="k" id="lstm-i">—</span>&nbsp; o <span class="k" id="lstm-o">—</span><br>
+            Zellzustand c <span class="k" id="lstm-c">—</span>
+          </div>
+          <div class="lab-task">Wähl <b>Puls&rarr;still</b> und dreh <b>b<sub>f</sub></b> hoch (f&rarr;1).
+          Nach dem Puls wird der Input still, aber <b style="color:var(--lstm)">c</b> hält seinen Wert —
+          das Gedächtnis. Dreh <b>b<sub>f</sub></b> runter (f&rarr;0): c zerfällt sofort, der Speicher leckt.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Rot: Hidden State h. Dunkelrot: Zellzustand c. Balken oben: aktuelle Gate-Werte f (rot), i (orange), o (blau). Gestrichelt: Eingangssignal. <span class="src src-code">Code · engine.js · stepLSTM</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 3 · DER CEC-PFAD ============================ -->
+<section id="cec" data-toc="CEC · der Pfad">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--lstm);color:var(--lstm)"><span class="section-num">03</span> &nbsp;Warum der Gradient überlebt</div>
+    <h2 class="reveal">Das Constant Error Carousel, gezeichnet</h2>
+    <p class="reveal">Zwei Pfade laufen durch ein RNN. Beim Vanilla-RNN ist der einzige Pfad
+    <em>multiplikativ</em>: jeder Schritt presst den Zustand durch <span class="mono">W_h</span> und
+    <span class="mono">tanh</span>, und der Gradient sammelt bei jedem Schritt einen Faktor &lt; 1 ein.
+    Beim LSTM gibt es daneben den <em>additiven</em> c-Pfad, dessen lokale Ableitung das Forget-Gate ist
+    <span class="src src-paper" title="Hochreiter & Schmidhuber 1997 — CEC: dc_t/dc_{t-1}=f_t">Paper · Hochreiter1997</span>.</p>
+
+    <div class="eq accent-lstm reveal">
+      <div class="eq-label"><span>CEC · der Gradient entlang des c-Pfads</span><span class="src src-paper">Paper</span></div>
+      <div data-eq="\frac{\partial c_T}{\partial c_k} \;=\; \prod_{t=k+1}^{T}\frac{\partial c_t}{\partial c_{t-1}} \;=\; \prod_{t=k+1}^{T} f_t \;\approx\; 1 \quad(\text{wenn }f_t\approx 1)"></div>
+    </div>
+
+    <p class="reveal">Im Lab unten siehst du, wie sich der Gradient über die Schritte verhält. Dreh am
+    Forget-Gate: bei <span class="mono">f</span> nahe 1 bleibt der LSTM-Gradient (rot) flach, während der
+    Vanilla-Gradient (grau) exponentiell zusammenbricht.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-cec">
+      <div class="lab-head"><span class="led"></span><span class="title">CEC-Pfad · additiv vs. multiplikativ</span><span class="sub" id="cec-status">f = 0.95</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-cec"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Forget-Gate f <span class="val" id="cec-f-v">0.95</span></label><input type="range" id="cec-f" class="acc-lstm" min="0.5" max="1.0" step="0.01" value="0.95"></div>
+          <div class="ctrl"><label>Vanilla-Faktor |tanh'·W<sub>h</sub>| <span class="val" id="cec-w-v">0.80</span></label><input type="range" id="cec-w" class="acc-lstm" min="0.3" max="1.0" step="0.01" value="0.80"></div>
+          <div class="lab-readout">
+            nach 30 Schritten:<br>
+            LSTM-Gradient (c-Pfad) <span class="big k" id="cec-gl">—</span><br>
+            Vanilla-Gradient (h-Pfad) <span class="k" id="cec-gv">—</span>
+          </div>
+          <div class="lab-task">Setz <b>f</b> auf 1.00: der <b style="color:var(--lstm)">LSTM-Gradient</b>
+          bleibt bei 1, egal wie viele Schritte. Der <b style="color:var(--ct)">Vanilla-Gradient</b> stirbt
+          schon bei Faktor 0.8 nach wenigen Schritten. Das ist Vorlesung 01 — hier gelöst.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Gradient-Magnitude über 30 Schritte. Rot: additiver c-Pfad (∏f). Grau: multiplikativer h-Pfad (∏|tanh'·W|). Gestrichelt: Bezugslinie 1. <span class="src src-paper">Paper · Hochreiter1997</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 4 · GRU ============================ -->
+<section id="gru" data-toc="GRU · schlanke Variante">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--cfc);color:var(--cfc)"><span class="section-num">04</span> &nbsp;Dasselbe mit weniger Teilen</div>
+    <h2 class="reveal">GRU: ein State, zwei Gates</h2>
+    <p class="reveal">Die Gated Recurrent Unit <span class="src src-paper" title="Cho et al. 2014, Learning Phrase Representations using RNN Encoder-Decoder for Statistical Machine Translation, arXiv:1406.1078">Paper · Cho2014</span>
+    fasst die Idee straffer: <strong>kein</strong> getrennter Zellzustand mehr, nur noch
+    <span class="mono">h</span>. Statt drei Toren reichen zwei — ein <strong>Reset-Gate</strong>
+    <span class="mono">r</span> und ein <strong>Update-Gate</strong> <span class="mono">u</span>. Das
+    Update-Gate übernimmt die Doppelrolle von Forget und Input: es mischt alten und neuen Zustand
+    konvex.</p>
+
+    <div class="eq accent-cfc reveal">
+      <div class="eq-label"><span>GRU · zwei Gates, konvexe Mischung</span><span class="src src-paper">Paper</span></div>
+      <div data-eq="\begin{aligned}
+        r_t &amp;= \sigma\!\big(W_{rx}x_t + W_{rh}h_{t-1} + b_r\big) &amp;&amp;\text{Reset-Gate}\\
+        u_t &amp;= \sigma\!\big(W_{ux}x_t + W_{uh}h_{t-1} + b_u\big) &amp;&amp;\text{Update-Gate}\\
+        \tilde h_t &amp;= \tanh\!\big(W_{hx}x_t + W_{hh}(r_t\odot h_{t-1}) + b_h\big) &amp;&amp;\text{Kandidat}\\
+        h_t &amp;= (1-u_t)\odot \tilde h_t + u_t\odot h_{t-1} &amp;&amp;\text{Mischung}
+      \end{aligned}"></div>
+    </div>
+
+    <p class="reveal">Die letzte Zeile ist der GRU-CEC: steht <span class="mono">u≈1</span>, wird
+    <span class="mono">h_t ≈ h_{t-1}</span> — der Zustand wird fast unverändert durchgereicht, und
+    <span class="mono">∂h_t/∂h_{t-1}≈u≈1</span>. Derselbe additive Schutz wie beim LSTM, nur in den
+    einen State <span class="mono">h</span> gefaltet. So steht es im Code
+    <span class="src src-code" title="engine.js stepGRU — reset + update gate, konvexe Mischung">Code · engine.js · stepGRU</span>:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">engine.js · stepGRU (skalare Reduktion)</span><span class="ref">reset + update</span></div>
+<pre><span class="k">function</span> <span class="f">stepGRU</span>(state, x, p){
+    <span class="k">const</span> h = state.h||0;
+    <span class="k">const</span> r = <span class="f">sig</span>(p.wrx*x + p.wrh*h + p.br);      <span class="c">// Reset-Gate</span>
+    <span class="k">const</span> u = <span class="f">sig</span>(p.wux*x + p.wuh*h + p.bu);      <span class="c">// Update-Gate</span>
+    <span class="k">const</span> hc = <span class="f">tanh</span>(p.whx*x + p.whh*(r*h) + p.bh); <span class="c">// Kandidat, r dämpft alten h</span>
+<span class="hl">    <span class="k">const</span> nh = (1-u)*hc + u*h;   <span class="c">// konvexe Mischung — u nahe 1 hält</span></span>
+    <span class="k">return</span> {h:nh, r, u, hc};
+}</pre>
+    </div>
+    <p class="code-cap reveal">Ein einziger State, eine Mischung statt zweier separater Hebel. Weniger
+    Parameter pro Einheit, oft vergleichbare Qualität. <span class="src src-code">Code · engine.js · stepGRU</span></p>
+
+    <p class="reveal">Im Lab schickst du dasselbe Signal durch GRU und LSTM und vergleichst, wie lange
+    beide eine Information nach einem Puls festhalten. Beide nutzen denselben additiven Trick — der
+    Memory-Hold-Test zeigt, wie ähnlich sie sich verhalten.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-gru">
+      <div class="lab-head"><span class="led"></span><span class="title">GRU vs LSTM · Memory-Hold-Test</span><span class="sub" id="gru-status">beide halten</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-gru"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Eingangssignal</label>
+            <div class="seg" id="gru-sig"><button data-s="hold" class="on">Puls&rarr;still</button><button data-s="step">Stufe</button><button data-s="sine">Sinus</button></div>
+          </div>
+          <div class="ctrl"><label>Halte-Tendenz (Update/Forget-Bias) <span class="val" id="gru-hold-v">2.0</span></label><input type="range" id="gru-hold" class="acc-cfc" min="-1" max="5" step="0.1" value="2.0"></div>
+          <div class="lab-readout">
+            Zustand jetzt:<br>
+            GRU h <span class="big k" id="gru-h">—</span><br>
+            LSTM h <span class="k" id="gru-lh">—</span>
+          </div>
+          <div class="lab-task">Wähl <b>Puls&rarr;still</b> und dreh die <b>Halte-Tendenz</b> hoch.
+          Beide Kurven frieren nach dem Puls ein — die <b style="color:var(--cfc)">GRU</b> (grün) mit
+          nur einem State, das <b style="color:var(--lstm)">LSTM</b> (rot) über seinen c-Pfad. Derselbe
+          Mechanismus, andere Verdrahtung.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Grün: GRU Hidden State. Rot: LSTM Hidden State. Gestrichelt: Eingangssignal. Beide halten den Wert, wenn das Update- bzw. Forget-Gate nahe 1 steht. <span class="src src-code">Code · engine.js · stepGRU / stepLSTM</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 5 · DISKRET, NICHT KONTINUIERLICH ============================ -->
+<section id="discrete" data-toc="dt wird verworfen">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--lstm);color:var(--lstm)"><span class="section-num">05</span> &nbsp;Der Kontrast zu den ODE-Zellen</div>
+    <h2 class="reveal">Im Thesis-Code sind LSTM und GRU diskret</h2>
+    <p class="reveal">Hier liegt der entscheidende Unterschied für die Masterarbeit, und er steht
+    unscheinbar in einer einzigen Zeile. Die Thesis-Wrapper sind <strong>dünne Hüllen</strong> um
+    <span class="mono">tf.keras.layers.LSTMCell</span> bzw. <span class="mono">GRUCell</span> — und sie
+    <strong>verwerfen die verstrichene Zeit</strong> <span class="src src-code" title="lstm_cell.py:38-40 — inputs, _ = inputs # discard elapsed_time (LSTM is discrete)">Code · lstm_cell.py:38</span>:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">src/neurons/lstm_cell.py · call</span><span class="ref">Zeilen 37–41</span></div>
+<pre><span class="k">def</span> <span class="f">call</span>(self, inputs, states):
+    <span class="k">if</span> <span class="f">isinstance</span>(inputs, (tuple, list)):
+<span class="hl">        inputs, _ = inputs   <span class="c"># discard elapsed_time (LSTM is discrete)</span></span>
+    output, new_states = self.<span class="f">_lstm</span>(inputs, states)
+    <span class="k">return</span> output, new_states</pre>
+    </div>
+    <p class="code-cap reveal">Das <span class="mono">_</span> ist die weggeworfene
+    <span class="mono">elapsed_time</span>. Die GRU macht es identisch
+    <span class="src src-code" title="gru_cell.py:23-25 — inputs, _ = inputs # discard elapsed_time (GRU is discrete)">Code · gru_cell.py:23</span>.</p>
+
+    <p class="reveal">Vergleiche das mit der CTRNN-Zelle, die <span class="mono">elapsed_time</span> als
+    echtes <span class="mono">dt</span> in ihren Euler-Schritt steckt
+    <span class="src src-code" title="ctrnn_cell.py:50-57 — elapsed_time wird als dt im Euler-Schritt benutzt">Code · ctrnn_cell.py:50</span>:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">src/neurons/ctrnn_cell.py · call (zum Vergleich)</span><span class="ref">Zeilen 50–58</span></div>
+<pre><span class="k">def</span> <span class="f">call</span>(self, inputs, states):
+    <span class="k">if</span> <span class="f">isinstance</span>(inputs, (tuple, list)):
+<span class="hl">        inputs, elapsed_time = inputs   <span class="c"># dt wird BENUTZT</span></span>
+    <span class="k">else</span>:
+        elapsed_time = 1.0
+    h = states[0]
+    gate = tf.nn.<span class="f">tanh</span>(inputs @ self.W_x + h @ self.W_h + self.b)
+<span class="hl">    h_new = h + (elapsed_time / (self.tau + self.epsilon)) * (-h + gate)</span>
+    <span class="k">return</span> h_new, [h_new]</pre>
+    </div>
+    <p class="code-cap reveal">Bei der CTRNN steht <span class="mono">elapsed_time</span> direkt im Update — die
+    Zelle ist kontinuierlich-zeitlich. Bei LSTM/GRU fehlt sie. <span class="src src-code">Code · ctrnn_cell.py:50-57</span></p>
+
+    <div class="callout warn reveal">
+      <div class="ctag">Warum das für die Thesis zählt</div>
+      <p style="margin-bottom:.6em">Die ODE-Zellen (CTRNN, LTC, LRC, CfC) sind <em>zeitkontinuierlich</em>:
+      sie können auf <strong>unregelmäßig abgetastete</strong> Sequenzen reagieren, weil das echte
+      <span class="mono">Δt</span> in die Gleichung eingeht. LSTM und GRU behandeln jeden Schritt als
+      gleich weit entfernt — die Zeitachse ist für sie nur ein Schrittzähler.</p>
+      <p style="margin-bottom:0">Genau das macht LSTM und GRU zu den <strong>klassischen Baselines</strong>
+      des Benchmarks: Sie lösen das Gedächtnis-Problem, aber sie ignorieren die kontinuierliche Zeit, die
+      die liquiden Zellen ausnutzen.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 6 · VERGLEICHSTABELLE ============================ -->
+<section id="compare" data-toc="Direktvergleich">
+  <div class="wrap">
+    <div class="eyebrow reveal"><span class="section-num">06</span> &nbsp;Nebeneinander</div>
+    <h2 class="reveal">LSTM, GRU und Vanilla-RNN im Vergleich</h2>
+    <p class="reveal">Drei Zellen, dieselbe Aufgabe: einen Zustand über die Zeit tragen. Sie unterscheiden
+    sich darin, <em>wie viele Tore</em> den Speicher steuern und <em>ob der Gradient eine Autobahn</em>
+    hat.</p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>Aspekt</th>
+        <th><span class="cmp-head"><span class="dot" style="background:var(--lstm)"></span>LSTM</span></th>
+        <th><span class="cmp-head"><span class="dot" style="background:var(--cfc)"></span>GRU</span></th>
+        <th><span class="cmp-head"><span class="dot" style="background:var(--ct)"></span>Vanilla-RNN</span></th></tr></thead>
+      <tbody>
+        <tr><th>Gates</th><td>3 (i, f, o)</td><td>2 (r, u)</td><td class="bad">0</td></tr>
+        <tr><th>State</th><td class="mono">[h, c]</td><td class="mono">[h]</td><td class="mono">[h]</td></tr>
+        <tr><th>Speicherpfad</th><td class="good">additiv (c-Pfad)</td><td class="good">additiv (konvexe Mischung)</td><td class="bad">multiplikativ</td></tr>
+        <tr><th>Gradient über T</th><td class="good">∏ f<sub>t</sub> ≈ 1</td><td class="good">∏ u<sub>t</sub> ≈ 1</td><td class="bad">∏ |tanh'·W| → 0</td></tr>
+        <tr><th>Parameter pro Einheit</th><td>am meisten (4 Gewichtsblöcke)</td><td>weniger (3 Blöcke)</td><td class="good">am wenigsten (1 Block)</td></tr>
+        <tr><th>dt-fähig (zeitkontinuierlich)?</th><td class="bad">nein — dt verworfen</td><td class="bad">nein — dt verworfen</td><td class="bad">nein (diskret)</td></tr>
+        <tr><th>Rolle im Benchmark</th><td>Baseline</td><td>Baseline</td><td>Referenz (VL 01)</td></tr>
+        <tr><th>Quelle</th><td><span class="src src-paper">Hochreiter1997</span></td><td><span class="src src-paper">Cho2014</span></td><td><span class="src src-classic">klassisch</span></td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="lab-caption reveal">Die Zeile „dt verworfen“ stammt wörtlich aus deinem Code. <span class="src src-code">Code · lstm_cell.py:39 / gru_cell.py:24</span></p>
+
+    <div class="callout good reveal">
+      <div class="ctag" style="color:var(--cfc)">Wohin als Nächstes</div>
+      <p style="margin-bottom:0">Der additive c-Pfad bleibt nicht den klassischen Zellen vorbehalten.
+      Vorlesung <strong>05 · Mixed Memory (ODE-LSTM)</strong> nimmt genau diesen LSTM-Speicherpfad und
+      legt eine <em>ODE-Zelle</em> hinein: Der Gradient umgeht die steife ODE-Jacobi über die
+      CEC-Autobahn, während die kontinuierliche Dynamik trotzdem rechnet. Der Trick dieser Vorlesung
+      wird dort zum Baustein der liquiden Welt.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ QUELLEN ============================ -->
+<section id="sources" data-toc="Quellen">
+  <div class="wrap">
+    <div class="eyebrow reveal">Belege</div>
+    <h2 class="reveal">Quellen dieser Vorlesung</h2>
+    <div class="bib reveal">
+      <div class="bib-item"><div class="bib-key">Hochreiter1997</div><div class="bib-cite">
+        <div class="t">Long Short-Term Memory</div>
+        <div class="meta">Hochreiter &amp; Schmidhuber · Neural Computation 9(8), 1997</div>
+        <div class="where">LSTM-Gleichungen, Constant Error Carousel (∂c_t/∂c_{t-1}=f) · Vault: Papers/hochreiter1997-lstm.md</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Cho2014</div><div class="bib-cite">
+        <div class="t">Learning Phrase Representations using RNN Encoder-Decoder</div>
+        <div class="meta">Cho, van Merriënboer, Bahdanau, Bengio · EMNLP 2014 · arXiv:1406.1078</div>
+        <div class="where">GRU: Reset/Update-Gate, ein State, konvexe Mischung · Vault: Papers/cho2014-gru.md</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Code</div><div class="bib-cite">
+        <div class="t">Eigene Implementierung</div>
+        <div class="meta">code/src/neurons/lstm_cell.py · gru_cell.py · ctrnn_cell.py</div>
+        <div class="where">Thin Wrapper um Keras-Cells, „discard elapsed_time (… is discrete)“ — wörtlich zitiert (lstm_cell.py:39, gru_cell.py:24)</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">engine.js</div><div class="bib-cite">
+        <div class="t">Geteilte Lernreihen-Engine</div>
+        <div class="meta">code/experiments/lernreihe/assets/engine.js · stepLSTM / stepGRU</div>
+        <div class="where">Skalare Reduktion der vier LSTM-Gates und der zwei GRU-Gates — Basis aller Labs hier</div>
+      </div></div>
+    </div>
+    <p class="note reveal">Die Labs reduzieren die echten Vektor-Updates auf ein einzelnes Neuron, um die
+    Dynamik sichtbar zu machen; aus den Gewichtsmatrizen <span class="mono">W</span> werden skalare
+    Faktoren. Die <em>Form</em> der Gleichungen (Sigmoid-Gates, additiver c-Pfad, konvexe GRU-Mischung)
+    ist identisch mit Paper und Keras-Cell. Der Gradient-Plot in Lab 2 ist eine didaktische
+    Vereinfachung: er zeigt die <em>lokalen</em> Ableitungsfaktoren ∏f bzw. ∏|tanh'·W| als reine
+    Skalarprodukte, nicht den vollen mehrdimensionalen BPTT-Gradienten.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="f-title">Vorlesung 02 · LSTM &amp; GRU</div>
+  <p>Teil der interaktiven Lernreihe zur Masterarbeit. Jeder Regler rechnet die echten Gate-Gleichungen.</p>
+  <p class="mono">lstm_cell.py · gru_cell.py · Hochreiter 1997 · Cho 2014</p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
+<script src="assets/engine.js"></script>
+<script>
+/* ============================================================
+   LAB 1 · LSTM-Gates live — der Speicher hält
+   ============================================================ */
+function initLstmPlay(){
+  const sc=new Scope('cv-lstm',{l:44,r:16,t:18,b:24});
+  const P={sig:'hold', bf:2.0, bi:0.0};
+  const T=14, DT=0.05;
+  let t=0, st={h:0,c:0}; let gNow={i:0,f:0,o:0,g:0};
+  const tin=[], th=[], tc=[];
+  function signal(tt){
+    const ph=((tt%9)/9);
+    if(P.sig==='hold') return (ph<0.15)?0.9:0.0;          // Puls, dann still
+    if(P.sig==='step') return ph<0.5? -0.5 : 0.85;
+    return 0.8*Math.sin(tt*1.1);                            // sine
+  }
+  function lstmParams(){
+    return {wix:1.6, wih:0.0, bi:P.bi,
+            wfx:0.0, wfh:0.0, bf:P.bf,
+            wox:0.0, woh:0.0, bo:1.0,
+            wgx:1.7, wgh:0.0, bg:0.0};
+  }
+  function frame(){
+    t+=DT; const x=signal(t);
+    st=stepLSTM({h:st.h,c:st.c}, x, lstmParams());
+    gNow={i:st.i,f:st.f,o:st.o,g:st.g};
+    tin.push([t,x]); th.push([t,st.h]); tc.push([t,st.c]);
+    while(tin.length && tin[0][0]<t-T){ tin.shift(); th.shift(); tc.shift(); }
+    $('#lstm-f').textContent=gNow.f.toFixed(2);
+    $('#lstm-i').textContent=gNow.i.toFixed(2);
+    $('#lstm-o').textContent=gNow.o.toFixed(2);
+    $('#lstm-c').textContent=fmt(st.c,2);
+    $('#lstm-status').textContent='f='+gNow.f.toFixed(2)+' i='+gNow.i.toFixed(2)+' o='+gNow.o.toFixed(2);
+    draw();
+    raf=requestAnimationFrame(frame);
+  }
+  function draw(){
+    sc.clear(); sc.range(t-T,t,-1.2,1.2); sc.grid(4,4,{yd:1});
+    // Gate-Balken oben links (in Datenkoordinaten, Basis y=0)
+    const bx=t-T+0.9;
+    sc.bars([
+      {x:bx,      h:gNow.f*0.95, color:COL.lstm, w:0.22, alpha:0.9},
+      {x:bx+0.6,  h:gNow.i*0.95, color:'#e0903a', w:0.22, alpha:0.9},
+      {x:bx+1.2,  h:gNow.o*0.95, color:'#2563eb', w:0.22, alpha:0.9},
+    ], 0);
+    sc.label('f',bx,1.06,COL.lstm,'center'); sc.label('i',bx+0.6,1.06,'#e0903a','center'); sc.label('o',bx+1.2,1.06,'#2563eb','center');
+    sc.path(tin,COL.faint,1.5,{dash:[4,4],alpha:.8});
+    sc.path(tc,'#7a0f26',2.0);
+    sc.path(th,COL.lstm,2.6);
+    sc.label('h',t-0.3,th.length?th[th.length-1][1]:0,COL.lstm,'right');
+    sc.label('c',t-0.3,(tc.length?tc[tc.length-1][1]:0)+0.12,'#7a0f26','right');
+  }
+  let raf;
+  bind('lstm-bf','lstm-bf-v',v=>P.bf=v,1);
+  bind('lstm-bi','lstm-bi-v',v=>P.bi=v,1);
+  seg('lstm-sig',s=>{P.sig=s;});
+  whenVisible('lab-lstm',()=>{ if(!raf) frame(); });
+}
+
+/* ============================================================
+   LAB 2 · CEC-Pfad — additiv vs. multiplikativ
+   ============================================================ */
+function initCec(){
+  const sc=new Scope('cv-cec',{l:44,r:16,t:18,b:24});
+  const P={f:0.95, w:0.80};
+  const NSTEP=30;
+  function draw(){
+    sc.clear(); sc.range(0,NSTEP,-0.05,1.15); sc.grid(5,4,{yd:1,xl:true,xd:0});
+    sc.text('Gradient-Magnitude über die Schritte (Rückwärtslauf)', sc.X(0)+4, sc.Y(1.10), COL.sub, 'left', '600 11px JetBrains Mono', 'bottom');
+    const cl=[], vl=[]; let gc=1, gv=1;
+    for(let k=0;k<=NSTEP;k++){
+      cl.push([k, gc]); vl.push([k, gv]);
+      gc*=P.f; gv*=P.w;
+    }
+    sc.hline(1.0, COL.faint, 1, [3,4]);
+    sc.path(vl, COL.ct, 2.2);          // Vanilla — stirbt
+    sc.path(cl, COL.lstm, 2.8);        // LSTM c-Pfad — bleibt
+    sc.label('LSTM  Pi f', NSTEP-0.4, Math.min(cl[NSTEP][1]+0.06,1.12), COL.lstm, 'right');
+    sc.label('Vanilla', NSTEP-0.4, Math.max(vl[NSTEP][1],0.04)+0.07, COL.ct, 'right');
+    const gl=Math.pow(P.f,NSTEP), gvend=Math.pow(P.w,NSTEP);
+    $('#cec-gl').textContent=gl.toFixed(3);
+    $('#cec-gv').textContent=gvend<1e-3? gvend.toExponential(1): gvend.toFixed(3);
+    $('#cec-status').textContent='f = '+P.f.toFixed(2);
+  }
+  bind('cec-f','cec-f-v',v=>{P.f=v; draw();},2);
+  bind('cec-w','cec-w-v',v=>{P.w=v; draw();},2);
+  whenVisible('lab-cec',draw);
+}
+
+/* ============================================================
+   LAB 3 · GRU vs LSTM — Memory-Hold-Test
+   ============================================================ */
+function initGru(){
+  const sc=new Scope('cv-gru',{l:44,r:16,t:18,b:24});
+  const P={sig:'hold', hold:2.0};
+  const T=14, DT=0.05;
+  let t=0, gst={h:0}, lst={h:0,c:0};
+  const tin=[], tg=[], tl=[];
+  function signal(tt){
+    const ph=((tt%9)/9);
+    if(P.sig==='hold') return (ph<0.15)?0.9:0.0;
+    if(P.sig==='step') return ph<0.5? -0.5 : 0.85;
+    return 0.8*Math.sin(tt*1.1);
+  }
+  function gruParams(){
+    // Update-Gate-Bias = Halte-Tendenz: u nahe 1 -> h hält
+    return {wrx:0.4, wrh:0.0, br:0.0,
+            wux:0.0, wuh:0.0, bu:P.hold,
+            whx:1.7, whh:0.3, bh:0.0};
+  }
+  function lstmParams(){
+    // Forget-Bias = Halte-Tendenz: f nahe 1 -> c hält
+    return {wix:1.6, wih:0.0, bi:0.0,
+            wfx:0.0, wfh:0.0, bf:P.hold,
+            wox:0.0, woh:0.0, bo:1.0,
+            wgx:1.7, wgh:0.0, bg:0.0};
+  }
+  function frame(){
+    t+=DT; const x=signal(t);
+    gst=stepGRU({h:gst.h}, x, gruParams());
+    lst=stepLSTM({h:lst.h,c:lst.c}, x, lstmParams());
+    tin.push([t,x]); tg.push([t,gst.h]); tl.push([t,lst.h]);
+    while(tin.length && tin[0][0]<t-T){ tin.shift(); tg.shift(); tl.shift(); }
+    $('#gru-h').textContent=fmt(gst.h,2);
+    $('#gru-lh').textContent=fmt(lst.h,2);
+    $('#gru-status').textContent='GRU '+gst.h.toFixed(2)+' · LSTM '+lst.h.toFixed(2);
+    draw();
+    raf=requestAnimationFrame(frame);
+  }
+  function draw(){
+    sc.clear(); sc.range(t-T,t,-1.2,1.2); sc.grid(4,4,{yd:1});
+    sc.path(tin,COL.faint,1.5,{dash:[4,4],alpha:.8});
+    sc.path(tl,COL.lstm,2.2);
+    sc.path(tg,COL.cfc,2.6);
+    sc.label('GRU',t-0.3,tg.length?tg[tg.length-1][1]:0,COL.cfc,'right');
+    sc.label('LSTM',t-0.3,(tl.length?tl[tl.length-1][1]:0)-0.12,COL.lstm,'right');
+  }
+  let raf;
+  bind('gru-hold','gru-hold-v',v=>P.hold=v,1);
+  seg('gru-sig',s=>{P.sig=s;});
+  whenVisible('lab-gru',()=>{ if(!raf) frame(); });
+}
+
+LR.boot([initLstmPlay, initCec, initGru]);
+</script>
+</body>
+</html>

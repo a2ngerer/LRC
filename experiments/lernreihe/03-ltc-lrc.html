@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>03 · LTC & LRC — die liquide Kern-Familie</title>
+<meta name="description" content="Vorlesung 03: Liquid Time-Constant und Liquid-Resistance-Liquid-Capacitance Netzwerke — die echte Conductance-ODE, der fused Euler mit 6 unfolds und die liquid elastance, interaktiv erklärt.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lecture="03">
+
+<!-- ============================ HERO ============================ -->
+<header class="hero">
+  <canvas class="hero-canvas" data-c1="#c2710c" data-c2="#e0903a" data-c3="#2563eb"></canvas>
+  <div class="hero-inner">
+    <div class="hero-kicker reveal"><span class="lecnum">Vorlesung 03</span> Liquide Zellen · Kern-Familie</div>
+    <h1 class="hero-title reveal">LTC &amp; LRC:<br>wenn das Neuron <span class="liquid">flüssig</span> wird</h1>
+    <p class="hero-sub reveal">Zwei Zellen, eine Idee: Lass die Bauteile des Stromkreises selbst vom Signal
+    abhängen. LTC macht die <em>Zeitkonstante</em> liquid, LRC zusätzlich die <em>Kapazität</em> — und
+    bezahlt damit das Steifheits-Problem ab. Hier steht die echte Gleichung aus dem Code, Regler inklusive.</p>
+    <div class="hero-meta reveal">
+      <span class="hero-pill"><span class="dot" style="background:var(--ltc)"></span>LTC · ode_unfolds = 6</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--lrc)"></span>LRC · elastance ε</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--ct)"></span>Conductance-ODE</span>
+    </div>
+  </div>
+  <div class="scroll-hint"><span>Scrollen</span><span class="line"></span></div>
+</header>
+
+<!-- ============================ 0 · EINSTIEG ============================ -->
+<section id="intro" data-toc="Einstieg">
+  <div class="wrap">
+    <div class="eyebrow reveal">Worum es geht</div>
+    <h2 class="reveal">Dieselbe Membran, zwei flüssige Bauteile</h2>
+    <p class="lead reveal">In Vorlesung 00 stand die Membran-ODE als gemeinsame Wurzel aller Zellen. Jetzt
+    gehen wir in die Tiefe der zwei wichtigsten liquiden Vertreter — mit den exakten Parametern und dem
+    exakten Solver aus deinem Repository.</p>
+
+    <p class="reveal">Erinnerung an das Fallbeispiel: ein Auto folgt einer Landstraße, die Kamera liefert ein
+    kontinuierliches Signal. Ein gewöhnliches Neuron reagiert immer gleich schnell. Die Frage dieser
+    Vorlesung lautet: <em>Was gewinnt das Auto, wenn das Neuron sein eigenes Reaktionstempo der Situation
+    anpassen darf — und was kostet das?</em></p>
+
+    <div class="callout reveal">
+      <div class="ctag">Das Versprechen dieser Seite</div>
+      <p style="margin-bottom:.6em">Am Ende verstehst du drei Dinge konkret: <strong>(1)</strong> warum die
+      LTC-Zeitkonstante „liquid“ ist und woher die Steifheit kommt, <strong>(2)</strong> warum dein Code die
+      ODE <strong>sechsmal pro Schritt</strong> mit einem <em>fused</em> Solver entfaltet, und <strong>(3)</strong>
+      wie LRC mit Sättigung und <em>liquid elastance</em> ε denselben Effekt billiger und ruhiger erzielt.</p>
+      <p style="margin-bottom:0">Jedes Lab rechnet die skalare Reduktion der echten Update-Regel aus
+      <code>ltc_cell.py</code> bzw. <code>lrc_cell.py</code>.</p>
+    </div>
+
+    <div class="legend reveal">
+      <div class="li"><span class="src src-paper">Paper</span> Originalarbeit / Paper-Notiz</div>
+      <div class="li"><span class="src src-code">Code</span> exakt aus deiner Implementierung</div>
+      <div class="li"><span class="src src-dr">Deep-Research</span> LLM-Recherche, zu prüfen</div>
+      <div class="li"><span class="src src-classic">klassisch</span> Lehrbuchwissen</div>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 1 · LTC CONDUCTANCE-ODE ============================ -->
+<section id="ltc" data-toc="LTC · liquid τ">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--ltc);color:var(--ltc)"><span class="section-num">01</span> &nbsp;Die liquide Zeitkonstante</div>
+    <h2 class="reveal">LTC: der Leitwert hängt am Signal</h2>
+    <p class="reveal">Das Liquid Time-Constant Network <span class="src src-paper" title="Hasani et al., Liquid Time-constant Networks, AAAI 2021, arXiv:2006.04439">Paper · Hasani2020</span>
+    nimmt die Membran-ODE und macht eine Sache anders als das CT-RNN: der synaptische Leitwert ist keine
+    Konstante, sondern eine <strong>sigmoide Funktion des Zustands und der Eingabe</strong>. In der
+    Hodgkin-Huxley-Schreibweise, die dein Code umsetzt
+    <span class="src src-code" title="ltc_cell.py — Kommentar Membran-ODE">Code · ltc_cell.py</span>:</p>
+
+    <div class="eq accent-ltc reveal">
+      <div class="eq-label"><span>LTC · Conductance-ODE (Membranform)</span><span class="src src-code">Code</span></div>
+      <div data-eq="c_m\,\dot v \;=\; g_{\text{leak}}(v_{\text{leak}}-v) \;+\; \sum_j \underbrace{w_j\,\sigma\!\big(\gamma_j(v_{\text{pre},j}-\mu_j)\big)}_{g_j(v):\ \text{liquider Leitwert}}\,(E_{ij}-v)"></div>
+    </div>
+
+    <p class="reveal">Lies den markierten Term: Jede Synapse trägt einen Leitwert <span class="mono">g_j(v)</span> bei,
+    der über ein Sigmoid <em>auf- und zudreht</em>, je nach Spannung. Damit ist der Gesamtleitwert
+    <span class="mono">g(v) = g_leak + Σ g_j(v)</span> selbst zustandsabhängig — und mit ihm die effektive
+    Zeitkonstante. In der kompakten Skalarform, die das Lab rechnet:</p>
+
+    <div class="eq accent-ltc reveal">
+      <div class="eq-label"><span>LTC · kompakte ODE + effektives τ</span><span class="src src-paper">Paper</span></div>
+      <div data-eq="\dot v \;=\; -\Big[\tfrac{1}{\tau} + f(v,x)\Big]v \;+\; f(v,x)\,A \qquad\Longrightarrow\qquad \tau_{\text{sys}}(v,x)=\frac{1}{\tfrac{1}{\tau}+f(v,x)}"></div>
+    </div>
+
+    <p class="reveal">Je stärker die Synapse <span class="mono">f(v,x) = σ(w·x+…)</span> feuert, desto
+    <strong>kleiner</strong> wird <span class="mono">τ_sys</span> — das Neuron reagiert blitzschnell. Bei
+    stiller Eingabe wird es träge. Genau das fehlt dem CT-RNN mit seinem festen <span class="mono">τ</span>.</p>
+
+    <p class="reveal">Die gelernten Parameter starten in engen Bereichen, die deine Implementierung fest vorgibt
+    <span class="src src-code" title="ltc_cell.py:41-51 _init_ranges">Code · ltc_cell.py:41</span> — das ist kein Detail,
+    sondern Teil der Stabilität:</p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>Parameter</th><th>Init-Bereich</th><th>Rolle</th></tr></thead>
+      <tbody>
+        <tr><th>gleak</th><td class="mono">(0.001, 1.0)</td><td>Leck-Leitwert (Zerfall zur Ruhelage)</td></tr>
+        <tr><th>vleak</th><td class="mono">(−0.2, 0.2)</td><td>Ruhepotential</td></tr>
+        <tr><th>cm</th><td class="mono">(0.4, 0.6)</td><td>Membran-Kapazität</td></tr>
+        <tr><th>w</th><td class="mono">(0.001, 1.0)</td><td>synaptische Gewichte (≥ 0)</td></tr>
+        <tr><th>sigma (γ)</th><td class="mono">(3, 8)</td><td>Steilheit des Synapsen-Sigmoids</td></tr>
+        <tr><th>mu (μ)</th><td class="mono">(0.3, 0.8)</td><td>Mittelpunkt des Sigmoids</td></tr>
+        <tr><th>erev</th><td class="mono">±1</td><td>Reversal-Potential: erregend / hemmend</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="lab-caption reveal">Init-Bereiche der LTC-Parameter. <span class="src src-code">Code · ltc_cell.py:41-51</span></p>
+
+    <p class="reveal">Dreh am Lab: Schick ein Signal durch eine LTC (orange) und ein CT-RNN mit festem
+    <span class="mono">τ</span> (grau). Bei kräftigem Signal zieht die LTC dem Ziel hinterher — und ihre
+    <strong>effektive Zeitkonstante schrumpft sichtbar</strong>.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-ltc">
+      <div class="lab-head"><span class="led"></span><span class="title">LTC-Spielplatz · liquid τ in Aktion</span><span class="sub" id="ltc-status">τ_sys folgt dem Signal</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-ltc"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Eingangssignal</label>
+            <div class="seg" id="ltc-sig"><button data-s="step" class="on">Stufe</button><button data-s="sine">Sinus</button><button data-s="pulse">Puls</button></div>
+          </div>
+          <div class="ctrl"><label>Synapsenstärke (Leitwert) <span class="val" id="ltc-gain-v">3.0</span></label><input type="range" id="ltc-gain" class="acc-ltc" min="0.2" max="8" step="0.1" value="3.0"></div>
+          <div class="ctrl"><label>Basis-τ <span class="val" id="ltc-tau-v">1.5</span></label><input type="range" id="ltc-tau" class="acc-ltc" min="0.4" max="4" step="0.1" value="1.5"></div>
+          <div class="lab-readout">
+            τ<span class="dim">sys</span> jetzt <span class="big k" id="ltc-tau-now">—</span><br>
+            Spanne über das Fenster <span class="k" id="ltc-tau-range">—</span><br>
+            <span class="dim">CT-RNN bleibt bei festem τ.</span>
+          </div>
+          <div class="lab-task">Stell ein kräftiges Signal ein und dreh die <b>Synapsenstärke</b> hoch: τ<sub>sys</sub>
+          fällt, die <b style="color:var(--ltc)">LTC</b> reagiert flink. Das <b style="color:var(--ct)">CT-RNN</b>
+          (grau) bleibt gleich träge — egal wie laut das Signal ist.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Grau: CT-RNN mit festem τ. Orange: LTC, fused Solver, 6 unfolds. Gestrichelt: das Eingangssignal. <span class="src src-code">Code · ltc_cell.py / ctrnn_cell.py</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 2 · DER FUSED SOLVER ============================ -->
+<section id="solver" data-toc="ode_unfolds = 6">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--ltc);color:var(--ltc)"><span class="section-num">02</span> &nbsp;Warum 6 Schritte pro Schritt</div>
+    <h2 class="reveal">Der fused Solver: Stabilität gegen Rechenzeit</h2>
+    <p class="reveal">Der liquide Leitwert ist nach oben unbeschränkt: feuern viele Synapsen, wird
+    <span class="mono">g</span> riesig und <span class="mono">τ = 1/g</span> winzig. Ein winziges τ in einem
+    System, das in groben Schritten <span class="mono">Δt</span> integriert wird — das ist eine
+    <mark>steife ODE</mark>, und ein naiver expliziter Euler beginnt zu schwingen (siehe Vorlesung 00).</p>
+
+    <p class="reveal">Deine LTC umgeht das mit zwei Maßnahmen, beide direkt im Code sichtbar: einem
+    <strong>fused (semi-impliziten) Euler</strong> und einer <strong>Entfaltung</strong> in
+    <span class="mono">ode_unfolds = 6</span> Teilschritte <span class="src src-code" title="ltc_cell.py:213-246 _ode_solver, default ode_unfolds=6">Code · ltc_cell.py:213</span>:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">ltc_cell.py · _ode_solver</span><span class="ref">Zeilen 213–246</span></div>
+<pre><span class="c"># cm/dt ist über die Teilschritte konstant -> einmal vorberechnen</span>
+cm_t = self._params[<span class="s">"cm"</span>] / (elapsed_time / self._ode_unfolds)
+
+<span class="k">for</span> t <span class="k">in</span> <span class="f">range</span>(self._ode_unfolds):          <span class="c"># 6 Teilschritte</span>
+    w_activation  = self._params[<span class="s">"w"</span>] * self.<span class="f">_sigmoid</span>(v_pre, mu, sigma)
+    rev_activation = w_activation * self._params[<span class="s">"erev"</span>]
+    w_numerator   = <span class="f">reduce_sum</span>(rev_activation) + w_numerator_sensory
+    w_denominator = <span class="f">reduce_sum</span>(w_activation)   + w_denominator_sensory
+
+<span class="hl">    numerator   = cm_t * v_pre + gleak * vleak + w_numerator</span>
+<span class="hl">    denominator = cm_t + gleak + w_denominator</span>
+<span class="hl">    v_pre = numerator / (denominator + epsilon)   <span class="c"># semi-implizit: v steht im Nenner</span></span>
+<span class="k">return</span> v_pre</pre>
+    </div>
+    <p class="code-cap reveal">Der Trick steckt in den hervorgehobenen Zeilen: <span class="mono">v_pre</span> taucht im
+    <em>Nenner</em> auf. Dadurch kann der Schritt nicht überschießen — der Leitwert „bremst sich selbst“.
+    <span class="src src-code">Code · ltc_cell.py</span></p>
+
+    <div class="callout warn reveal">
+      <div class="ctag">Was „semi-implizit“ konkret heißt</div>
+      <p style="margin-bottom:0">Explizit wäre <span class="mono">v ← v + Δt·v̇(v)</span> — die Steigung am
+      <em>Startpunkt</em>, blind extrapoliert. Semi-implizit löst stattdessen
+      <span class="mono">v ← (v + Δt·Antrieb)/(1 + Δt·Leitwert)</span> nach <span class="mono">v</span> auf:
+      ein großer Leitwert vergrößert den Nenner und dämpft den Schritt automatisch. Deshalb bleibt die
+      Integration stabil, wo der explizite Euler explodiert.</p>
+    </div>
+
+    <p class="reveal">Im Lab siehst du beides nebeneinander. Dreh die <strong>Schrittweite Δt</strong> und die
+    <strong>Steifheit</strong> hoch und vergleiche: der explizite Euler kippt, der fused bleibt glatt —
+    und mehr <strong>unfolds</strong> machen selbst den expliziten zahmer (kleinere Teil-Schritte).</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-unfold">
+      <div class="lab-head"><span class="led"></span><span class="title">Solver-Stabilität · explicit vs. fused</span><span class="sub" id="unf-status">stabil</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-unfold"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Schrittweite Δt <span class="val" id="unf-dt-v">0.60</span></label><input type="range" id="unf-dt" class="acc-ltc" min="0.05" max="2.2" step="0.05" value="0.6"></div>
+          <div class="ctrl"><label>Steifheit (Leitwert g) <span class="val" id="unf-g-v">9.0</span></label><input type="range" id="unf-g" class="acc-ltc" min="0.5" max="16" step="0.1" value="9"></div>
+          <div class="ctrl"><label>ode_unfolds <span class="val" id="unf-u-v">1</span></label><input type="range" id="unf-u" class="acc-ltc" min="1" max="8" step="1" value="1"></div>
+          <div class="ctrl"><label>Solver</label>
+            <div class="seg" id="unf-solver"><button data-v="explicit" class="on">explicit</button><button data-v="fused">fused</button></div>
+          </div>
+          <div class="lab-readout">
+            Stabilitätsmaß <span class="k">(1/τ+g)·Δt/U</span><br>
+            <span class="big" id="unf-crit">0.00</span> <span id="unf-verdict" class="ok">&lt; 2 → stabil</span>
+          </div>
+          <div class="lab-task">Setz Solver auf <b>explicit</b>, U=1: dreh Δt &amp; g hoch, bis das Maß über <b>2</b> springt — Explosion.
+          Erhöhe dann <b>unfolds</b> oder schalte auf <b>fused</b>: dieselben Werte, glatt. Das ist der Preis der LTC.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Explicit Euler ist nur stabil, solange <span class="mono">(1/τ+g)·Δt/U &lt; 2</span>. Mehr unfolds U verkleinern den Teilschritt; der fused Solver hat die Schranke gar nicht. <span class="src src-paper">Paper · Hasani2020</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 3 · LRC ============================ -->
+<section id="lrc" data-toc="LRC · elastance">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--lrc);color:var(--lrc)"><span class="section-num">03</span> &nbsp;Auch die Kapazität wird liquid</div>
+    <h2 class="reveal">LRC: Sättigung und liquid elastance</h2>
+    <p class="reveal">Liquid-Resistance Liquid-Capacitance <span class="src src-paper" title="Farsang, Neubauer, Grosu 2024, NeuroAI@NeurIPS, arXiv:2403.08791">Paper · farsang2024liquid</span>
+    erweitert die LTC um zwei Zutaten, die das Schwingen an der Wurzel packen. Erstens <strong>Sättigung</strong>:
+    Antrieb und Zerfall laufen durch <span class="mono">tanh</span> bzw. <span class="mono">σ</span> und können
+    nicht mehr unbeschränkt wachsen. Zweitens <strong>liquid elastance</strong>
+    <span class="mono" style="color:var(--lrc)">ε</span> — eine gelernte, zustandsabhängige reziproke Kapazität.
+    Die Update-Regel aus deinem Code, in der <em>forget-gate</em>-Form
+    <span class="src src-code" title="lrc_cell.py:229-280 _ode_solver, forget_gate + asymmetric elastance">Code · lrc_cell.py:229</span>:</p>
+
+    <div class="eq accent-lrc reveal">
+      <div class="eq-label"><span>LRC · explicit-Euler-Update mit Elastance-Gate</span><span class="src src-code">Code</span></div>
+      <div data-eq="v' = \underbrace{-\,v\,\sigma(f)}_{\text{gesättigter Zerfall}} + \underbrace{v_{\text{leak}}\tanh(g)}_{\text{gesättigter Antrieb}}\,,\qquad v_{t+1} = v_t + \underbrace{\varepsilon(x,v)}_{\in(0,1)}\!\cdot\Delta t\cdot v'"></div>
+    </div>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">lrc_cell.py · _ode_solver (forget_gate, asymmetric)</span><span class="ref">Zeilen 229–280</span></div>
+<pre>dt = elapsed_time / self._ode_unfolds        <span class="c"># ode_unfolds = 1 genügt</span>
+<span class="k">for</span> t <span class="k">in</span> <span class="f">range</span>(self._ode_unfolds):
+    <span class="c"># Elastance: gelerntes Gate aus [x, v], in (0,1), skaliert dt</span>
+<span class="hl">    x = concat([inputs, v_pre]);  elastance_t = sigmoid(self.<span class="f">elastance_mapping</span>(x)) * dt</span>
+    syn = self.<span class="f">_sigmoid</span>(v_pre, mu, sigma)
+    g = gleak + <span class="f">reduce_sum</span>(h * syn) + sensory_h          <span class="c"># Antriebs-Leitwert</span>
+    f = gleak + <span class="f">reduce_sum</span>(w * syn) + sensory_w          <span class="c"># Zerfalls-Leitwert (forget)</span>
+<span class="hl">    v_prime = -v_pre * <span class="f">sigmoid</span>(f) + vleak * <span class="f">tanh</span>(g)   <span class="c"># beide Terme gesättigt</span></span>
+<span class="hl">    v_pre = v_pre + elastance_t * v_prime                  <span class="c"># explicit Euler</span></span>
+<span class="k">return</span> v_pre</pre>
+    </div>
+    <p class="code-cap reveal">Der Clou: <span class="mono" style="color:var(--lrc)">ε(x,v)·Δt</span> verkleinert die effektive
+    Schrittweite zustandsabhängig dort, wo die Dynamik sonst überschießen würde — ein gelerntes
+    „Sanft-machen“. <span class="src src-code">Code · lrc_cell.py</span></p>
+
+    <div class="callout insight reveal">
+      <div class="ctag">Kern-Insight LRC vs. LTC — direkt aus deiner Thesis</div>
+      <p style="margin-bottom:.6em">Dieses <span class="mono" style="color:var(--lrc)">ε(w_i)</span> ist genau der
+      Mechanismus, den <strong>RQ2 und RQ5 isolieren</strong> wollen: Treibt die liquid elastance den
+      Performance-Unterschied? <strong>Ohne aktivierte Elastance</strong> (<span class="mono">ε = 1</span>,
+      <code>elastance_type</code> auf konstant) <strong>fällt LRC auf eine gesättigte LTC zurück.</strong></p>
+      <p style="margin-bottom:0">Im Lab legst du genau diesen Schalter um — und siehst, wie aus „ruhigen
+      Händen“ ein nervöseres LTC-artiges Verhalten wird.</p>
+    </div>
+
+    <p class="reveal">Spiel mit dem Elastance-Schalter: dasselbe Signal, einmal mit liquid elastance (blau, ruhig),
+    einmal ohne (ε = 1, sprunghafter). Dazu der Vergleich gegen eine LTC unter demselben Rauschen.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-lrc">
+      <div class="lab-head"><span class="led"></span><span class="title">Elastance-Schalter · LRC vs. saturierte LTC</span><span class="sub" id="lrc-status">ε aktiv</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-lrc"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Eingangssignal</label>
+            <div class="seg" id="lrc-sig"><button data-s="step" class="on">Stufe</button><button data-s="noisy">Verrauscht</button><button data-s="sine">Sinus</button></div>
+          </div>
+          <div class="ctrl"><label>Rauschstärke <span class="val" id="lrc-noise-v">0.5</span></label><input type="range" id="lrc-noise" class="acc-lrc" min="0" max="1.2" step="0.05" value="0.5"></div>
+          <div class="ctrl"><label>liquid elastance ε</label>
+            <div class="seg" id="lrc-elast"><button data-v="on" class="on">an (LRC)</button><button data-v="off">aus (sat. LTC)</button></div>
+          </div>
+          <div class="lab-readout">
+            ε jetzt <span class="big k" id="lrc-eps">—</span><br>
+            Zappel-Maß (Ausgangs-Varianz) <span class="k" id="lrc-jit">—</span>
+          </div>
+          <div class="lab-task">Stell <b>Verrauscht</b> ein. Mit <b style="color:var(--lrc)">ε an</b> glättet die LRC das
+          Zappeln; schalt <b>ε aus</b> → sie fällt auf die saturierte LTC zurück und wird unruhiger. Das ist
+          der Effekt, den RQ2/RQ5 messen.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Blau: LRC mit liquid elastance. Hell: LRC ohne ε (= saturierte LTC). Gestrichelt: Eingangssignal. <span class="src src-code">Code · lrc_cell.py</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 4 · SYNTHESE ============================ -->
+<section id="synthesis" data-toc="Direktvergleich">
+  <div class="wrap">
+    <div class="eyebrow reveal"><span class="section-num">04</span> &nbsp;Nebeneinander</div>
+    <h2 class="reveal">LTC und LRC im Direktvergleich</h2>
+    <p class="reveal">Beide stammen aus derselben Membran-ODE. Der Unterschied liegt darin, <em>welches Bauteil
+    liquid wird</em> und <em>wie viel Solver-Aufwand</em> das nötig macht.</p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>Aspekt</th>
+        <th><span class="cmp-head"><span class="dot" style="background:var(--ltc)"></span>LTC</span></th>
+        <th><span class="cmp-head"><span class="dot" style="background:var(--lrc)"></span>LRC</span></th></tr></thead>
+      <tbody>
+        <tr><th>liquid ist…</th><td>die Zeitkonstante τ (Leitwert)</td><td>τ <em>und</em> die Kapazität (elastance ε)</td></tr>
+        <tr><th>Sättigung</th><td class="bad">nein — Leitwert unbeschränkt</td><td class="good">ja — tanh / σ begrenzen</td></tr>
+        <tr><th>Solver</th><td>fused semi-implizit</td><td>explicit Euler genügt</td></tr>
+        <tr><th>ode_unfolds</th><td class="mono">6</td><td class="mono">1</td></tr>
+        <tr><th>Lipschitz-Konstante</th><td class="bad">größer (steifer)</td><td class="good">kleiner (gutmütiger)</td></tr>
+        <tr><th>Kosten</th><td>~2× langsamer (gemessen)</td><td>günstiger</td></tr>
+        <tr><th>Quelle</th><td><span class="src src-paper">Hasani2020</span></td><td><span class="src src-paper">farsang2024liquid</span></td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="lab-caption reveal">„~2× langsamer“ ist ein erster Befund aus deinem v1-Cluster-Run. <span class="src src-code">Code · work-documentation 2026-06-10</span></p>
+
+    <div class="callout good reveal">
+      <div class="ctag" style="color:var(--cfc)">Wohin als Nächstes</div>
+      <p style="margin-bottom:0">LRC bändigt die Steifheit, indem sie die ODE umbaut. Die nächste Vorlesung
+      <strong>04 · CfC</strong> geht den radikaleren Weg: die ODE gar nicht erst zu integrieren, sondern ihre
+      Lösung in geschlossener Form direkt hinzuschreiben.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ QUELLEN ============================ -->
+<section id="sources" data-toc="Quellen">
+  <div class="wrap">
+    <div class="eyebrow reveal">Belege</div>
+    <h2 class="reveal">Quellen dieser Vorlesung</h2>
+    <div class="bib reveal">
+      <div class="bib-item"><div class="bib-key">Hasani2020</div><div class="bib-cite">
+        <div class="t">Liquid Time-constant Networks</div>
+        <div class="meta">Hasani, Lechner, Amini, Rus, Grosu · AAAI 2021 · arXiv:2006.04439</div>
+        <div class="where">LTC-Conductance-ODE, liquides τ, fused Solver · Vault: Papers/hasani2020-ltc.md</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">farsang2024liquid</div><div class="bib-cite">
+        <div class="t">Liquid Resistance Liquid Capacitance Networks</div>
+        <div class="meta">Farsang, Neubauer, Grosu · NeuroAI@NeurIPS 2024 · arXiv:2403.08791</div>
+        <div class="where">Sättigung + liquid elastance ε, kleinere Lipschitz-Konstante · Vault: Papers/farsang2024-lrc.md</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">farsang2024learning</div><div class="bib-cite">
+        <div class="t">Learning with Chemical vs. Electrical Synapses</div>
+        <div class="meta">Farsang et al. · ICRA 2024</div>
+        <div class="where">Fallbeispiel Spurhaltung, chemische vs. elektrische Synapsen · Vault: Papers/farsang2024-chemical-synapses.md</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Code</div><div class="bib-cite">
+        <div class="t">Eigene Implementierung</div>
+        <div class="meta">code/src/neurons/ltc_cell.py · lrc_cell.py · ctrnn_cell.py</div>
+        <div class="where">Solver, Init-Bereiche, elastance_mapping — wörtlich zitiert</div>
+      </div></div>
+    </div>
+    <p class="note reveal">Die Skalar-Labs reduzieren die echten Vektor-Updates auf ein Neuron, um die Dynamik
+    sichtbar zu machen; Gewichtsmatrizen werden zu skalaren Faktoren. Die <em>Form</em> der Gleichungen
+    (Sättigung, Nenner-Dämpfung, ε-Gate) ist identisch mit dem Code.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="f-title">Vorlesung 03 · LTC &amp; LRC</div>
+  <p>Teil der interaktiven Lernreihe zur Masterarbeit. Jeder Regler rechnet die echte Update-Regel.</p>
+  <p class="mono">ltc_cell.py · lrc_cell.py · Hasani 2021 · Farsang 2024</p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
+<script src="assets/engine.js"></script>
+<script>
+/* ============================================================
+   LAB 1 · LTC-Spielplatz — liquid τ
+   ============================================================ */
+function initLtcPlay(){
+  const sc=new Scope('cv-ltc',{l:44,r:16,t:16,b:24});
+  const P={sig:'step', gain:3.0, tau:1.5};
+  const T=14, DT=0.05;
+  let t=0, hL=0, hC=0;
+  const tin=[], tlt=[], tct=[]; const taus=[];
+  function signal(tt){
+    const ph=((tt%9)/9);
+    if(P.sig==='step') return ph<0.5? -0.6 : 0.9;
+    if(P.sig==='sine') return 0.85*Math.sin(tt*1.1);
+    return (ph<0.12)?1.0:(ph<0.5?-0.4:(ph<0.62?0.8:-0.2)); // pulse
+  }
+  function ltcStep(h,x){
+    const f = P.gain*sig(1.6*x - 0.3);
+    return {h:stepLTC(h,x,DT,{tau:P.tau,gain:P.gain,win:1.6,wrec:0.0,b:-0.3,A:x,solver:'fused',unfolds:6}),
+            tau: 1/(1/P.tau + f)};
+  }
+  function frame(){
+    t+=DT; const x=signal(t);
+    const r=ltcStep(hL,x); hL=r.h;
+    hC=stepCTRNN(hC,x,DT,{win:1.6,wrec:0.0,b:-0.3,tau:P.tau});
+    tin.push([t,x]); tlt.push([t,hL]); tct.push([t,hC]); taus.push(r.tau);
+    while(tin.length && tin[0][0]<t-T){ tin.shift(); tlt.shift(); tct.shift(); taus.shift(); }
+    const tnow=taus[taus.length-1]||0;
+    let mn=1e9,mx=-1e9; taus.forEach(v=>{if(v<mn)mn=v;if(v>mx)mx=v;});
+    $('#ltc-tau-now').textContent=tnow.toFixed(2);
+    $('#ltc-tau-range').textContent=mn.toFixed(2)+' … '+mx.toFixed(2);
+    $('#ltc-status').textContent='τ_sys '+mn.toFixed(2)+'–'+mx.toFixed(2);
+    draw();
+    raf=requestAnimationFrame(frame);
+  }
+  function draw(){
+    sc.clear(); sc.range(t-T,t,-1.2,1.2); sc.grid(4,4,{yd:1});
+    sc.path(tin,COL.faint,1.5,{dash:[4,4],alpha:.8});
+    sc.path(tct,COL.ct,2);
+    sc.path(tlt,COL.ltc,2.6);
+    sc.label('LTC',t-0.3,tlt.length?tlt[tlt.length-1][1]:0,COL.ltc,'right');
+    sc.label('CT-RNN',t-0.3,(tct.length?tct[tct.length-1][1]:0)-0.12,COL.ct,'right');
+  }
+  let raf;
+  bind('ltc-gain','ltc-gain-v',v=>P.gain=v,1);
+  bind('ltc-tau','ltc-tau-v',v=>P.tau=v,1);
+  seg('ltc-sig',s=>{P.sig=s;});
+  whenVisible('lab-ltc',()=>{ if(!raf) frame(); });
+}
+
+/* ============================================================
+   LAB 2 · Solver-Stabilität — explicit vs. fused, unfolds
+   ============================================================ */
+function initUnfold(){
+  const sc=new Scope('cv-unfold',{l:44,r:16,t:16,b:24});
+  const P={dt:0.6, g:9.0, U:1, solver:'explicit'};
+  function run(){
+    const N=120; const pts=[]; let v=0; const A=0.8, tau=1.5;
+    for(let i=0;i<=N;i++){
+      v=stepLTC(v,1.0,P.dt,{tau:tau,gain:P.g,win:0.0,wrec:0.0,b:2.2,A:A,solver:P.solver,unfolds:P.U});
+      pts.push([i*P.dt, v]);
+      if(!isFinite(v)||Math.abs(v)>50){ for(let k=i+1;k<=N;k++) pts.push([k*P.dt, Math.sign(v||1)*50]); break; }
+    }
+    return pts;
+  }
+  function crit(){ const f=P.g*sig(2.2); return (1/1.5 + f)*(P.dt/P.U); }
+  function draw(){
+    const pts=run(); const c=crit();
+    sc.clear(); sc.range(0,120*P.dt,-1.6,1.6); sc.grid(4,4,{yd:1,xl:true,xd:0});
+    sc.hline(0.8,COL.cfc,1.2,[5,5]); sc.label('Ziel',2,0.9,COL.cfc,'left');
+    sc.path(pts, P.solver==='explicit'?COL.ltc:COL.cfc, 2.4);
+    $('#unf-crit').textContent=c.toFixed(2);
+    const v=$('#unf-verdict'), st=$('#unf-status');
+    if(P.solver==='fused'){ v.className='ok'; v.textContent='fused → immer stabil'; st.textContent='stabil (fused)'; }
+    else if(c>2){ v.className='bad'; v.textContent='> 2 → explodiert'; st.textContent='instabil!'; }
+    else { v.className='ok'; v.textContent='< 2 → stabil'; st.textContent='stabil'; }
+  }
+  bind('unf-dt','unf-dt-v',x=>{P.dt=x; draw();},2);
+  bind('unf-g','unf-g-v',x=>{P.g=x; draw();},1);
+  bind('unf-u','unf-u-v',x=>{P.U=Math.round(x); draw();},0);
+  seg('unf-solver',v=>{P.solver=v; draw();});
+  whenVisible('lab-unfold',draw);
+}
+
+/* ============================================================
+   LAB 3 · Elastance-Schalter — LRC vs. saturierte LTC
+   ============================================================ */
+function initLrc(){
+  const sc=new Scope('cv-lrc',{l:44,r:16,t:16,b:24});
+  const P={sig:'noisy', noise:0.5, elast:true};
+  const T=14, DT=0.05;
+  let t=0, hOn=0, hOff=0; const tin=[], ton=[], toff=[]; const jit=[];
+  const noiseSeq = Array.from({length:400},()=>Math.random()*2-1);
+  function baseSig(tt){
+    const ph=((tt%9)/9);
+    if(P.sig==='step') return ph<0.5?-0.5:0.8;
+    if(P.sig==='sine') return 0.7*Math.sin(tt*1.0);
+    return ph<0.5?-0.4:0.7;
+  }
+  function signal(tt){
+    let s=baseSig(tt);
+    if(P.sig==='noisy'){ const hold=noiseSeq[Math.floor(tt/0.3)%noiseSeq.length]; s+=P.noise*hold; }
+    return s;
+  }
+  function lrcStep(h,x,elast){
+    return stepLRC(h,x,DT,{vleak:1.0,wfIn:1.0,wfRec:0.2,bf:0.2,wgIn:1.7,wgRec:-0.2,bg:0.0,
+      elast:elast,weIn:1.1,weRec:0.0,be:0.2});
+  }
+  function epsNow(x,v){ return sig(1.1*x+0.2); }
+  function frame(){
+    t+=DT; const x=signal(t);
+    hOn=lrcStep(hOn,x,true); hOff=lrcStep(hOff,x,false);
+    tin.push([t,x]); ton.push([t,hOn]); toff.push([t,hOff]); jit.push(hOn);
+    while(tin.length && tin[0][0]<t-T){ tin.shift(); ton.shift(); toff.shift(); jit.shift(); }
+    $('#lrc-eps').textContent=epsNow(x,hOn).toFixed(2);
+    const m=jit.reduce((a,b)=>a+b,0)/jit.length; const varr=jit.reduce((a,b)=>a+(b-m)*(b-m),0)/jit.length;
+    $('#lrc-jit').textContent=varr.toFixed(3);
+    draw();
+    raf=requestAnimationFrame(frame);
+  }
+  function draw(){
+    sc.clear(); sc.range(t-T,t,-1.4,1.4); sc.grid(4,4,{yd:1});
+    sc.path(tin,COL.faint,1.3,{dash:[4,4],alpha:.7});
+    if(P.elast){ sc.path(toff,'#7da7f0',1.6,{alpha:.5}); sc.path(ton,COL.lrc,2.6); }
+    else { sc.path(ton,'#7da7f0',1.6,{alpha:.45}); sc.path(toff,COL.lrc,2.6); }
+    const last = P.elast?(ton.length?ton[ton.length-1][1]:0):(toff.length?toff[toff.length-1][1]:0);
+    sc.label(P.elast?'LRC (ε an)':'sat. LTC (ε aus)', t-0.3, last, COL.lrc,'right');
+  }
+  let raf;
+  bind('lrc-noise','lrc-noise-v',v=>P.noise=v,2);
+  seg('lrc-sig',s=>{P.sig=s;});
+  seg('lrc-elast',v=>{P.elast=(v==='on'); $('#lrc-status').textContent=P.elast?'ε aktiv':'ε = 1 (sat. LTC)';});
+  whenVisible('lab-lrc',()=>{ if(!raf) frame(); });
+}
+
+LR.boot([initLtcPlay, initUnfold, initLrc]);
+</script>
+</body>
+</html>

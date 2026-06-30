@@ -93,3 +93,37 @@ wall-clock time without ever exceeding the GPU quota.
 (`--profile v2`: mm_ltc/mm_lrc/cfc + gradient-clip axis). Results land in
 `results/runs_v2/`. How to compare v1 vs v2: see
 `experiments/BENCHMARK_COMPARISON.md`.
+
+## Re-extracting papers with Docling (knowledge ingestion)
+
+`cluster/extract_papers.sbatch` re-extracts every `papers/**/*.pdf` to clean
+Markdown with Docling on a GPU, running the full pipeline (layout + tables +
+`--enrich-formula` → LaTeX + `--enrich-code`). Output mirrors into
+`papers/.extracted/`. Rationale: formula enrichment (CodeFormulaV2, an
+autoregressive VLM) is too slow on CPU and has no MPS support — see
+`claude_instructions/karpathy-pattern.md` → Extraktions-Schicht.
+
+**Compute nodes have no internet**, so warm the uvx env + HF model cache once
+in an interactive GPU session before submitting the batch job:
+
+```bash
+./cluster/sync_to_cluster.sh                 # NOTE: ensure papers/ is synced too
+ssh datalab
+srun -p GPU-a40 --gres=gpu:a40:1 -n1 --pty bash
+cd ~/thesis-benchmark
+# downloads Docling + ~1 GB models, one paper as canary:
+uvx --from docling docling convert --enrich-formula --device cuda \
+    --to md --output /tmp/_warm papers/lechner2020-ncp.pdf
+exit; exit
+
+sbatch cluster/extract_papers.sbatch         # now runs offline from the cache
+```
+
+Fetch the Markdown back to your machine:
+
+```bash
+rsync -a datalab:thesis-benchmark/papers/.extracted/ papers/.extracted/
+```
+
+`sync_to_cluster.sh` currently rsyncs the code tree; extend it to include
+`papers/`, or push them once with `rsync -a papers/ datalab:thesis-benchmark/papers/`.

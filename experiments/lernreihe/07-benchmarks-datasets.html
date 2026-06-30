@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>07 · Benchmarks: Datensätze &amp; dynamische Systeme</title>
+<meta name="description" content="Vorlesung 07: Die sechs dynamischen ODE-Systeme des Benchmarks — Lotka-Volterra, Duffing, Spiral und Co. Wie aus einer Differentialgleichung per solve_ivp eine Trajektorie wird, Formel neben Code, und was NRMSE wirklich misst.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lecture="07">
+
+<!-- ============================ HERO ============================ -->
+<header class="hero">
+  <canvas class="hero-canvas" data-c1="#0891b2" data-c2="#2563eb" data-c3="#0f9d6b"></canvas>
+  <div class="hero-inner">
+    <div class="hero-kicker reveal"><span class="lecnum">Vorlesung 07</span> Das Experiment · Datensätze</div>
+    <h1 class="hero-title reveal">Sechs Welten aus einer<br><span class="liquid">Gleichung</span></h1>
+    <p class="hero-sub reveal">Bevor ein Netz lernt, braucht es etwas zu lernen. Hier kommt der Stoff: sechs
+    dynamische Systeme — Räuber und Beute, ein schwingender Oszillator, eine einlaufende Spirale. Jedes
+    ist nur eine kurze Formel <em>ẏ = f(y)</em>. Diese Vorlesung zeigt, wie aus dieser Formel per Solver
+    eine konkrete Kurve — der Datensatz — entsteht, und woran man am Ende eine gute Vorhersage erkennt.</p>
+    <div class="hero-meta reveal">
+      <span class="hero-pill"><span class="dot" style="background:var(--data)"></span>6 Systeme · datasets.py</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--lrc)"></span>solve_ivp · DOP853</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--cfc)"></span>NRMSE · vergleichbar</span>
+    </div>
+  </div>
+  <div class="scroll-hint"><span>Scrollen</span><span class="line"></span></div>
+</header>
+
+<!-- ============================ 0 · EINSTIEG ============================ -->
+<section id="intro" data-toc="Einstieg">
+  <div class="wrap">
+    <div class="eyebrow reveal">Worum es geht</div>
+    <h2 class="reveal">Eine Formel ist noch kein Datensatz</h2>
+    <p class="lead reveal">Die Vorlesungen 00 bis 06 haben die Zellen gebaut. Ab jetzt geht es um das
+    Experiment, mit dem die Thesis sie vergleicht. Der erste Baustein ist der Lernstoff selbst: sechs
+    dynamische Systeme, an denen jede Zelle dieselbe Aufgabe lösen muss.</p>
+
+    <p class="reveal">Die Aufgabe heißt <em>Neural ODE</em>: Gegeben ein Anfangszustand und ein
+    bekannter Zeitverlauf — kann das Netz die weitere Bahn vorhersagen? Dafür braucht es eine Bahn, an der
+    es gemessen wird. Diese Bahn nennt man <strong>ground truth</strong>. Sie entsteht, indem ein klassischer
+    numerischer Solver die Differentialgleichung des Systems durchrechnet
+    <span class="src src-code" title="datasets.py — generate_dataset(), solve_ivp">Code · datasets.py</span>.</p>
+
+    <div class="callout reveal">
+      <div class="ctag">Das Versprechen dieser Seite</div>
+      <p style="margin-bottom:.6em">Am Ende verstehst du drei Dinge konkret: <strong>(1)</strong> welche sechs
+      Systeme im Benchmark stecken und wie ihre Gleichungen aussehen, <strong>(2)</strong> wie aus
+      <em>ẏ = f(y)</em> per <code>solve_ivp</code> eine Trajektorie mit 1000 Punkten wird — Formel neben Code,
+      und <strong>(3)</strong> warum die Fehlermetrik <em>NRMSE</em> heißt und wieso man damit ein Spiral- und
+      ein Räuber-Beute-Modell überhaupt vergleichen darf.</p>
+      <p style="margin-bottom:0">Jedes Lab zeichnet die echten Trajektorien aus den exakten Gleichungen von
+      <code>datasets.py</code> — kein erfundenes System.</p>
+    </div>
+
+    <div class="legend reveal">
+      <div class="li"><span class="src src-paper">Paper</span> Originalarbeit / Paper-Notiz</div>
+      <div class="li"><span class="src src-code">Code</span> exakt aus deiner Implementierung</div>
+      <div class="li"><span class="src src-dr">Deep-Research</span> LLM-Recherche, zu prüfen</div>
+      <div class="li"><span class="src src-classic">klassisch</span> Lehrbuchwissen</div>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 1 · VON ODE ZU TRAJEKTORIE ============================ -->
+<section id="ode" data-toc="ODE → Kurve">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--data);color:var(--data)"><span class="section-num">01</span> &nbsp;Vom Vektorfeld zur Bahn</div>
+    <h2 class="reveal">Wie aus ẏ = f(y) eine Kurve wird</h2>
+    <p class="reveal">Jedes der sechs Systeme ist ein <strong>autonomes</strong> Differentialgleichungssystem:
+    Die Änderungsrate hängt nur vom aktuellen Zustand ab, nicht direkt von der Zeit. Der Zustand
+    <span class="mono">y = (y₀, y₁)</span> ist zweidimensional — etwa Beutebestand und Räuberbestand.
+    Die rechte Seite <span class="mono">f</span> ordnet jedem Zustand einen Geschwindigkeitsvektor zu
+    <span class="src src-classic" title="Lehrbuch: Anfangswertproblem, autonomes ODE-System">klassisch</span>:</p>
+
+    <div class="eq accent-data reveal">
+      <div class="eq-label"><span>Anfangswertproblem (gemeinsame Form aller 6 Systeme)</span><span class="src src-classic">klassisch</span></div>
+      <div data-eq="\dot{\mathbf y}(t)=\mathbf f\big(\mathbf y(t)\big),\qquad \mathbf y(t_0)=\mathbf y_0,\qquad \mathbf y=(y_0,y_1)\in\mathbb R^2"></div>
+    </div>
+
+    <p class="reveal">Das Vektorfeld allein ist statisch — ein Pfeil an jedem Punkt der Ebene. Eine
+    <strong>Trajektorie</strong> entsteht erst, wenn man an einem Startpunkt <span class="mono">y₀</span>
+    beginnt und den Pfeilen folgt. Genau das tut ein numerischer Integrator: Er nimmt den aktuellen Punkt,
+    liest die lokale Steigung <span class="mono">f(y)</span> ab und macht einen kleinen Zeitschritt in diese
+    Richtung. Das einfachste Verfahren ist der explizite Euler-Schritt
+    <span class="src src-code" title="solver.py:21 — euler_odeint, ys[-1] + dt*dy">Code · solver.py:21</span>:</p>
+
+    <div class="eq accent-data reveal">
+      <div class="eq-label"><span>Ein Euler-Schritt — so wandert der Punkt</span><span class="src src-code">Code · solver.py</span></div>
+      <div data-eq="\mathbf y_{i+1}=\mathbf y_i+\Delta t\cdot \mathbf f(\mathbf y_i)\qquad\text{mit}\qquad \Delta t=t_{i+1}-t_i"></div>
+    </div>
+
+    <div class="callout reveal">
+      <div class="ctag">Zwei Solver, ein Zweck</div>
+      <p style="margin-bottom:.6em">Für die <strong>ground truth</strong> reicht der grobe Euler nicht — kleine
+      Schrittfehler summieren sich. Deshalb erzeugt <code>datasets.py</code> die Referenzbahn mit dem
+      hochpräzisen Verfahren <span class="mono">DOP853</span> (Runge-Kutta 8. Ordnung) und adaptiver
+      Schrittweite <span class="src src-code" title="datasets.py:81 — method='DOP853'">Code · datasets.py:81</span>.
+      Das Netz dagegen wird später <em>absichtlich</em> mit dem schlichten <code>euler_odeint</code> gerollt,
+      damit Solver-Genauigkeit nicht das Ergebnis verfälscht — dazu Vorlesung 08.</p>
+      <p style="margin-bottom:0">Die Bahn ist also doppelt motiviert: einmal als möglichst exakte Wahrheit,
+      einmal als faire, simple Vorhersage-Mechanik.</p>
+    </div>
+
+    <p class="reveal">Im Lab unten siehst du diesen Übergang direkt. Setz den Startpunkt, lass den Integrator
+    Schritt für Schritt laufen — und beobachte, wie aus einzelnen Euler-Sprüngen die glatte Trajektorie wird,
+    die das System beschreibt.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-build">
+      <div class="lab-head"><span class="led"></span><span class="title">Integrator-Werkstatt · ein Schritt nach dem anderen</span><span class="sub" id="build-status">läuft</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-build"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>System</label>
+            <div class="seg" id="build-sys"><button data-v="spiral" class="on">Spiral</button><button data-v="periodic_predator_prey">Lotka-Volterra</button><button data-v="duffing">Duffing</button></div>
+          </div>
+          <div class="ctrl"><label>Schrittweite Δt <span class="val" id="build-dt-v">0.20</span></label><input type="range" id="build-dt" class="acc-ltc" min="0.02" max="0.6" step="0.01" value="0.2"></div>
+          <div class="lab-readout">
+            Schritt <span class="big k" id="build-step">0</span><br>
+            Position <span class="k" id="build-pos">—</span><br>
+            <span class="dim">Pfeil = Δt·f(y) am aktuellen Punkt.</span>
+          </div>
+          <div class="lab-task">Dreh <b>Δt</b> klein: viele kurze Sprünge, glatte Bahn. Dreh es groß: der Punkt
+          schießt über die Kurve hinaus — sichtbarer Integrationsfehler. Genau deshalb nutzt der Datensatz
+          den feinen <b>DOP853</b>, nicht diesen Euler.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Hellblau: die feine Referenzbahn (RK4). Cyan: der grobe Euler-Pfad in Δt-Schritten, Pfeil = aktuelle Steigung. <span class="src src-code">Code · solver.py / datasets.py</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 2 · SYSTEM-EXPLORER ============================ -->
+<section id="systems" data-toc="Die 6 Systeme">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--data);color:var(--data)"><span class="section-num">02</span> &nbsp;Der Zoo der Dynamiken</div>
+    <h2 class="reveal">Die sechs Systeme im Explorer</h2>
+    <p class="reveal">Die sechs Systeme sind keine Zufallsauswahl. Sie decken einen Schwierigkeitsfächer ab:
+    von der gutmütigen einlaufenden Spirale über harmonische Schwingungen bis zu echt nichtlinearen
+    Räuber-Beute-Dynamiken mit Sättigung. Wähl unten ein System — links das <strong>Phasenporträt</strong>
+    (y₀ gegen y₁, die Geometrie der Bahn), rechts die <strong>Zeitreihe</strong> (beide Komponenten gegen t,
+    der eigentliche Datensatz). Gleichung, Startwert und Zeitspanne passen sich automatisch an
+    <span class="src src-code" title="datasets.py:4-52 — _SYSTEMS, _ODE_FUNCS">Code · datasets.py</span>.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-explorer">
+      <div class="lab-head"><span class="led"></span><span class="title">System-Explorer · Phasenporträt &amp; Zeitreihe</span><span class="sub" id="exp-status">Spiral</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap" style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+          <canvas id="cv-phase"></canvas>
+          <canvas id="cv-time"></canvas>
+        </div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Dynamisches System</label>
+            <div class="seg" id="exp-sys" style="flex-wrap:wrap">
+              <button data-v="spiral" class="on">Spiral</button>
+              <button data-v="duffing">Duffing</button>
+              <button data-v="periodic_sinusoidal">Sinusoidal</button>
+              <button data-v="periodic_predator_prey">Lotka-Volterra</button>
+              <button data-v="limited_predator_prey">Limited P-P</button>
+              <button data-v="nonlinear_predator_prey">Nonlinear P-P</button>
+            </div>
+          </div>
+          <div class="ctrl"><label>Fortschritt der Bahn <span class="val" id="exp-prog-v">1.00</span></label><input type="range" id="exp-prog" class="acc-ltc" min="0.04" max="1" step="0.02" value="1"></div>
+          <div class="eq accent-data" style="margin:0">
+            <div class="eq-label"><span id="exp-eqlabel">Spiral · ẏ = f(y)</span><span class="src src-code">Code</span></div>
+            <div id="exp-eq" data-eq=""></div>
+          </div>
+          <div class="lab-readout">
+            y₀ &nbsp;<span class="k" id="exp-y0">—</span><br>
+            t ∈ <span class="k" id="exp-tspan">—</span> &nbsp;·&nbsp; 1000 Punkte<br>
+            <span class="dim" id="exp-note">—</span>
+          </div>
+          <div class="lab-task">Klick dich durch alle sechs. Achte auf den Unterschied: <b>Spiral</b> läuft in einen
+          Punkt ein, <b>Lotka-Volterra</b> kreist als geschlossene Schleife (periodisch), <b>Nonlinear P-P</b>
+          wandert auf einen festen Punkt zu. Die Geometrie links erklärt die Wellen rechts.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Links: Phasenporträt y₀–y₁. Rechts: Zeitreihe y₀ (cyan) und y₁ (blau) gegen t. Beides aus <code>trueTrajectory(name)</code> — den exakten Gleichungen. <span class="src src-code">Code · datasets.py</span></p></div>
+
+  <div class="wrap">
+    <p class="reveal" style="margin-top:1.4em">Die Tabelle ordnet die sechs ein. Entscheidend für die spätere
+    Auswertung ist die Spalte <em>Charakter</em>: ob eine Bahn in einen Fixpunkt einläuft, ewig periodisch
+    kreist oder chaotisch werden kann, bestimmt, wie schwer die Vorhersage über lange Zeit ist.</p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>System</th><th>Gleichungstyp</th><th>Nichtlinearität</th><th>Charakter</th><th class="mono">t-Spanne</th></tr></thead>
+      <tbody>
+        <tr><th>spiral</th><td>linear, <span class="mono">ẏ = Ay</span></td><td class="good">keine (linear)</td><td>einlaufende Spirale → Fixpunkt</td><td class="mono">[0, 25]</td></tr>
+        <tr><th>duffing</th><td>kubisch</td><td><span class="mono">y₀³</span>-Term</td><td>nichtlinearer Oszillator</td><td class="mono">[0, 25]</td></tr>
+        <tr><th>periodic_sinusoidal</th><td>polar, Radius <span class="mono">r=‖y‖</span></td><td>über <span class="mono">r</span></td><td>Grenzzyklus (Einheitskreis)</td><td class="mono">[0, 10]</td></tr>
+        <tr><th>periodic_predator_prey</th><td>Lotka-Volterra</td><td>Produkt <span class="mono">y₀·y₁</span></td><td>geschlossene Bahn (periodisch)</td><td class="mono">[0, 10]</td></tr>
+        <tr><th>limited_predator_prey</th><td>logistisch + Kopplung</td><td>quadratisch + Produkt</td><td>gedämpft → Gleichgewicht</td><td class="mono">[0, 20]</td></tr>
+        <tr><th>nonlinear_predator_prey</th><td>doppelt-logistisch</td><td>stark (drei NL-Terme)</td><td>schwierigster Fall</td><td class="mono">[0, 20]</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="lab-caption reveal">Alle Gleichungen, y₀ und Spannen wörtlich aus <code>datasets.py</code>. <span class="src src-code">Code · datasets.py:4-52</span></p>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 3 · FORMEL NEBEN CODE ============================ -->
+<section id="code" data-toc="Formel neben Code">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--data);color:var(--data)"><span class="section-num">03</span> &nbsp;Generierung im Detail</div>
+    <h2 class="reveal">Formel neben Code: solve_ivp erzeugt den Datensatz</h2>
+    <p class="reveal">Jetzt die Brücke zwischen Mathematik und Implementierung an einem konkreten Beispiel.
+    Die Lotka-Volterra-Gleichung beschreibt Beute <span class="mono">y₀</span> und Räuber
+    <span class="mono">y₁</span>: Beute vermehrt sich, wird aber durch Begegnungen mit Räubern dezimiert;
+    Räuber sterben ohne Beute aus, gewinnen aber an jeder Begegnung
+    <span class="src src-classic" title="Lehrbuch: Lotka-Volterra-Gleichungen">klassisch</span>.</p>
+
+    <div class="eq accent-data reveal">
+      <div class="eq-label"><span>periodic_predator_prey · Lotka-Volterra</span><span class="src src-code">Code</span></div>
+      <div data-eq="\dot y_0 = 1.5\,y_0 - y_0\,y_1,\qquad \dot y_1 = -3\,y_1 + y_0\,y_1,\qquad \mathbf y_0=(1,1),\ t\in[0,10]"></div>
+    </div>
+
+    <p class="reveal">Im Code ist das exakt diese Funktion — und der Aufruf von <code>solve_ivp</code>, der die
+    Formel über 1000 gleichmäßig verteilte Zeitpunkte integriert
+    <span class="src src-code" title="datasets.py:30-31, 55-90">Code · datasets.py</span>:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">datasets.py · ODE-Funktion + Generierung</span><span class="ref">Zeilen 30–90</span></div>
+<pre><span class="c"># die rechte Seite: dy = f(t, y) — hier Lotka-Volterra</span>
+<span class="k">def</span> <span class="f">_periodic_predator_prey</span>(t, y):
+    <span class="k">return</span> [<span class="hl">1.5 * y[0] - 1.0 * y[0] * y[1]</span>,   <span class="c"># Beute</span>
+            <span class="hl">-3.0 * y[1] + 1.0 * y[0] * y[1]</span>]  <span class="c"># Räuber</span>
+
+<span class="k">def</span> <span class="f">generate_dataset</span>(name, data_size=<span class="s">1000</span>):
+    params = _SYSTEMS[name]                       <span class="c"># y0 + t_span</span>
+    t_eval = np.<span class="f">linspace</span>(params[<span class="s">'t_span'</span>][0],
+                         params[<span class="s">'t_span'</span>][1], data_size)   <span class="c"># 1000 Stützstellen</span>
+<span class="hl">    sol = <span class="f">solve_ivp</span>(_ODE_FUNCS[name], params[<span class="s">'t_span'</span>], params[<span class="s">'y0'</span>],</span>
+<span class="hl">                    method=<span class="s">'DOP853'</span>, t_eval=t_eval,</span>
+<span class="hl">                    rtol=<span class="s">1e-3</span>, atol=<span class="s">1e-6</span>)</span>
+    t = sol.t        <span class="c"># (1000,)</span>
+    y = sol.y.T      <span class="c"># (1000, 2) — transponiert</span>
+    <span class="k">return</span> t, y</pre>
+    </div>
+    <p class="code-cap reveal">Die hervorgehobenen Zeilen sind der ganze Trick: <code>solve_ivp</code> nimmt die
+    Formel, den Startwert und die Zeitspanne und liefert eine Matrix der Form <span class="mono">(1000, 2)</span>
+    — das ist der Datensatz, an dem alle Zellen trainieren. <span class="src src-code">Code · datasets.py:77-89</span></p>
+
+    <div class="callout reveal">
+      <div class="ctag">Worauf die drei Zahlen stehen</div>
+      <p style="margin-bottom:.6em"><span class="mono">DOP853</span> ist ein explizites Runge-Kutta-Verfahren
+      8. Ordnung — deutlich genauer als der Euler aus Abschnitt 01. <span class="mono">rtol = 1e-3</span> und
+      <span class="mono">atol = 1e-6</span> sind die relative und absolute Fehlertoleranz, mit denen der Solver
+      seine Schrittweite adaptiv wählt. <span class="mono">data_size = 1000</span> legt fest, an wie vielen
+      gleichmäßig verteilten Zeitpunkten die Bahn ausgewertet wird
+      <span class="src src-code" title="datasets.py:55,75-85">Code · datasets.py</span>.</p>
+      <p style="margin-bottom:0">Wichtig: <span class="mono">t_eval</span> bestimmt nur, <em>wo</em> abgelesen wird
+      — die Genauigkeit der Integration steuern allein die Toleranzen.</p>
+    </div>
+
+    <div class="callout warn reveal">
+      <div class="ctag">Didaktische Vereinfachung</div>
+      <p style="margin-bottom:0">Diese Seite zeichnet die Bahnen im Browser mit einer RK4-Feinintegration
+      (<code>trueTrajectory</code> in der Engine) als visuelle Näherung. Der echte Datensatz entsteht im Code
+      mit <code>scipy.solve_ivp(method='DOP853')</code>. Für die hier gezeigten gutmütigen Systeme liegen beide
+      praktisch übereinander; die Form der Kurven stimmt überein. <span class="src src-code">Code · datasets.py</span></p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 4 · NRMSE ============================ -->
+<section id="nrmse" data-toc="Was ist NRMSE">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--cfc);color:var(--cfc)"><span class="section-num">04</span> &nbsp;Die Fehlermetrik</div>
+    <h2 class="reveal">Was bedeutet NRMSE — und warum nicht einfach MSE?</h2>
+    <p class="reveal">Hat das Netz eine Vorhersage geliefert, braucht man eine einzige Zahl, die sagt: wie weit
+    daneben? Der naheliegende Kandidat ist der mittlere quadratische Fehler. Das Problem: er hängt am
+    Wertebereich. Eine Spirale lebt im Bereich <span class="mono">±0.5</span>, ein Räuber-Beute-System kann
+    Werte über <span class="mono">3</span> erreichen. Derselbe absolute Fehler bedeutet bei beiden etwas völlig
+    Verschiedenes — ein MSE wäre systemübergreifend nicht vergleichbar.</p>
+
+    <p class="reveal">Deshalb normiert deine Metrik den RMSE durch die Spannweite der wahren Werte
+    <span class="src src-code" title="metrics.py:11-21 — nrmse, rmse / (max-min)">Code · metrics.py:11</span>:</p>
+
+    <div class="eq accent-cfc reveal">
+      <div class="eq-label"><span>NRMSE · normalisierter RMSE</span><span class="src src-code">Code · metrics.py</span></div>
+      <div data-eq="\mathrm{NRMSE}=\frac{\sqrt{\tfrac1N\sum_i (y^{\text{true}}_i-y^{\text{pred}}_i)^2}}{\max(y^{\text{true}})-\min(y^{\text{true}})}"></div>
+    </div>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">metrics.py · nrmse</span><span class="ref">Zeilen 11–21</span></div>
+<pre><span class="k">def</span> <span class="f">nrmse</span>(y_true, y_pred, epsilon=<span class="s">1e-12</span>):
+    rmse = np.<span class="f">sqrt</span>(np.<span class="f">mean</span>((y_true - y_pred) ** <span class="s">2</span>))
+<span class="hl">    value_range = float(np.<span class="f">max</span>(y_true) - np.<span class="f">min</span>(y_true))</span>
+<span class="hl">    <span class="k">return</span> float(rmse / (value_range + epsilon))</span></pre>
+    </div>
+    <p class="code-cap reveal">Durch das Teilen durch <span class="mono">max − min</span> wird der Fehler
+    dimensionslos und relativ zur Größe des Systems. Ein NRMSE von <span class="mono">0.05</span> heißt grob:
+    der typische Fehler ist 5&nbsp;% der gesamten Wertespanne — egal ob Spiral oder Lotka-Volterra.
+    <span class="src src-code">Code · metrics.py</span></p>
+
+    <p class="reveal">Im Lab siehst du das live. Eine Vorhersage wird künstlich verschlechtert — durch
+    Rauschen und einen Skalierungsfehler. Der NRMSE läuft mit. Bei null Störung liegt er bei null; je weiter
+    die Vorhersage abdriftet, desto größer wird er.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-nrmse">
+      <div class="lab-head"><span class="led"></span><span class="title">NRMSE live · gute vs. schlechte Vorhersage</span><span class="sub" id="nr-status">NRMSE = 0.000</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-nrmse"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>System</label>
+            <div class="seg" id="nr-sys"><button data-v="periodic_predator_prey" class="on">Lotka-Volterra</button><button data-v="spiral">Spiral</button><button data-v="duffing">Duffing</button></div>
+          </div>
+          <div class="ctrl"><label>Rauschstärke <span class="val" id="nr-noise-v">0.10</span></label><input type="range" id="nr-noise" class="acc-cfc" min="0" max="0.6" step="0.01" value="0.1"></div>
+          <div class="ctrl"><label>Skalierungsfehler <span class="val" id="nr-scale-v">1.00</span></label><input type="range" id="nr-scale" class="acc-cfc" min="0.6" max="1.4" step="0.01" value="1"></div>
+          <div class="lab-readout">
+            NRMSE <span class="big k" id="nr-val">0.000</span><br>
+            <span id="nr-verdict" class="ok">perfekt</span><br>
+            <span class="dim">0 = exakt · klein = gut · groß = schlecht</span>
+          </div>
+          <div class="lab-task">Lass beide Regler in Ruhe → NRMSE ≈ 0, die Kurven liegen übereinander. Dreh
+          <b>Rauschen</b> oder den <b>Skalierungsfehler</b> hoch: die rote Vorhersage löst sich von der wahren
+          Bahn, und der NRMSE klettert. Das ist die Zahl, die später jede Zelle bewertet.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Cyan: ground truth aus <code>trueTrajectory</code>. Rot: gestörte „Vorhersage“. Zahl: <code>nrmse(true, pred)</code> aus der Engine, faithful zu metrics.py. <span class="src src-code">Code · metrics.py</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 5 · DAS EXPERIMENT-RASTER ============================ -->
+<section id="grid" data-toc="240 Läufe">
+  <div class="wrap">
+    <div class="eyebrow reveal"><span class="section-num">05</span> &nbsp;Wozu das Ganze</div>
+    <h2 class="reveal">Sechs Systeme × der Rest: das v1-Raster</h2>
+    <p class="reveal">Diese sechs Systeme sind eine Achse eines größeren Versuchsplans. Der erste vollständige
+    Durchlauf <strong>v1</strong> kombiniert sie mit den Zelltypen, den Verschaltungen und mehreren
+    Zufalls-Seeds zu insgesamt <strong>240 Läufen</strong> — vier Zellen mal zwei Wirings mal sechs Systeme
+    mal fünf Seeds <span class="src src-code" title="v1-Run: 4 Zelltypen × 2 Wirings × 6 Systeme × 5 Seeds = 240">Code · v1-Run</span>:</p>
+
+    <div class="eq accent-data reveal">
+      <div class="eq-label"><span>Umfang des v1-Benchmarks</span><span class="src src-code">Code</span></div>
+      <div data-eq="\underbrace{4}_{\text{Zellen}}\times\underbrace{2}_{\text{Wirings}}\times\underbrace{6}_{\text{Systeme}}\times\underbrace{5}_{\text{Seeds}}=240\ \text{Läufe}"></div>
+    </div>
+
+    <p class="reveal">Die fünf Seeds pro Kombination sind kein Luxus: Neuronale Netze starten zufällig, ein
+    einzelner Lauf ist verrauscht. Erst der Median über mehrere Seeds wird zu einer belastbaren Zahl. Die
+    sechs Systeme liefern Breite — eine Zelle, die nur auf der linearen Spirale glänzt, aber an der
+    nichtlinearen Räuber-Beute-Dynamik scheitert, fällt im Raster auf.</p>
+
+    <div class="callout good reveal">
+      <div class="ctag" style="color:var(--cfc)">Wohin als Nächstes</div>
+      <p style="margin-bottom:0">Der Datensatz steht, die Metrik ist klar. Die nächste Vorlesung
+      <strong>08 · Der Trainings-Code</strong> zeigt, was zwischen ground truth und NRMSE passiert: wie
+      <code>euler_odeint</code> die Zelle durch die Zeit rollt, wie der Adam-Optimierer die Gewichte zieht und
+      warum der Gradient unterwegs getrackt wird.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ QUELLEN ============================ -->
+<section id="sources" data-toc="Quellen">
+  <div class="wrap">
+    <div class="eyebrow reveal">Belege</div>
+    <h2 class="reveal">Quellen dieser Vorlesung</h2>
+    <div class="bib reveal">
+      <div class="bib-item"><div class="bib-key">Code · datasets.py</div><div class="bib-cite">
+        <div class="t">Datensatz-Generierung</div>
+        <div class="meta">code/src/tasks/neural_ode/datasets.py</div>
+        <div class="where">Die 6 ODE-Funktionen, _SYSTEMS (y0 + t_span), solve_ivp mit DOP853, rtol/atol, data_size=1000 — wörtlich zitiert</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Code · metrics.py</div><div class="bib-cite">
+        <div class="t">Fehlermetrik</div>
+        <div class="meta">code/src/evaluation/metrics.py:11-21</div>
+        <div class="where">nrmse: RMSE / (max − min), Normierung über den Wertebereich für systemübergreifende Vergleichbarkeit</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Code · solver.py</div><div class="bib-cite">
+        <div class="t">Euler-Integrator</div>
+        <div class="meta">code/src/tasks/neural_ode/solver.py:4-22</div>
+        <div class="where">euler_odeint: y_{i+1} = y_i + dt·f(t_i, y_i) — der schlichte Solver des Modell-Rollouts</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Code · v1-Run</div><div class="bib-cite">
+        <div class="t">Erster vollständiger Benchmark-Durchlauf</div>
+        <div class="meta">4 Zelltypen × 2 Wirings × 6 Systeme × 5 Seeds = 240 Läufe</div>
+        <div class="where">Versuchsplan v1 · obsidian_master_thesis/Thesis/work-documentation.md</div>
+      </div></div>
+    </div>
+    <p class="note reveal">Die Trajektorien dieser Seite werden im Browser per RK4-Feinintegration genähert
+    (<code>trueTrajectory</code>); der Code nutzt <code>scipy.solve_ivp(method='DOP853')</code>. Die
+    <em>Gleichungen, Startwerte und Zeitspannen</em> sind identisch mit <code>datasets.py</code>. Der NRMSE-Wert
+    der Engine ist faithful zu <code>metrics.py</code>.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="f-title">Vorlesung 07 · Benchmarks: Datensätze &amp; dynamische Systeme</div>
+  <p>Teil der interaktiven Lernreihe zur Masterarbeit. Jede Kurve entsteht aus der echten Systemgleichung.</p>
+  <p class="mono">datasets.py · metrics.py · solver.py · DOP853 · NRMSE</p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
+<script src="assets/engine.js"></script>
+<script>
+/* ============================================================
+   System-Metadaten für die Anzeige (Gleichung/Hinweis pro System)
+   Die Dynamik selbst kommt ausschließlich aus SYSTEMS/trueTrajectory.
+   ============================================================ */
+const SYS_META = {
+  spiral:{
+    label:'Spiral',
+    eq:'\\dot y_0=-0.1\\,y_0+3\\,y_1,\\quad \\dot y_1=-3\\,y_0-0.1\\,y_1',
+    note:'linear, ẏ = A·y — läuft spiralförmig in den Ursprung ein.'},
+  duffing:{
+    label:'Duffing-Oszillator',
+    eq:'\\dot y_0=y_1,\\quad \\dot y_1=y_0-y_0^{3}',
+    note:'kubische Nichtlinearität — Doppelmulden-Oszillator.'},
+  periodic_sinusoidal:{
+    label:'Periodic Sinusoidal',
+    eq:'r=\\sqrt{y_0^2+y_1^2},\\ \\dot y_0=y_0(1-r)-y_1,\\ \\dot y_1=y_0+y_1(1-r)',
+    note:'Grenzzyklus: strebt von innen wie außen auf den Einheitskreis.'},
+  periodic_predator_prey:{
+    label:'Lotka-Volterra',
+    eq:'\\dot y_0=1.5\\,y_0-y_0 y_1,\\quad \\dot y_1=-3\\,y_1+y_0 y_1',
+    note:'klassische Räuber-Beute-Dynamik — geschlossene, periodische Bahn.'},
+  limited_predator_prey:{
+    label:'Limited Predator-Prey',
+    eq:'\\dot y_0=y_0(1-y_0)-y_0 y_1,\\quad \\dot y_1=-y_1+2\\,y_0 y_1',
+    note:'logistische Beutegrenze — gedämpft in ein Gleichgewicht.'},
+  nonlinear_predator_prey:{
+    label:'Nonlinear Predator-Prey',
+    eq:'\\dot y_0=y_0(1-y_0)+0.33\\,y_0 y_1,\\quad \\dot y_1=y_1(1-y_1)+y_0 y_1',
+    note:'drei nichtlineare Terme — der schwierigste Fall im Benchmark.'},
+};
+/* y-Bereich aus einer Trajektorie ableiten (mit Rand) */
+function rangeOf(yy){
+  let mn0=1e9,mx0=-1e9,mn1=1e9,mx1=-1e9;
+  yy.forEach(p=>{ if(p[0]<mn0)mn0=p[0]; if(p[0]>mx0)mx0=p[0]; if(p[1]<mn1)mn1=p[1]; if(p[1]>mx1)mx1=p[1]; });
+  return {mn0,mx0,mn1,mx1};
+}
+function pad(a,b){ const d=(b-a)||1; return [a-0.12*d, b+0.12*d]; }
+
+/* ============================================================
+   LAB 1 · Integrator-Werkstatt — Euler-Schritte bauen die Bahn
+   ============================================================ */
+function initBuild(){
+  const sc=new Scope('cv-build',{l:40,r:16,t:18,b:26});
+  const P={sys:'spiral', dt:0.2};
+  let raf=null, step=0;
+  function fineTraj(){ return LR.trueTrajectory(P.sys, 600).y; }
+  // grober Euler-Pfad in P.dt-Schritten über die volle tspan
+  function eulerPath(){
+    const S=LR.SYSTEMS[P.sys]; const [t0,t1]=S.tspan;
+    const n=Math.max(2, Math.round((t1-t0)/P.dt));
+    let y=S.y0.slice(); const pts=[y.slice()];
+    for(let i=0;i<n;i++){
+      const dy=S.f(y);
+      y=[ y[0]+P.dt*dy[0], y[1]+P.dt*dy[1] ];
+      if(!isFinite(y[0])||Math.abs(y[0])>1e3){ break; }
+      pts.push(y.slice());
+    }
+    return pts;
+  }
+  let fine=fineTraj(), epath=eulerPath();
+  function recompute(){ fine=fineTraj(); epath=eulerPath(); step=0; }
+  function draw(){
+    const r=rangeOf(fine.concat(epath));
+    const [x0,x1]=pad(r.mn0,r.mx0), [y0,y1]=pad(r.mn1,r.mx1);
+    sc.clear(); sc.range(x0,x1,y0,y1); sc.grid(4,4,{yd:1,xd:1,xl:true});
+    sc.text('y₀',sc.w-sc.pad.r,sc.h-8,COL.faint,'right','600 11px JetBrains Mono');
+    sc.text('y₁',6,sc.pad.t+2,COL.faint,'left','600 11px JetBrains Mono','top');
+    // feine Referenzbahn
+    sc.path(fine.map(p=>[p[0],p[1]]), '#5aa9c9', 1.6, {alpha:.55});
+    // grober Euler-Pfad bis zum aktuellen Schritt
+    const k=Math.min(step, epath.length-1);
+    sc.path(epath.slice(0,k+1).map(p=>[p[0],p[1]]), COL.data, 2.4);
+    epath.slice(0,k+1).forEach(p=>sc.dot(p[0],p[1],COL.data,2.4));
+    // aktueller Punkt + Steigungspfeil Δt·f
+    if(k<epath.length){
+      const cur=epath[k]; const dy=LR.SYSTEMS[P.sys].f(cur);
+      sc.arrow(cur[0],cur[1], cur[0]+P.dt*dy[0], cur[1]+P.dt*dy[1], COL.accent, 2);
+      sc.ring(cur[0],cur[1],COL.accent,5,2);
+      $('#build-pos').textContent='('+cur[0].toFixed(2)+', '+cur[1].toFixed(2)+')';
+    }
+    $('#build-step').textContent=k;
+    $('#build-status').textContent = (k>=epath.length-1)?'Bahn fertig':'Schritt '+k;
+  }
+  function frame(){
+    step++;
+    if(step>epath.length-1+18){ step=0; } // kurze Pause, dann neu
+    draw();
+    raf=requestAnimationFrame(()=>setTimeout(frame, 70));
+  }
+  seg('build-sys', v=>{ P.sys=v; recompute(); draw(); });
+  bind('build-dt','build-dt-v', v=>{ P.dt=v; recompute(); draw(); }, 2);
+  whenVisible('lab-build', ()=>{ if(!raf){ recompute(); frame(); } });
+}
+
+/* ============================================================
+   LAB 2 · System-Explorer — Phasenporträt + Zeitreihe
+   ============================================================ */
+function initExplorer(){
+  const scP=new Scope('cv-phase',{l:38,r:14,t:18,b:26});
+  const scT=new Scope('cv-time', {l:38,r:14,t:18,b:26});
+  const P={sys:'spiral', prog:1.0};
+  let traj=LR.trueTrajectory(P.sys, 600);
+  function recompute(){ traj=LR.trueTrajectory(P.sys, 600); }
+  function applyMeta(){
+    const m=SYS_META[P.sys], S=LR.SYSTEMS[P.sys];
+    $('#exp-status').textContent=m.label;
+    $('#exp-eqlabel').textContent=m.label+' · ẏ = f(y)';
+    $('#exp-y0').textContent='('+S.y0[0]+', '+S.y0[1]+')';
+    $('#exp-tspan').textContent='['+S.tspan[0]+', '+S.tspan[1]+']';
+    $('#exp-note').textContent=m.note;
+    const el=$('#exp-eq'); el.dataset.eq=m.eq;
+    if(typeof katex!=='undefined'){ try{ katex.render(m.eq, el, {displayMode:true, throwOnError:false}); }catch(e){ el.textContent=m.eq; } }
+  }
+  function draw(){
+    const n=Math.max(2, Math.round(traj.y.length*P.prog));
+    const yy=traj.y.slice(0,n), tt=traj.t.slice(0,n);
+    // ---- Phasenporträt ----
+    const r=rangeOf(traj.y);
+    const [x0,x1]=pad(r.mn0,r.mx0), [py0,py1]=pad(r.mn1,r.mx1);
+    scP.clear(); scP.range(x0,x1,py0,py1); scP.grid(4,4,{yd:1,xd:1,xl:true});
+    scP.text('Phasenporträt  y₀ → y₁', scP.pad.l, 12, COL.sub, 'left','600 10px JetBrains Mono','alphabetic');
+    scP.path(yy.map(p=>[p[0],p[1]]), COL.data, 2.2);
+    if(yy.length){ scP.dot(yy[0][0],yy[0][1],COL.cfc,3.5); scP.ring(yy[yy.length-1][0],yy[yy.length-1][1],COL.accent,5,2); }
+    // ---- Zeitreihe ----
+    const ty0=pad(Math.min(r.mn0,r.mn1), Math.max(r.mx0,r.mx1));
+    scT.clear(); scT.range(traj.t[0], traj.t[traj.t.length-1], ty0[0], ty0[1]); scT.grid(5,4,{yd:1,xd:0,xl:true});
+    scT.text('Zeitreihe  y(t)', scT.pad.l, 12, COL.sub, 'left','600 10px JetBrains Mono','alphabetic');
+    scT.path(tt.map((t,i)=>[t,yy[i][0]]), COL.data, 2.2);
+    scT.path(tt.map((t,i)=>[t,yy[i][1]]), COL.lrc, 2.2);
+    if(yy.length){
+      scT.label('y₀', tt[tt.length-1], yy[yy.length-1][0], COL.data,'right');
+      scT.label('y₁', tt[tt.length-1], yy[yy.length-1][1], COL.lrc,'right');
+    }
+  }
+  seg('exp-sys', v=>{ P.sys=v; recompute(); applyMeta(); draw(); });
+  bind('exp-prog','exp-prog-v', v=>{ P.prog=v; draw(); }, 2);
+  whenVisible('lab-explorer', ()=>{ applyMeta(); draw(); });
+}
+
+/* ============================================================
+   LAB 3 · NRMSE live — ground truth vs. gestörte Vorhersage
+   ============================================================ */
+function initNrmse(){
+  const sc=new Scope('cv-nrmse',{l:40,r:16,t:18,b:26});
+  const P={sys:'periodic_predator_prey', noise:0.1, scale:1.0};
+  const seqA=Array.from({length:700},(_,i)=>Math.sin(i*12.9898)*43758.5453%1);
+  const seqB=Array.from({length:700},(_,i)=>Math.sin(i*78.233)*43758.5453%1);
+  let traj=LR.trueTrajectory(P.sys, 500);
+  function recompute(){ traj=LR.trueTrajectory(P.sys, 500); }
+  function makePred(){
+    // gestörte "Vorhersage": Skalierung + deterministisches Rauschen
+    return traj.y.map((p,i)=>{
+      const n0=(seqA[i%seqA.length]); const n1=(seqB[i%seqB.length]);
+      return [ p[0]*P.scale + P.noise*n0, p[1]*P.scale + P.noise*n1 ];
+    });
+  }
+  function draw(){
+    const pred=makePred();
+    const val=LR.nrmse(traj.y, pred);
+    const r=rangeOf(traj.y.concat(pred));
+    const ty=pad(Math.min(r.mn0,r.mn1), Math.max(r.mx0,r.mx1));
+    sc.clear(); sc.range(traj.t[0], traj.t[traj.t.length-1], ty[0], ty[1]); sc.grid(5,4,{yd:1,xd:0,xl:true});
+    sc.text('y(t)', sc.pad.l, 12, COL.sub, 'left','600 10px JetBrains Mono','alphabetic');
+    // ground truth (zwei Komponenten cyan)
+    sc.path(traj.t.map((t,i)=>[t,traj.y[i][0]]), COL.data, 2.2);
+    sc.path(traj.t.map((t,i)=>[t,traj.y[i][1]]), COL.data, 2.2, {alpha:.55});
+    // Vorhersage (rot)
+    sc.path(traj.t.map((t,i)=>[t,pred[i][0]]), COL.lstm, 2.0, {dash:[5,4]});
+    sc.path(traj.t.map((t,i)=>[t,pred[i][1]]), COL.lstm, 2.0, {dash:[5,4],alpha:.55});
+    sc.label('truth', traj.t[traj.t.length-1], traj.y[traj.y.length-1][0], COL.data,'right');
+    sc.label('pred',  traj.t[traj.t.length-1], pred[pred.length-1][0]-0.1, COL.lstm,'right');
+    $('#nr-val').textContent=val.toFixed(3);
+    $('#nr-status').textContent='NRMSE = '+val.toFixed(3);
+    const vd=$('#nr-verdict');
+    if(val<0.02){ vd.className='ok'; vd.textContent='perfekt'; }
+    else if(val<0.08){ vd.className='ok'; vd.textContent='gut'; }
+    else if(val<0.18){ vd.className='ok'; vd.textContent='mittelmäßig'; }
+    else { vd.className='bad'; vd.textContent='schlecht'; }
+  }
+  seg('nr-sys', v=>{ P.sys=v; recompute(); draw(); });
+  bind('nr-noise','nr-noise-v', v=>{ P.noise=v; draw(); }, 2);
+  bind('nr-scale','nr-scale-v', v=>{ P.scale=v; draw(); }, 2);
+  whenVisible('lab-nrmse', draw);
+}
+
+LR.boot([initBuild, initExplorer, initNrmse]);
+</script>
+</body>
+</html>

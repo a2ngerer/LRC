@@ -405,3 +405,55 @@ def test_mm_make_models_and_gradient_flow():
         grads = tape.gradient(loss, model.trainable_variables)
         assert y.shape == (2, 10, 2)
         assert all(g is not None for g in grads), key
+
+
+# --- CfC_MM_LTC_Cell (v4: closed-form + mixed-memory LTC, the cross-family
+#     partner of CfC_MM_LRC_Cell) ---
+
+def test_cfc_mm_ltc_is_mixed_memory():
+    from src.neurons import CfC_MM_LTC_Cell, MixedMemoryCell, CfC_Cell
+    assert issubclass(CfC_MM_LTC_Cell, MixedMemoryCell)
+    cell = CfC_MM_LTC_Cell(units=8)
+    cell.build((None, 3))
+    # inner cell is plain CfC (the closed-form LTC), not the elastance-gated LRC
+    assert isinstance(cell._inner, CfC_Cell)
+
+
+def test_cfc_mm_ltc_state_size_is_h_and_c():
+    from src.neurons import CfC_MM_LTC_Cell
+    assert CfC_MM_LTC_Cell(units=8).state_size == [8, 8]
+
+
+def test_cfc_mm_ltc_forward_pass_shape():
+    from src.neurons import CfC_MM_LTC_Cell
+    units, batch, input_dim = 4, 2, 3
+    cell = CfC_MM_LTC_Cell(units=units)
+    inputs = tf.zeros([batch, input_dim])
+    state = [tf.zeros([batch, units]), tf.zeros([batch, units])]
+    output, new_state = cell(inputs, state)
+    assert output.shape == (batch, units)
+    assert len(new_state) == 2
+    assert new_state[0].shape == (batch, units)
+    assert new_state[1].shape == (batch, units)
+
+
+def test_cfc_mm_ltc_dense_and_ncp_build():
+    from src.models import make_dense_model, make_ncp_model
+    d = make_dense_model('cfc_mm_ltc', units=16, output_neurons=2)
+    assert tuple(d(tf.zeros((4, 10, 2))).shape) == (4, 10, 2)
+    n = make_ncp_model('cfc_mm_ltc', seed=42, inter_neurons=16,
+                       command_neurons=8, motor_neurons=2)
+    assert tuple(n(tf.zeros((4, 10, 2))).shape) == (4, 10, 2)
+
+
+def test_cfc_mm_ltc_gradient_flow():
+    from src.models import make_dense_model
+    tf.random.set_seed(0)
+    model = make_dense_model('cfc_mm_ltc', units=8, output_neurons=2)
+    x = tf.random.normal((2, 10, 3))
+    with tf.GradientTape() as tape:
+        y = model(x)
+        loss = tf.reduce_mean(tf.square(y))
+    grads = tape.gradient(loss, model.trainable_variables)
+    assert y.shape == (2, 10, 2)
+    assert all(g is not None for g in grads)

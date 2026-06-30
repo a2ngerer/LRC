@@ -48,6 +48,9 @@ fi
 # (~1.5 GB) instead of pre-grabbing all of VRAM.
 export TF_FORCE_GPU_ALLOW_GROWTH=true
 export TF_CPP_MIN_LOG_LEVEL=1
+# Unbuffered stdout/stderr so each run's progress (Iter/Loss, "done in") streams
+# live into its per-run log instead of being block-buffered until process exit.
+export PYTHONUNBUFFERED=1
 
 # How many runs to pack onto this GPU (set by submit script; default 6).
 RUNS_PER_GPU="${RUNS_PER_GPU:-6}"
@@ -82,8 +85,9 @@ pids=()
 for off in $(seq 0 $(( RUNS_PER_GPU - 1 ))); do
     IDX=$(( START + off ))
     [[ "${IDX}" -ge "${N_SPECS}" ]] && break
-    echo "    -> launch index ${IDX}"
-    uv run python experiments/run_benchmark.py --index "${IDX}" "$@" &
+    RUN_LOG="outputs/slurm/run-${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID}}_idx${IDX}.log"
+    echo "    -> launch index ${IDX} -> ${RUN_LOG}"
+    uv run python experiments/run_benchmark.py --index "${IDX}" "$@" > "${RUN_LOG}" 2>&1 &
     pids+=("$!")
 done
 

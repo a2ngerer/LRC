@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>01 · RNNs &amp; das Vanishing-Gradient-Problem</title>
+<meta name="description" content="Vorlesung 01: Warum gewöhnliche RNNs lange Abhängigkeiten verlieren — BPTT als Produkt von Jacobi-Matrizen, vanishing/exploding gradients, der GradientFlowTracker und Gradient-Clipping aus dem Code, interaktiv erklärt.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lecture="01">
+
+<!-- ============================ HERO ============================ -->
+<header class="hero">
+  <canvas class="hero-canvas" data-c1="#6b7280" data-c2="#8a8a93" data-c3="#2563eb"></canvas>
+  <div class="hero-inner">
+    <div class="hero-kicker reveal"><span class="lecnum">Vorlesung 01</span> Grundlagen · Die Wurzel aller Tricks</div>
+    <h1 class="hero-title reveal">Warum RNNs<br><span class="liquid">vergessen</span></h1>
+    <p class="hero-sub reveal">Ein gewöhnliches rekurrentes Netz soll sich an eine Kurve erinnern, die
+    50 Frames zurückliegt. Es kann es nicht — und das ist kein Bug, sondern Mathematik. Der Gradient,
+    der die frühe Kurve mit dem späten Fehler verbindet, ist ein <em>Produkt</em> vieler Faktoren.
+    Sind die kleiner als eins, stirbt er exponentiell. Diese eine Tatsache motiviert alles Folgende:
+    Gates, Mixed-Memory, CfC.</p>
+    <div class="hero-meta reveal">
+      <span class="hero-pill"><span class="dot" style="background:var(--ct)"></span>BPTT · Jacobian-Produkt</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--lstm)"></span>vanishing / exploding</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--lrc)"></span>RQ4 · Gradient Flow</span>
+    </div>
+  </div>
+  <div class="scroll-hint"><span>Scrollen</span><span class="line"></span></div>
+</header>
+
+<!-- ============================ 0 · EINSTIEG ============================ -->
+<section id="intro" data-toc="Einstieg">
+  <div class="wrap">
+    <div class="eyebrow reveal">Worum es geht</div>
+    <h2 class="reveal">Das Auto, das die Kurve vergisst</h2>
+    <p class="lead reveal">Stell dir ein Auto vor, das einer Landstraße folgt. Bei Frame 0 sieht die Kamera
+    eine scharfe Linkskurve. Erst 50 Frames später, an einer unübersichtlichen Stelle, müsste das Netz
+    diese frühe Information abrufen, um richtig zu lenken. Ein gewöhnliches RNN schafft das fast nie —
+    und der Grund steckt nicht im Datensatz, sondern im Lernverfahren selbst.</p>
+
+    <p class="reveal">Trainiert wird ein RNN mit <strong>Backpropagation Through Time (BPTT)</strong>. Der Fehler am
+    Ende der Sequenz muss zurück bis zur frühen Kurve propagiert werden. Dabei läuft der Gradient durch
+    jeden Zwischenschritt — und an jedem Schritt wird er mit einem Faktor multipliziert. Steht am Ende ein
+    Produkt aus 50 Faktoren, von denen jeder etwas kleiner als eins ist, schrumpft das Ganze auf praktisch
+    null. Das Netz <em>bekommt kein Lernsignal</em> für die frühe Kurve. Es kann sie gar nicht lernen.</p>
+
+    <div class="callout reveal">
+      <div class="ctag">Das Versprechen dieser Seite</div>
+      <p style="margin-bottom:.6em">Am Ende verstehst du drei Dinge konkret: <strong>(1)</strong> warum der
+      Langzeit-Gradient ein <em>Produkt von Jacobi-Matrizen</em> ist und nicht eine Summe, <strong>(2)</strong>
+      warum genau dieses Produkt entweder <em>verschwindet</em> oder <em>explodiert</em> — und wieso
+      <code>tanh'</code> das Verschwinden noch verschärft, und <strong>(3)</strong> wie dein Code dieses
+      Problem misst (<code>GradientFlowTracker</code>) und mit <code>clip_by_global_norm</code> wenigstens
+      das Explodieren abfängt.</p>
+      <p style="margin-bottom:0">Jedes Lab rechnet die Größe, über die es spricht, selbst — keine
+      Behauptung ohne Zahl daneben.</p>
+    </div>
+
+    <div class="legend reveal">
+      <div class="li"><span class="src src-paper">Paper</span> Originalarbeit / Paper-Notiz</div>
+      <div class="li"><span class="src src-code">Code</span> exakt aus deiner Implementierung</div>
+      <div class="li"><span class="src src-dr">Deep-Research</span> LLM-Recherche, zu prüfen</div>
+      <div class="li"><span class="src src-classic">klassisch</span> Lehrbuchwissen</div>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 1 · BPTT / JACOBIAN-PRODUKT ============================ -->
+<section id="bptt" data-toc="BPTT · das Produkt">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--ct);color:var(--ct)"><span class="section-num">01</span> &nbsp;Backpropagation Through Time</div>
+    <h2 class="reveal">Der Langzeit-Gradient ist ein Produkt, keine Summe</h2>
+    <p class="reveal">Ein RNN entfaltet sich über die Zeit zu einer tiefen Kette: Zustand
+    <span class="mono">h_t</span> entsteht aus <span class="mono">h_{t-1}</span> und der Eingabe
+    <span class="mono">x_t</span>. Den Verlust <span class="mono">L</span> sieht das Netz erst am Ende, bei
+    <span class="mono">h_T</span>. Damit ein früher Zustand <span class="mono">h_k</span> überhaupt etwas
+    lernt, muss der Gradient <span class="mono">∂L/∂h_k</span> rückwärts durch jeden Schritt dazwischen
+    laufen <span class="src src-classic" title="Werbos 1990, Backpropagation Through Time">klassisch · Werbos1990</span>:</p>
+
+    <div class="eq accent-ct reveal">
+      <div class="eq-label"><span>BPTT · Gradient nach einem frühen Zustand</span><span class="src src-classic">klassisch</span></div>
+      <div data-eq="\frac{\partial L}{\partial h_k} \;=\; \frac{\partial L}{\partial h_T}\;\prod_{t=k+1}^{T}\frac{\partial h_t}{\partial h_{t-1}}"></div>
+    </div>
+
+    <p class="reveal">Lies das große <span class="mono">∏</span> bewusst: Zwischen dem späten Fehler und dem
+    frühen Zustand stehen <span class="mono">T−k</span> Faktoren, und sie werden <strong>multipliziert</strong>,
+    nicht addiert. Ein Produkt verhält sich brutal anders als eine Summe. Sind die Faktoren im Schnitt
+    <span class="mono">0,9</span> groß, dann ist das Produkt über 50 Schritte
+    <span class="mono">0,9⁵⁰ ≈ 0,005</span> — der Gradient ist auf ein Halbprozent geschrumpft. Sind sie
+    <span class="mono">1,1</span>, ist es <span class="mono">1,1⁵⁰ ≈ 117</span> — er explodiert.</p>
+
+    <p class="reveal">Jeder einzelne Faktor ist die Jacobi-Matrix eines Schritts. Für ein RNN mit
+    <span class="mono">h_t = tanh(W_rec·h_{t-1} + W_in·x_t + b)</span> hat sie eine feste Form
+    <span class="src src-classic" title="Pascanu, Mikolov, Bengio 2013, On the difficulty of training RNNs, ICML">klassisch · Pascanu2013</span>:</p>
+
+    <div class="eq accent-ct reveal">
+      <div class="eq-label"><span>Jacobian eines RNN-Schritts</span><span class="src src-classic">klassisch</span></div>
+      <div data-eq="\frac{\partial h_t}{\partial h_{t-1}} \;=\; \underbrace{\operatorname{diag}\!\big(\tanh'(z_t)\big)}_{\le\,1\ \text{pro Element}}\;\cdot\;W_{\text{rec}}^{\top}\,,\qquad z_t = W_{\text{rec}}h_{t-1}+W_{\text{in}}x_t+b"></div>
+    </div>
+
+    <div class="callout insight reveal">
+      <div class="ctag">Die zwei Stellschrauben pro Faktor</div>
+      <p style="margin-bottom:0">Jeder Faktor besteht aus zwei Teilen: dem rekurrenten Gewicht
+      <span class="mono">W_rec</span> und der Ableitung der Aktivierung <span class="mono">tanh'</span>.
+      <strong>Beide entscheiden, ob das Produkt lebt oder stirbt.</strong> Über die Norm
+      <span class="mono">‖W_rec‖</span> hast du als Designer Kontrolle. Über <span class="mono">tanh'</span>
+      nicht — und das ist der nächste, unangenehme Punkt.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 2 · DAS LAB: GRADIENT DURCH DIE ZEIT ============================ -->
+<section id="decay" data-toc="Gradient durch die Zeit">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--ct);color:var(--ct)"><span class="section-num">02</span> &nbsp;Vanishing vs. Exploding</div>
+    <h2 class="reveal">Drei Regime, entschieden von einer Zahl</h2>
+    <p class="reveal">Die ganze Dynamik lässt sich auf einen Skalar verdichten. Ersetze die Matrix
+    <span class="mono">W_rec</span> durch ihren entscheidenden Faktor <span class="mono">w</span> (grob: ihren
+    größten Singulärwert) und die Diagonale durch eine mittlere Dämpfung <span class="mono">g = tanh'</span>.
+    Dann wird der Beitrag eines Schritts, der <span class="mono">lag</span> Schritte zurückliegt, zu
+    <span class="mono">|w·g|^{lag}</span>. Drei Fälle, eine Zahl <span class="mono">r = |w·g|</span>
+    entscheidet <span class="src src-classic" title="Bengio, Simard, Frasconi 1994, Learning long-term dependencies with gradient descent is difficult, IEEE TNN">klassisch · Bengio1994</span>:</p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>Spektralmaß <span class="mono">r = |w·g|</span></th><th>Produkt über die Zeit</th><th>Regime</th><th>Symptom beim Training</th></tr></thead>
+      <tbody>
+        <tr><th class="mono">r &lt; 1</th><td>schrumpft exponentiell → 0</td><td class="bad">vanishing</td><td>frühe Schritte bekommen kein Lernsignal; lange Abhängigkeiten unlernbar</td></tr>
+        <tr><th class="mono">r = 1</th><td>bleibt konstant</td><td class="good">stabil (Grenzfall)</td><td>Information wird gehalten — genau das wollen Gates erzwingen</td></tr>
+        <tr><th class="mono">r &gt; 1</th><td>wächst exponentiell → ∞</td><td class="bad">exploding</td><td>Gradient-Spikes, NaN-Verluste, Training kippt</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="lab-caption reveal">Regime-Übersicht. <span class="src src-classic">klassisch · Hochreiter1991 / Bengio1994 / Pascanu2013</span></p>
+
+    <p class="reveal">Dreh am Lab den <strong>Rekurrenz-Faktor w</strong> und die <strong>Sequenzlänge T</strong>.
+    Die Balken zeigen, wie viel jeder vergangene Schritt noch zum Gradienten beiträgt. Bei
+    <span class="mono">r &lt; 1</span> ist der erste Balken (am weitesten zurück) winzig gegen den letzten —
+    das ist das vergessene Auto. Bei <span class="mono">r &gt; 1</span> türmen sich die frühen Balken auf:
+    Explosion.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-decay">
+      <div class="lab-head"><span class="led"></span><span class="title">Gradient durch die Zeit · |w·g|^lag</span><span class="sub" id="dec-status">Regime —</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-decay"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Rekurrenz-Faktor w <span class="val" id="dec-w-v">0.90</span></label><input type="range" id="dec-w" min="0.3" max="1.8" step="0.01" value="0.9"></div>
+          <div class="ctrl"><label>tanh'-Dämpfung g <span class="val" id="dec-g-v">0.60</span></label><input type="range" id="dec-g" min="0.2" max="1.0" step="0.01" value="0.6"></div>
+          <div class="ctrl"><label>Sequenzlänge T <span class="val" id="dec-T-v">50</span></label><input type="range" id="dec-T" min="5" max="80" step="1" value="50"></div>
+          <div class="lab-readout">
+            Spektralmaß <span class="k">r = |w·g|</span> = <span class="big k" id="dec-r">—</span><br>
+            Verhältnis erster : letzter Beitrag <span class="k" id="dec-ratio">—</span><br>
+            <span class="dim" id="dec-verdict">—</span>
+          </div>
+          <div class="lab-task">Lass <b>g = 0,6</b> stehen (typisch für <code>tanh'</code>) und dreh <b>w</b> langsam hoch.
+          Bei <b>w ≈ 1,67</b> kippt <b>r</b> über 1 — die frühen Balken explodieren. Darunter: der erste Balken
+          verschwindet im Nichts. <b>Es gibt fast keinen w-Wert, bei dem lange Abhängigkeiten überleben.</b></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Balkenhöhe = Beitrag <span class="mono">|w·g|^lag</span> des Schritts, der <span class="mono">lag</span> Positionen zurückliegt (logarithmische Höhe). Grau: vanishing, rot: exploding. <span class="src src-classic">klassisch · Pascanu2013</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 3 · WARUM tanh' VERSCHÄRFT ============================ -->
+<section id="tanh" data-toc="tanh' verschärft">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--ct);color:var(--ct)"><span class="section-num">03</span> &nbsp;Die zweite Schraube</div>
+    <h2 class="reveal">Warum <span class="mono">tanh'</span> das Verschwinden noch verschärft</h2>
+    <p class="reveal">Der zweite Faktor jedes Schritts ist <span class="mono">tanh'(z)</span>. Diese Ableitung ist
+    <strong>höchstens 1</strong> — und das nur am Nullpunkt. Sobald das Neuron auch nur leicht sättigt
+    (großes <span class="mono">|z|</span>), fällt <span class="mono">tanh'</span> Richtung null
+    <span class="src src-classic" title="Hochreiter 1991, Diplomarbeit; das vanishing-gradient-Problem">klassisch · Hochreiter1991</span>:</p>
+
+    <div class="eq accent-ct reveal">
+      <div class="eq-label"><span>Sättigung dämpft den Gradienten</span><span class="src src-classic">klassisch</span></div>
+      <div data-eq="\tanh'(z) = 1 - \tanh^2(z)\ \in\ (0,\,1]\,,\qquad \tanh'(0)=1,\quad \tanh'(\pm 2)\approx 0{,}07"></div>
+    </div>
+
+    <p class="reveal">Das ist tückisch: Genau wenn ein Neuron eine starke, eindeutige Entscheidung trifft
+    (sättigt), wird sein Gradient klein. Die Stelle, an der das Netz am meisten „weiß“, gibt am wenigsten
+    Lernsignal weiter. Multipliziert mit <span class="mono">W_rec</span> über viele Schritte zieht
+    <span class="mono">tanh'</span> das Produkt fast immer unter eins — der Default ist Vergessen, nicht
+    Erinnern. Das Lab zeigt die Glockenkurve von <span class="mono">tanh'</span> und markiert, wo dein
+    aktueller Arbeitspunkt liegt.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-tanh">
+      <div class="lab-head"><span class="led"></span><span class="title">Die Dämpfung tanh'(z) = 1 − tanh²(z)</span><span class="sub" id="th-status">Arbeitspunkt —</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-tanh"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Arbeitspunkt z (Pre-Aktivierung) <span class="val" id="th-z-v">0.00</span></label><input type="range" id="th-z" min="-3" max="3" step="0.05" value="0"></div>
+          <div class="lab-readout">
+            tanh'(z) hier <span class="big k" id="th-val">—</span><br>
+            <span class="dim">→ dieser Faktor multipliziert jeden Gradienten-Durchgang.</span>
+          </div>
+          <div class="lab-task">Schieb <b>z</b> aus der Mitte heraus. Schon bei <b>z = ±1,5</b> ist
+          <code>tanh'</code> unter <b>0,2</b> — der Gradient verliert pro Schritt vier Fünftel. Bei einem
+          gesättigten Neuron ist die Erinnerung praktisch sofort weg.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Blau: <span class="mono">tanh'(z)</span>, Maximum 1 am Nullpunkt. Der Punkt markiert deinen Arbeitspunkt z. <span class="src src-classic">klassisch · Hochreiter1991</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 4 · MESSUNG IM CODE ============================ -->
+<section id="measure" data-toc="Messung im Code">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--lrc);color:var(--lrc)"><span class="section-num">04</span> &nbsp;Vom Lehrbuch zum Experiment</div>
+    <h2 class="reveal">Wie dein Code den Gradientenfluss misst</h2>
+    <p class="reveal">Diese Vorlesung ist kein reines Lehrbuchkapitel — sie hat einen direkten Anker in der
+    Forschungsfrage der Thesis. <strong>RQ4</strong> fragt im verbindlichen Wortlaut der Proposal-Fassung
+    <span class="src src-paper" title="research-questions-hypotheses.md, RQ4, Proposal-v3-Wortlaut">Paper · research-questions</span>:</p>
+
+    <div class="callout reveal">
+      <div class="ctag" style="color:var(--lrc)">RQ4 · Convergence &amp; Gradient Flow</div>
+      <p style="margin-bottom:0;font-style:italic">„Why do LRC networks converge less effectively in sparse NCP
+      architectures than in dense architectures, and what role does gradient flow play in this divergence?“</p>
+    </div>
+
+    <p class="reveal">Um diese Frage empirisch zu beantworten, muss der Gradientenfluss <em>gemessen</em> werden —
+    Schicht für Schicht, über das Training hinweg. Genau das tut der <code>GradientFlowTracker</code>. Alle
+    25 Iterationen protokolliert er die globale Norm der Gradienten jeder Leaf-Layer
+    <span class="src src-code" title="src/evaluation/gradient_flow.py:39-58 record()">Code · gradient_flow.py:39</span>:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">gradient_flow.py · record</span><span class="ref">Zeilen 39–58</span></div>
+<pre><span class="k">def</span> <span class="f">record</span>(self, iteration, model, grads):
+    <span class="c"># grads sind ausgerichtet an model.trainable_variables</span>
+    grad_by_var = {<span class="f">id</span>(v): g <span class="k">for</span> v, g <span class="k">in</span> <span class="f">zip</span>(model.trainable_variables, grads)}
+    self.history[<span class="s">'iterations'</span>].<span class="f">append</span>(iteration)
+    <span class="k">for</span> idx, layer <span class="k">in</span> <span class="f">enumerate</span>(<span class="f">_leaf_layers</span>(model)):
+        layer_grads = [grad_by_var[<span class="f">id</span>(v)] <span class="k">for</span> v <span class="k">in</span> layer.trainable_variables
+                       <span class="k">if</span> ...]
+<span class="hl">        norm = <span class="f">float</span>(tf.linalg.<span class="f">global_norm</span>(layer_grads).<span class="f">numpy</span>())</span>
+        name = <span class="s">f'{idx}_{</span><span class="f">type</span><span class="s">(layer).__name__}'</span>   <span class="c"># z.B. '0_RNN', '1_SparseLinear'</span>
+        self.history[<span class="s">'layers'</span>].<span class="f">setdefault</span>(name, []).<span class="f">append</span>(norm)</pre>
+    </div>
+    <p class="code-cap reveal">Die hervorgehobene Zeile ist die Messung: <span class="mono">tf.linalg.global_norm</span> über
+    alle Variablen einer Schicht. Sinkt diese Norm an den frühen NCP-Schichten gegen null, ist das die
+    direkte Signatur des vanishing gradient — sichtbar gemacht. <span class="src src-code">Code · gradient_flow.py</span></p>
+
+    <div class="callout insight reveal">
+      <div class="ctag">Warum die Norm <em>vor</em> dem Clipping geloggt wird</div>
+      <p style="margin-bottom:0">Der Tracker speichert die rohe Pre-Clip-Norm bewusst, damit RQ4 die echte
+      Gradient-Pathologie sieht — nicht die bereits gezähmte Version. <span class="mono">record_clip</span>
+      hält zusätzlich <span class="mono">pre_clip_norm</span> und die Schwelle fest; die Post-Clip-Norm ist
+      per Konstruktion <span class="mono">min(pre_clip_norm, clip_norm)</span> und wird gar nicht erst
+      separat abgelegt. <span class="src src-code" title="gradient_flow.py:60-71 record_clip(); Kommentar 'post-clip norm is min(...) by construction'">Code · gradient_flow.py:60</span></p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 5 · CLIPPING ============================ -->
+<section id="clip" data-toc="Clipping rettet">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--lrc);color:var(--lrc)"><span class="section-num">05</span> &nbsp;Die halbe Rettung</div>
+    <h2 class="reveal">Gradient-Clipping fängt das Explodieren ab</h2>
+    <p class="reveal">Gegen das <em>Explodieren</em> gibt es eine einfache, brutale Gegenmaßnahme: Wird die globale
+    Gradienten-Norm zu groß, skaliere den gesamten Gradienten herunter, sodass die Norm genau die Schwelle
+    trifft. Richtung bleibt, Länge wird gedeckelt. Dein Trainer macht das mit
+    <span class="mono">tf.clip_by_global_norm</span>, direkt vor dem Optimizer-Schritt
+    <span class="src src-code" title="src/tasks/neural_ode/trainer.py:84-95">Code · trainer.py:84</span>:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">trainer.py · train (Inner Loop)</span><span class="ref">Zeilen 83–95</span></div>
+<pre>grads = tape.<span class="f">gradient</span>(loss_value, model.trainable_variables)
+<span class="k">if</span> clip_norm:
+<span class="hl">    applied_grads, pre_clip_norm = tf.<span class="f">clip_by_global_norm</span>(grads, clip_norm)</span>
+<span class="k">else</span>:
+    applied_grads = grads
+<span class="c"># Per-Layer-Normen werden PRE-CLIP geloggt, damit RQ4 die rohe Pathologie sieht</span>
+<span class="k">if</span> gradient_tracker <span class="k">is not None</span> <span class="k">and</span> gradient_tracker.<span class="f">should_log</span>(itr):
+    gradient_tracker.<span class="f">record</span>(itr, model, grads)
+    <span class="k">if</span> clip_norm:
+        gradient_tracker.<span class="f">record_clip</span>(itr, <span class="f">float</span>(pre_clip_norm.<span class="f">numpy</span>()), clip_norm)
+optimizer.<span class="f">apply_gradients</span>(<span class="f">zip</span>(applied_grads, model.trainable_variables))</pre>
+    </div>
+    <p class="code-cap reveal">Im v2-Profil ist die Schwelle <span class="mono">clip_norm = 1.0</span> — ein
+    Experiment-Parameter, kein getuntes Optimum.
+    <span class="src src-code" title="experiments/run_benchmark.py:62 V2_CLIP_NORM = 1.0">Code · run_benchmark.py:62</span></p>
+
+    <div class="callout warn reveal">
+      <div class="ctag">Clipping ist nur die halbe Miete</div>
+      <p style="margin-bottom:0">Clipping kappt das <em>Explodieren</em> — gegen das <em>Verschwinden</em> hilft
+      es nicht. Einen Gradienten, der schon auf null geschrumpft ist, kann kein Deckel wiederbeleben. Deshalb
+      braucht es strukturelle Lösungen: einen additiven Speicherpfad (LSTM-CEC, Vorlesung 02), Mixed-Memory
+      (Vorlesung 05) oder die closed-form CfC (Vorlesung 04). Clipping ist der Notnagel, nicht die Antwort.</p>
+    </div>
+
+    <p class="reveal">Im Lab läuft eine deterministische Norm-Zeitreihe mit gelegentlichen Spikes (erzeugt über
+    <span class="mono">rng(seed)</span>, also reproduzierbar). Dreh die <strong>clip_norm</strong>-Schwelle:
+    Rot ist die rohe Norm, grün die geclippte <span class="mono">min(norm, clip)</span>. Der Readout zählt,
+    wie oft die Schwelle gegriffen hat.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-clip">
+      <div class="lab-head"><span class="led"></span><span class="title">Clipping rettet · clip_by_global_norm</span><span class="sub" id="clip-status">— geclippt</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-clip"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>clip_norm (Schwelle) <span class="val" id="clip-thr-v">1.00</span></label><input type="range" id="clip-thr" class="acc-lrc" min="0.2" max="6" step="0.05" value="1.0"></div>
+          <div class="ctrl"><label>Spike-Stärke <span class="val" id="clip-spk-v">4.0</span></label><input type="range" id="clip-spk" class="acc-lrc" min="1" max="9" step="0.1" value="4.0"></div>
+          <div class="lab-readout">
+            geclippt in <span class="big k" id="clip-count">—</span> von <span class="k" id="clip-total">—</span> Logs<br>
+            höchste rohe Norm <span class="k" id="clip-max">—</span><br>
+            <span class="dim">Post-Clip = min(Norm, Schwelle).</span>
+          </div>
+          <div class="lab-task">Setz die Schwelle auf <b>1,0</b> wie im v2-Profil. Die roten Spikes werden auf den
+          grünen Deckel gestutzt — das Training kippt nicht mehr. Zieh die Schwelle hoch: irgendwann greift sie
+          nie, die Explosion ist zurück.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Rot: rohe globale Gradienten-Norm (pre-clip, deterministisch via rng). Grün: nach <span class="mono">clip_by_global_norm</span>. Gestrichelt: aktive Schwelle. <span class="src src-code">Code · trainer.py / gradient_flow.py</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 6 · SYNTHESE ============================ -->
+<section id="synthesis" data-toc="Ausblick">
+  <div class="wrap">
+    <div class="eyebrow reveal"><span class="section-num">06</span> &nbsp;Die Wurzel aller folgenden Tricks</div>
+    <h2 class="reveal">Was daraus folgt</h2>
+    <p class="reveal">Das vergessene Auto war kein Trainingsfehler, sondern ein struktureller Defekt jedes
+    gewöhnlichen RNN. Ein Produkt von Jacobi-Faktoren, jeder durch <span class="mono">tanh'</span> unter eins
+    gedrückt, lässt lange Abhängigkeiten verschwinden — oder, bei zu großem <span class="mono">W_rec</span>,
+    explodieren. Hochreiter benannte das Problem 1991, Hochreiter und Schmidhuber lieferten 1997 die erste
+    strukturelle Antwort <span class="src src-paper" title="Hochreiter, Schmidhuber 1997, Long Short-Term Memory, Neural Computation">Paper · Hochreiter1997</span>.</p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>Problem aus dieser Vorlesung</th><th>Strukturelle Antwort</th><th>Wo in der Reihe</th></tr></thead>
+      <tbody>
+        <tr><th>Produkt schrumpft (vanishing)</th><td>additiver Speicherpfad: Constant Error Carousel</td><td>02 · LSTM &amp; GRU</td></tr>
+        <tr><th>Gradient durch die ODE-Jacobi gedämpft</th><td>LSTM-c-Pfad um eine ODE-Zelle gelegt</td><td>05 · Mixed Memory</td></tr>
+        <tr><th>Solver-Integration steif &amp; teuer</th><td>closed-form Lösung, ohne Integration</td><td>04 · CfC</td></tr>
+        <tr><th>Produkt wächst (exploding)</th><td>Gradient-Clipping (clip_by_global_norm)</td><td>diese Seite · trainer.py</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="lab-caption reveal">Jede folgende Vorlesung greift einen dieser vier Hebel an. <span class="src src-paper">Hochreiter1997</span></p>
+
+    <div class="callout good reveal">
+      <div class="ctag" style="color:var(--lstm)">Wohin als Nächstes</div>
+      <p style="margin-bottom:0">Vorlesung <strong>02 · LSTM &amp; GRU</strong> zeigt die erste und folgenreichste
+      Lösung: einen Speicherpfad, durch den der Gradient <em>addiert</em> statt multipliziert fließt. Der
+      Jacobian dieses Pfads ist nahe eins — das Produkt überlebt. Genau das, was hier gefehlt hat.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ QUELLEN ============================ -->
+<section id="sources" data-toc="Quellen">
+  <div class="wrap">
+    <div class="eyebrow reveal">Belege</div>
+    <h2 class="reveal">Quellen dieser Vorlesung</h2>
+    <div class="bib reveal">
+      <div class="bib-item"><div class="bib-key">Hochreiter1997</div><div class="bib-cite">
+        <div class="t">Long Short-Term Memory</div>
+        <div class="meta">Hochreiter, Schmidhuber · Neural Computation 9(8), 1997</div>
+        <div class="where">Erste strukturelle Lösung des vanishing-gradient-Problems: CEC, Gates — Vorschau auf Vorlesung 02</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Hochreiter1991</div><div class="bib-cite">
+        <div class="t">Untersuchungen zu dynamischen neuronalen Netzen</div>
+        <div class="meta">Hochreiter · Diplomarbeit, TU München, 1991</div>
+        <div class="where">Erstbeschreibung des vanishing gradient; Rolle der tanh'-Sättigung</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Bengio1994</div><div class="bib-cite">
+        <div class="t">Learning Long-Term Dependencies with Gradient Descent is Difficult</div>
+        <div class="meta">Bengio, Simard, Frasconi · IEEE Trans. Neural Networks 5(2), 1994</div>
+        <div class="where">Formaler Nachweis: Norm &lt; 1 → vanishing, Norm &gt; 1 → exploding</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Pascanu2013</div><div class="bib-cite">
+        <div class="t">On the Difficulty of Training Recurrent Neural Networks</div>
+        <div class="meta">Pascanu, Mikolov, Bengio · ICML 2013</div>
+        <div class="where">Jacobian-Produkt, Spektralnorm-Kriterium, Gradient-Clipping als Gegenmaßnahme</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Werbos1990</div><div class="bib-cite">
+        <div class="t">Backpropagation Through Time: What It Does and How to Do It</div>
+        <div class="meta">Werbos · Proceedings of the IEEE 78(10), 1990</div>
+        <div class="where">BPTT als Verfahren: Entfaltung über die Zeit, Kettenregel durch die Schritte</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">research-questions</div><div class="bib-cite">
+        <div class="t">RQ4 · Convergence &amp; Gradient Flow</div>
+        <div class="meta">Vault: Thesis/research-questions-hypotheses.md (Proposal-v3-Wortlaut)</div>
+        <div class="where">Verbindlicher RQ4-Wortlaut, wörtlich zitiert; motiviert das Gradient-Flow-Logging</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Code</div><div class="bib-cite">
+        <div class="t">Eigene Implementierung</div>
+        <div class="meta">code/src/evaluation/gradient_flow.py · code/src/tasks/neural_ode/trainer.py · experiments/run_benchmark.py</div>
+        <div class="where">GradientFlowTracker (global_norm pro Leaf-Layer), clip_by_global_norm, V2_CLIP_NORM = 1.0 — wörtlich zitiert</div>
+      </div></div>
+    </div>
+    <p class="note reveal">Die Labs reduzieren das vektorielle Jacobi-Produkt auf einen Skalar: Die Matrix
+    <span class="mono">W_rec</span> wird durch ihr Spektralmaß <span class="mono">w</span> ersetzt, die Diagonale
+    <span class="mono">diag(tanh')</span> durch eine mittlere Dämpfung <span class="mono">g</span>. Die
+    <em>Form</em> des Arguments (Produkt statt Summe, exponentielles Verhalten, Schwelle bei
+    <span class="mono">|w·g| = 1</span>) ist identisch mit der vollen Matrixrechnung. Die Norm-Zeitreihe im
+    Clipping-Lab ist eine illustrative deterministische Folge, kein realer Trainingslauf — die Clip-Operation
+    selbst ist exakt <span class="mono">min(norm, clip)</span> wie im Code.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="f-title">Vorlesung 01 · RNNs &amp; das Vanishing-Gradient-Problem</div>
+  <p>Teil der interaktiven Lernreihe zur Masterarbeit. Jeder Regler rechnet die Größe, über die er spricht.</p>
+  <p class="mono">gradient_flow.py · trainer.py · Hochreiter 1991/1997 · Bengio 1994 · Pascanu 2013</p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
+<script src="assets/engine.js"></script>
+<script>
+/* ============================================================
+   LAB 1 · Gradient durch die Zeit — |w·g|^lag
+   Skalare Reduktion des Jacobi-Produkts aus BPTT.
+   ============================================================ */
+function initDecay(){
+  const sc=new Scope('cv-decay',{l:46,r:16,t:16,b:30});
+  const P={w:0.9, g:0.6, T:50};
+  function draw(){
+    const r=Math.abs(P.w*P.g);
+    // Beitrag des Schritts, der lag Positionen zurückliegt: r^lag.
+    // Höhe logarithmisch skaliert, damit vanishing UND exploding sichtbar bleiben.
+    const items=[]; let first=0, last=0;
+    const yLo=-6, yHi=6;                       // log10-Bereich
+    for(let lag=0; lag<=P.T; lag++){
+      const contrib = Math.pow(r, lag);        // exakt das Produkt-Glied
+      const L = clamp(Math.log10(contrib+1e-30), yLo, yHi);
+      if(lag===0) last=contrib;                // jüngster Schritt
+      if(lag===P.T) first=contrib;             // ältester Schritt (die "Kurve")
+      const col = (r<1)? COL.ct : COL.lstm;
+      items.push({x:lag, h:L, color:col, w:0.42*(80/Math.max(P.T,1)), alpha:0.92});
+    }
+    sc.clear(); sc.range(-1,P.T+1,yLo,yHi);
+    sc.grid(4,4,{yd:0,xl:true,xd:0});
+    sc.hline(0,COL.line,1.4,[5,5]); sc.label('10⁰',-0.6,0,COL.faint,'right');
+    sc.bars(items,0);
+    sc.text('log₁₀ Gradienten-Beitrag', sc.pad.l, sc.pad.t-4, COL.sub,'left','600 10px JetBrains Mono','bottom');
+    sc.text('lag (Schritte zurück)', sc.w-sc.pad.r, sc.h-6, COL.sub,'right','600 10px JetBrains Mono','bottom');
+    // Readouts
+    const ratio = first/ (last||1e-30);
+    $('#dec-r').textContent=r.toFixed(3);
+    $('#dec-ratio').textContent = (ratio<1e-4||ratio>1e4)? ratio.toExponential(1) : ratio.toFixed(3);
+    const verdict=$('#dec-verdict'), status=$('#dec-status');
+    if(r<0.98){ verdict.textContent='r < 1 → vanishing: frühe Schritte verschwinden.'; status.textContent='Regime: vanishing'; }
+    else if(r>1.02){ verdict.textContent='r > 1 → exploding: frühe Schritte dominieren.'; status.textContent='Regime: exploding'; }
+    else { verdict.textContent='r ≈ 1 → stabil: Information bleibt erhalten.'; status.textContent='Regime: stabil'; }
+  }
+  bind('dec-w','dec-w-v',v=>{P.w=v; draw();},2);
+  bind('dec-g','dec-g-v',v=>{P.g=v; draw();},2);
+  bind('dec-T','dec-T-v',v=>{P.T=Math.round(v); draw();},0);
+  whenVisible('lab-decay',draw);
+}
+
+/* ============================================================
+   LAB 2 · tanh'(z) = 1 − tanh²(z)
+   Zeigt, warum die Aktivierungs-Ableitung das Produkt nach unten drückt.
+   ============================================================ */
+function initTanh(){
+  const sc=new Scope('cv-tanh',{l:46,r:16,t:16,b:30});
+  const P={z:0.0};
+  function draw(){
+    const pts=[];
+    for(let z=-3.2; z<=3.2; z+=0.04){ const d=1-Math.tanh(z)*Math.tanh(z); pts.push([z,d]); }
+    sc.clear(); sc.range(-3.2,3.2,0,1.05);
+    sc.grid(4,4,{yd:1,xl:true,xd:0});
+    sc.area(pts,COL.lrc,0,0.10);
+    sc.path(pts,COL.lrc,2.6);
+    const dz=1-Math.tanh(P.z)*Math.tanh(P.z);
+    sc.vline(P.z,COL.faint,1.2,[4,4]);
+    sc.dot(P.z,dz,COL.ct,5); sc.ring(P.z,dz,COL.ct,8,2);
+    sc.label('tanh′(z)',2.2,0.92,COL.lrc,'left');
+    sc.text('z', sc.w-sc.pad.r, sc.h-6, COL.sub,'right','600 10px JetBrains Mono','bottom');
+    $('#th-val').textContent=dz.toFixed(3);
+    $('#th-status').textContent='z = '+P.z.toFixed(2)+' → '+dz.toFixed(2);
+  }
+  bind('th-z','th-z-v',v=>{P.z=v; draw();},2);
+  whenVisible('lab-tanh',draw);
+}
+
+/* ============================================================
+   LAB 3 · Clipping rettet — clip_by_global_norm
+   Deterministische Norm-Zeitreihe mit Spikes via rng(seed); Schwelle deckelt.
+   ============================================================ */
+function initClip(){
+  const sc=new Scope('cv-clip',{l:46,r:16,t:16,b:30});
+  const P={thr:1.0, spk:4.0};
+  const N=60;                                  // 60 Log-Punkte (entspricht log_every-Raster)
+  const rand=rng(1337);                        // fester Seed -> reproduzierbar
+  const baseSeq=[], spikeSeq=[];
+  for(let i=0;i<N;i++){
+    baseSeq.push(0.25 + 0.35*rand());          // ruhiger Untergrund
+    spikeSeq.push(rand()<0.16 ? rand() : 0);   // gelegentliche Spikes
+  }
+  function draw(){
+    const raw=[], clipped=[]; let clippedCount=0, maxRaw=0;
+    for(let i=0;i<N;i++){
+      const norm = baseSeq[i] + P.spk*spikeSeq[i];
+      const post = Math.min(norm, P.thr);      // exakt min(norm, clip) wie im Code
+      raw.push([i,norm]); clipped.push([i,post]);
+      if(norm>P.thr+1e-9) clippedCount++;
+      if(norm>maxRaw) maxRaw=norm;
+    }
+    const yMax=Math.max(maxRaw*1.1, P.thr*1.4, 2);
+    sc.clear(); sc.range(0,N-1,0,yMax);
+    sc.grid(4,4,{yd:1,xl:true,xd:0});
+    sc.path(raw,COL.lstm,2.2);
+    sc.path(clipped,COL.cfc,2.6);
+    sc.hline(P.thr,COL.accent,1.4,[6,5]); sc.label('clip_norm',N-1.2,P.thr+yMax*0.04,COL.accent,'right');
+    sc.label('roh',1.2,Math.min(raw[1]?raw[1][1]:0.4,yMax*0.9),COL.lstm,'left');
+    sc.text('Log-Iteration (alle 25 Schritte)', sc.w-sc.pad.r, sc.h-6, COL.sub,'right','600 10px JetBrains Mono','bottom');
+    $('#clip-count').textContent=clippedCount;
+    $('#clip-total').textContent=N;
+    $('#clip-max').textContent=maxRaw.toFixed(2);
+    $('#clip-status').textContent=clippedCount+' / '+N+' geclippt';
+  }
+  bind('clip-thr','clip-thr-v',v=>{P.thr=v; draw();},2);
+  bind('clip-spk','clip-spk-v',v=>{P.spk=v; draw();},1);
+  whenVisible('lab-clip',draw);
+}
+
+LR.boot([initDecay, initTanh, initClip]);
+</script>
+</body>
+</html>

@@ -1,7 +1,8 @@
 import tensorflow as tf
 from src.neurons import (LRC_Cell, LRC_AR_Cell, CTRNN_Cell, LSTM_Cell,
-                         LTC_Cell, GRU_Cell, CfC_Cell, MM_LTC_Cell,
-                         MM_LRC_Cell)
+                         LTC_Cell, GRU_Cell, CfC_Cell, CfC_LRC_Cell,
+                         MM_LTC_Cell, MM_LRC_Cell, CfC_MM_LRC_Cell,
+                         CfC_MM_LTC_Cell)
 from src.wirings import NCPWiring
 
 _CELL_REGISTRY = {
@@ -12,8 +13,36 @@ _CELL_REGISTRY = {
     "ltc": LTC_Cell,
     "gru": GRU_Cell,
     "cfc": CfC_Cell,
+    # cfc_lrc: closed-form LRC (CfC + liquid-elastance gate). cfc_pm: plain CfC with
+    # a wider backbone -- the parameter-matched capacity control for the v3.1
+    # cfc_lrc ablation (backbone width set via CELL_KWARGS in run_benchmark.py).
+    # See docs/superpowers/specs/2026-06-19-cfc-lrc-v3_1-design.md
+    "cfc_lrc": CfC_LRC_Cell,
+    "cfc_pm": CfC_Cell,
     "mm_ltc": MM_LTC_Cell,
     "mm_lrc": MM_LRC_Cell,
+    # cfc_mm_lrc: mixed-memory wrapper around the closed-form CfC_LRC inner cell.
+    # Completes the v3.2 2x2 {numerical, closed-form} x {plain, mixed-memory}.
+    "cfc_mm_lrc": CfC_MM_LRC_Cell,
+    # cfc_mm_ltc: mixed-memory wrapper around plain CfC (= closed-form LTC). The
+    # LTC-family partner of cfc_mm_lrc; completes the cross-family 2x2 tested in
+    # benchmark v4 (does the LRC architecture-fix story generalize to LTC?).
+    "cfc_mm_ltc": CfC_MM_LTC_Cell,
+    # lrc_pm: plain numerical LRC widened (units / NCP set via CELL_UNITS /
+    # CELL_NCP in run_benchmark.py) to the largest fixed cell's parameter count --
+    # the v3.3 capacity control isolating mechanism vs. pure capacity.
+    "lrc_pm": LRC_Cell,
+    # eps-ablation: the 8 elastance conditions are all plain LRC_Cell, differing
+    # only in constructor kwargs (elastance_type / ode_solver / freeze_elastance /
+    # pm_pad / pm_pad_extra), supplied via CELL_KWARGS in run_benchmark.py.
+    "lrc_interp": LRC_Cell,        # A: conductance-only tau baseline
+    "lrc_asym": LRC_Cell,          # B: asymmetric multiplicative gate
+    "lrc_sym": LRC_Cell,           # C: symmetric two-sided bump
+    "lrc_frozen": LRC_Cell,        # D: frozen-structure control
+    "lrc_pmctrl": LRC_Cell,        # E: same-budget additive-residual control for B
+    "lrc_pmctrl_c": LRC_Cell,      # E_C: same-budget control for C
+    "lrc_asym_hybrid": LRC_Cell,   # F: asymmetric + semi-implicit solver
+    "lrc_interp_hybrid": LRC_Cell, # G: tau + semi-implicit solver
 }
 
 
