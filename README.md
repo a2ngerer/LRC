@@ -119,6 +119,9 @@ uv run python experiments/plot_results.py              # curves, phase portraits
 
 GPU cluster (TU Wien dataLAB): see [`cluster/README.md`](cluster/README.md).
 
+Config-driven campaigns (define a matrix in YAML, run it agent-driven or by
+hand): see [`cluster/CAMPAIGNS.md`](cluster/CAMPAIGNS.md).
+
 ---
 
 ## Setup
