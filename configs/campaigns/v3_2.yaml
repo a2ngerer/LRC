@@ -1,0 +1,41 @@
+# Campaign v3.2 -- 2x2 architectural ablation of the LRC cell.
+# Equivalent to the legacy profile:
+#   build_specs(CELLS_V3_2, WIRINGS, SYSTEMS, SEEDS)   (build_specs_v3_2)
+# Pure cross product, 4 x 2 x 6 x 5 = 240 specs -> results/runs_v3_2.
+name: v3.2
+mode: axes
+outdir: results/runs_v3_2
+
+# Cluster resources for submit_campaign.sh (env override > this > config.sh).
+cluster:
+  partition: GPU-a40
+  gpu: a40:1
+  cpus: 12
+  mem: 32G
+  walltime: "04:00:00"
+  runs_per_gpu: 12
+  requeue: true
+description: >
+  2x2 architectural ablation of the LRC cell:
+  {lrc, cfc_lrc, mm_lrc, cfc_mm_lrc} = {numerical, closed-form} x
+  {plain, mixed-memory}, x {dense, ncp} x 6 ODE systems x 5 seeds. Identical
+  hyperparameters across all four cells; only the architecture differs, so any
+  pair isolates one design axis. Clip off, default solver/horizon.
+
+cells: [lrc, cfc_lrc, mm_lrc, cfc_mm_lrc]
+wirings: [dense, ncp]
+systems:
+  - spiral
+  - duffing
+  - periodic_sinusoidal
+  - periodic_predator_prey
+  - limited_predator_prey
+  - nonlinear_predator_prey
+seeds: [0, 1, 2, 3, 4]
+clip_norm: 0.0
+
+# Analysis spec consumed by experiments/analyze_campaign.py (ignored by the runner).
+analysis:
+  metric: nrmse
+  tests: [wilcoxon, cohen_d]
+  plots: [loss, phase, gradflow]

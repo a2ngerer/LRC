@@ -6,6 +6,18 @@
 name: v5
 mode: axes
 outdir: results/runs_v5
+
+# Cluster resources for submit_campaign.sh (env override > this > config.sh).
+# Heavy numerical-LTC cells (ltc, mm_ltc on ncp) -> 6 runs/GPU @ 64G, 10h
+# walltime (mirrors the retired submit_benchmark_v5.sh wrapper).
+cluster:
+  partition: GPU-a40
+  gpu: a40:1
+  cpus: 12
+  mem: 64G
+  walltime: "10:00:00"
+  runs_per_gpu: 6
+  requeue: true
 description: >
   Generalization stress test. Reruns the full v4 cell set under three
   independent stressors (noise / extrapolation / ood_init), nested as the
@@ -40,3 +52,10 @@ clip_norm: 0.0
 extra_axes:
   - key: stress
     values: [noise, extrapolation, ood_init]
+
+# Analysis spec consumed by experiments/analyze_campaign.py (ignored by the runner).
+analysis:
+  metric: nrmse
+  tests: [wilcoxon, cohen_d]
+  plots: [loss, phase, gradflow]
+  compare_dirs: [results/runs_v4]

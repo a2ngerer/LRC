@@ -1,0 +1,52 @@
+# Campaign v4 -- cross-family generalization + classical championship.
+# Equivalent to build_specs_v4() (run_benchmark.py:338).
+# CONCAT mode: a base block over all systems (seeds 0-4) and a tail block that
+# adds 5 DISJOINT seeds (5-9) on only the two divergence-prone systems, for extra
+# tail power. Same 11 cells in both; the blocks differ only in systems + seeds.
+#   [0,660)   base -- 11 cells x 2 x 6 systems x seeds 0-4 = 660
+#   [660,880) tail -- 11 cells x 2 x 2 systems x seeds 5-9 = 220
+#   total = 880 -> results/runs_v4.
+name: v4
+mode: concat
+outdir: results/runs_v4
+
+# Cluster resources for submit_campaign.sh (env override > this > config.sh).
+# Heavy numerical-LTC cells -> 6 runs/GPU @ 64G, 10h (mirrors submit_benchmark_v4.sh).
+cluster:
+  partition: GPU-a40
+  gpu: a40:1
+  cpus: 12
+  mem: 64G
+  walltime: "10:00:00"
+  runs_per_gpu: 6
+  requeue: true
+description: >
+  One self-contained matrix: two LTC/LRC 2x2s {numerical, closed-form} x {plain,
+  mixed-memory} plus classical gru/lstm/ctrnn baselines, all at identical config.
+  The tail supplements the two stiff systems with 5 extra seeds (disjoint from
+  the base) so the headline divergence-tail claim rests on n=10, not n=5.
+
+# CELLS_V4: LTC 2x2 + LRC 2x2 + classical baselines (shared by both blocks).
+cells: [ltc, cfc, mm_ltc, cfc_mm_ltc, lrc, cfc_lrc, mm_lrc, cfc_mm_lrc, gru, lstm, ctrnn]
+wirings: [dense, ncp]
+systems:
+  - spiral
+  - duffing
+  - periodic_sinusoidal
+  - periodic_predator_prey
+  - limited_predator_prey
+  - nonlinear_predator_prey
+clip_norm: 0.0
+
+blocks:
+  # Base: every system, seeds 0-4 (pooled n=30 per cell x wiring, as v1-v3.3).
+  - seeds: [0, 1, 2, 3, 4]         # SEEDS_V4_BASE
+  # Tail: only the two stiff/divergence-prone systems, 5 NEW disjoint seeds 5-9.
+  - systems: [duffing, periodic_predator_prey]   # SYSTEMS_V4_TAIL = SYSTEMS_V3_STIFF
+    seeds: [5, 6, 7, 8, 9]         # SEEDS_V4_TAIL
+
+# Analysis spec consumed by experiments/analyze_campaign.py (ignored by the runner).
+analysis:
+  metric: nrmse
+  tests: [wilcoxon, cohen_d]
+  plots: [loss, phase, gradflow]

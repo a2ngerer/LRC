@@ -1,0 +1,61 @@
+# Campaign v6b -- stress-level dose-response on ncp (floor/ceiling check).
+# Equivalent to build_specs_v6b() (run_benchmark.py:398).
+# CONCAT mode: one block per (regime, NEW level) pair, in regime-major then
+# level order. Every block is the SAME ncp cross-product (8 cells x 1 wiring x 6
+# systems x 5 seeds = 240); blocks differ ONLY in their `constants`, which append
+# the regime (`stress`) plus ONE regime-specific level key -- a HETEROGENEOUS key
+# per block (stress_noise_level / stress_train_fraction / stress_ood_scale).
+#   3 regimes x 2 new levels each = 6 blocks x 240 = 1440 -> results/runs_v6b.
+#   Block layout: [0,240) noise.05, [240,480) noise.20, [480,720) extrap.70,
+#   [720,960) extrap.30, [960,1200) ood.10, [1200,1440) ood.40.
+name: v6b
+mode: concat
+outdir: results/runs_v6b
+
+# Cluster resources for submit_campaign.sh (env override > this > config.sh).
+cluster:
+  partition: GPU-a40
+  gpu: a40:1
+  cpus: 12
+  mem: 32G
+  walltime: "04:00:00"
+  runs_per_gpu: 12
+  requeue: true
+description: >
+  Is the v5 ncp ordering a monotone dose-response or a floor/ceiling artifact at
+  the single chosen magnitude? Each stressor gets two NEW levels bracketing the
+  v5 point; v4 (clean, level 0) and v5 (mid) are the reused anchors. The level is
+  a pure scalar multiplier on the fixed RNG draw, so the ordered points form a
+  clean dose-response trend test.
+
+# Campaign-level defaults shared by every block (CELLS_V6, ncp only).
+cells: [cfc, cfc_lrc, cfc_mm_lrc, cfc_mm_ltc, gru, lstm, ctrnn, lrc]
+wirings: [ncp]
+systems:
+  - spiral
+  - duffing
+  - periodic_sinusoidal
+  - periodic_predator_prey
+  - limited_predator_prey
+  - nonlinear_predator_prey
+seeds: [0, 1, 2, 3, 4]
+clip_norm: 0.0
+
+# One block per (regime, new level). `constants` are appended after clip_norm in
+# mapping order: `stress` first, then the regime's own level key -- matching
+# legacy {**s, 'stress': regime, key: val}. The level key DIFFERS per regime,
+# which is the heterogeneous-key axis the explicit/axes modes cannot express.
+blocks:
+  - constants: {stress: noise,         stress_noise_level: 0.05}
+  - constants: {stress: noise,         stress_noise_level: 0.20}
+  - constants: {stress: extrapolation, stress_train_fraction: 0.70}
+  - constants: {stress: extrapolation, stress_train_fraction: 0.30}
+  - constants: {stress: ood_init,      stress_ood_scale: 0.10}
+  - constants: {stress: ood_init,      stress_ood_scale: 0.40}
+
+# Analysis spec consumed by experiments/analyze_campaign.py (ignored by the runner).
+analysis:
+  metric: nrmse
+  tests: [wilcoxon, cohen_d]
+  plots: [loss, phase, gradflow]
+  compare_dirs: [results/runs_v5, results/runs_v4]

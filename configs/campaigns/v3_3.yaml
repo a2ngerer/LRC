@@ -1,0 +1,40 @@
+# Campaign v3.3 -- parameter-matched capacity control for the v3.2 2x2.
+# Equivalent to build_specs_v3_3() (run_benchmark.py:325).
+# Pure cross product, 1 x 2 x 6 x 5 = 60 specs -> results/runs_v3_3.
+name: v3.3
+mode: axes
+outdir: results/runs_v3_3
+
+# Cluster resources for submit_campaign.sh (env override > this > config.sh).
+cluster:
+  partition: GPU-a40
+  gpu: a40:1
+  cpus: 12
+  mem: 32G
+  walltime: "04:00:00"
+  runs_per_gpu: 12
+  requeue: true
+description: >
+  Parameter-matched capacity control for the v3.2 2x2 ablation. lrc_pm is a
+  plain numerical LRC widened (CELL_UNITS/CELL_NCP) to >= the largest v3.2 fixed
+  cell, analyzed against the existing runs_v3_2 cells under an identical training
+  config. Clip off, default solver/horizon.
+
+# CELLS_V3_3 = ['lrc_pm']: the single param-matched control cell.
+cells: [lrc_pm]
+wirings: [dense, ncp]
+systems:
+  - spiral
+  - duffing
+  - periodic_sinusoidal
+  - periodic_predator_prey
+  - limited_predator_prey
+  - nonlinear_predator_prey
+seeds: [0, 1, 2, 3, 4]
+clip_norm: 0.0
+
+# Analysis spec consumed by experiments/analyze_campaign.py (ignored by the runner).
+analysis:
+  metric: nrmse
+  tests: [wilcoxon, cohen_d]
+  plots: [loss, phase, gradflow]

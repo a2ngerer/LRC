@@ -128,8 +128,9 @@ def main(argv=None) -> int:
     if args.list:
         for i, s in enumerate(specs):
             extra = ''
-            for key in ('stress', 'ncp_wiring_seed', 'ode_unfolds', 'batch_time',
-                        'eps_jitter'):
+            for key in ('stress', 'stress_noise_level', 'stress_train_fraction',
+                        'stress_ood_scale', 'ncp_wiring_seed', 'ode_unfolds',
+                        'batch_time', 'eps_jitter'):
                 if key in s:
                     extra += f' {key}={s[key]}'
             print(f"{i:4d}  {s['cell']:<18} {s['wiring']:<5} {s['system']:<22} "
