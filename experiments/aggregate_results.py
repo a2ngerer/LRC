@@ -30,8 +30,15 @@ METRIC = 'nrmse'   # primary comparison metric (proposal: MSE/NRMSE)
 def load_runs(runs_dirs) -> pd.DataFrame:
     """Load run JSONs from one or more directories into a long DataFrame.
 
-    Runs with an active gradient clip get the cell label '<cell>+clip' so
-    every downstream groupby/statistic treats them as their own variant.
+    Runs get a variant suffix on the cell label so every downstream
+    groupby/statistic treats each experimental condition as its own variant:
+      '+clip'        active gradient clip            (v2)
+      '+unfolds<n>'  non-default ODE solver substeps (v3 solver-fidelity arm)
+      '+bt<n>'       non-default training horizon     (v3 training-horizon arm)
+      '+<regime>'    v5 generalization stressor       (noise/extrapolation/ood_init)
+    v1/v2 labels ('<cell>', '<cell>+clip') are unchanged, since their configs
+    carry batch_time=16 and no ode_unfolds. v5-vs-clean is paired by loading both
+    results/runs_v4 and results/runs_v5 (e.g. 'ltc' vs 'ltc+noise').
     """
     if isinstance(runs_dirs, str):
         runs_dirs = [runs_dirs]
@@ -40,14 +47,44 @@ def load_runs(runs_dirs) -> pd.DataFrame:
         for path in sorted(glob(os.path.join(runs_dir, '*.json'))):
             with open(path, encoding='utf-8') as f:
                 r = json.load(f)
-            clip = float(r.get('config', {}).get('clip_norm', 0.0))
-            cell = r['run']['cell'] + ('+clip' if clip else '')
+            cfg = r.get('config', {})
+            clip = float(cfg.get('clip_norm', 0.0))
+            unfolds = cfg.get('ode_unfolds')
+            batch_time = cfg.get('batch_time', 16)
+            stress = cfg.get('stress') or r['run'].get('stress')   # v5 stress regime
+            # v6a wiring graph + v6b dose-response level (seed 42 / None -> no suffix).
+            wseed = cfg.get('ncp_wiring_seed') or r['run'].get('ncp_wiring_seed')
+            stress_level = next(
+                (v for v in (cfg.get('stress_level'),
+                             r['run'].get('stress_noise_level'),
+                             r['run'].get('stress_train_fraction'),
+                             r['run'].get('stress_ood_scale')) if v is not None),
+                None)
+            suffix = ''
+            if stress:
+                suffix += f'+{stress}'
+            if wseed and int(wseed) != 42:
+                suffix += f'+w{int(wseed)}'
+            if stress_level is not None:
+                suffix += f'+lvl{stress_level}'
+            if clip:
+                suffix += '+clip'
+            if unfolds and int(unfolds) != 6:
+                suffix += f'+unfolds{int(unfolds)}'
+            if batch_time and int(batch_time) != 16:
+                suffix += f'+bt{int(batch_time)}'
+            cell = r['run']['cell'] + suffix
             rows.append({
                 'cell': cell,
                 'wiring': r['run']['wiring'],
                 'system': r['run']['system'],
                 'seed': r['run']['seed'],
                 'clip_norm': clip,
+                'stress': stress,
+                'ncp_wiring_seed': int(wseed) if wseed else None,
+                'stress_level': stress_level,
+                'ode_unfolds': int(unfolds) if unfolds else None,
+                'batch_time': int(batch_time) if batch_time else None,
                 'final_loss': r['training']['final_loss'],
                 'mse': r['evaluation']['mse'],
                 'nrmse': r['evaluation']['nrmse'],

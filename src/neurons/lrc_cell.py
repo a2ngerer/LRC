@@ -16,6 +16,9 @@ class LRC_Cell(BaseCell):
         forget_gate = True,
         ode_solver = 'explicit',
         epsilon=1e-8,
+        freeze_elastance=False,
+        pm_pad=False,
+        pm_pad_extra=0,
         initialization_ranges=None,
         **kwargs
     ):
@@ -72,6 +75,21 @@ class LRC_Cell(BaseCell):
         self._forget_gate = forget_gate
         self._epsilon = epsilon
         self._ode_solver_type = ode_solver
+
+        # eps-ablation flags (additive; default-False keeps every prior cell
+        # byte-identical). freeze_elastance: build the elastance Dense then mark
+        # it non-trainable (the frozen-structure control D). pm_pad: in the
+        # interp branch, add a separate same-budget additive residual onto
+        # v_prime (the capacity controls E / E_C). pm_pad_extra widens the pad
+        # by the distr_shift-sized amount so E_C matches C's param count.
+        self._freeze_elastance = freeze_elastance
+        self._pm_pad = pm_pad
+        self._pm_pad_extra = pm_pad_extra
+        # Live-gate diagnostic capture (filled on each _ode_solver call when
+        # enabled). The benchmark/aggregator reads these off a trained model to
+        # confirm the gate is measurably active before reading any equivalence.
+        self._capture_gate = False
+        self._last_elastance_t = None
 
         self._layerwise = False
 
@@ -176,6 +194,53 @@ class LRC_Cell(BaseCell):
 
         self.elastance_mapping = tf.keras.layers.Dense(self.state_size, name="elastance_mapping")
 
+        # eps-ablation: same-budget additive-residual pad (controls E / E_C).
+        # Only built in the interp branch, where elastance_mapping is never
+        # called (and therefore contributes 0 params). The pad mirrors
+        # elastance_mapping's Dense(state_size) and adds pm_pad_extra so its
+        # trainable count equals the asymmetric/symmetric gate's per cell.
+        # NOTE: deliberately an additive residual on v_prime, NOT a multiplicative
+        # gate -- it is a capacity control, never role-matched to the elastance
+        # mechanism (see spec section 0.1).
+        if self._pm_pad and self._elastance_type == "interp":
+            # Pad = Dense(state_size), mirroring elastance_mapping exactly, so its
+            # trainable count equals B's gate (E == B). Built lazily on first call
+            # in _ode_solver (Keras then tracks its weights as cell variables); it
+            # IS called every step (unlike interp's unused elastance_mapping), so
+            # the pad params always materialize.
+            self.pm_pad_mapping = tf.keras.layers.Dense(
+                self.state_size, name="pm_pad_mapping"
+            )
+            # pm_pad_extra > 0 adds ONE distr_shift-sized weight (shape
+            # (state_size,)), NOT a wider Dense -- so E_C's count = E + state_size
+            # = C's count PER CELL (C adds exactly a distr_shift of shape
+            # (state_size,) over B). The numeric value is treated as a flag: the
+            # extra always matches the cell's own distr_shift size, so on NCP the
+            # per-cell extras (16+8+2=26) equal C's distr_shift total, not 3x16.
+            # A Dense(state_size+extra) would add ~(input_dim+1)*extra params and
+            # over-shoot C.
+            if self._pm_pad_extra:
+                self.pm_pad_extra_w = self.add_weight(
+                    name="pm_pad_extra",
+                    shape=(self.state_size,),
+                    dtype=tf.float32,
+                    initializer=tf.keras.initializers.Constant(0),
+                )
+            else:
+                self.pm_pad_extra_w = None
+        else:
+            self.pm_pad_mapping = None
+            self.pm_pad_extra_w = None
+
+        # eps-ablation: frozen-structure control (D). Setting trainable=False
+        # BEFORE the first call makes the lazily-built elastance weights
+        # non-trainable (a fixed random gate). The RNN wrapper then tracks them
+        # under non_trainable_variables. Only meaningful when elastance is
+        # actually called (asymmetric/symmetric); for interp the layer stays
+        # unbuilt and the flag is inert.
+        if self._freeze_elastance:
+            self.elastance_mapping.trainable = False
+
         if self._elastance_type in ["symmetric"]:
             self._params["distr_shift"] = self.add_weight(
                 name="distr_shift",
@@ -257,6 +322,12 @@ class LRC_Cell(BaseCell):
             else:
                 elastance_t = dt
 
+            # Live-gate diagnostic capture (B/C): record the gate output so the
+            # benchmark can compute its coefficient of variation across
+            # timesteps/inputs on a trained model (spec section 3.0.6).
+            if self._capture_gate:
+                self._last_elastance_t = elastance_t
+
             syn = self._sigmoid(
                 v_pre, self._params["mu"], self._params["sigma"]
             )
@@ -271,6 +342,20 @@ class LRC_Cell(BaseCell):
                 v_prime = - v_pre * tf.nn.sigmoid(f)  + self._params["vleak"]*tf.nn.tanh(g)
             else:
                 v_prime = - v_pre * self._params["tau"] + self._params["vleak"]*tf.nn.tanh(g)
+
+            # eps-ablation: additive same-budget residual (controls E / E_C).
+            # Applied post-tanh onto v_prime, with elastance_t left at dt. The
+            # pad output is reduced to state_size (the leading slice); the extra
+            # pm_pad_extra columns still train and contribute params/gradients so
+            # E_C's count matches C, without changing the residual's dimension.
+            if self.pm_pad_mapping is not None:
+                pad = self.pm_pad_mapping(tf.concat([inputs, v_pre], axis=-1))
+                if self.pm_pad_extra_w is not None:
+                    # Fold the distr_shift-sized (state_size,) extra weight into
+                    # the residual so it carries gradient (not a dead weight).
+                    pad = pad + self.pm_pad_extra_w
+                v_prime = v_prime + pad
+
 
             if self._ode_solver_type == 'hybrid':
                 v_pre = (elastance_t * self._params["vleak"] * tf.nn.tanh(g) + v_pre)/(1+elastance_t * tf.nn.sigmoid(f))

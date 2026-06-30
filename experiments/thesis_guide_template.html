@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Masterarbeit — Visueller Guide &amp; Refresh</title>
+<style>
+  :root{
+    --bg:#f6f5f1; --panel:#ffffff; --ink:#1b1b29; --ink-soft:#4a4a5e;
+    --line:#e4e1d8; --dense:#1f77b4; --ncp:#d35400; --ncp-soft:#fbeadd;
+    --dense-soft:#e7f0f8; --accent:#5b3df5; --good:#1f8a5b; --good-soft:#e5f4ec;
+    --warn:#b7791f; --warn-soft:#fdf3e0; --q:#7b3ff5; --q-soft:#f0eafe;
+    --mono:"SF Mono",ui-monospace,"Cascadia Code","Roboto Mono",Menlo,Consolas,monospace;
+    --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --shadow:0 1px 2px rgba(20,20,40,.04),0 6px 24px rgba(20,20,40,.06);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    font-size:16.5px;line-height:1.7;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* ---------- Layout ---------- */
+  .wrap{display:grid;grid-template-columns:288px minmax(0,1fr);gap:0;max-width:1500px;margin:0 auto}
+  nav.toc{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;
+    background:#15151f;color:#cfcfe0;padding:26px 20px 60px;border-right:1px solid #23232f}
+  nav.toc .brand{font-weight:700;font-size:15px;color:#fff;letter-spacing:.2px;margin-bottom:2px}
+  nav.toc .brand small{display:block;font-weight:400;color:#8d8da8;font-size:12px;margin-top:4px;line-height:1.4}
+  nav.toc ol{list-style:none;margin:18px 0 0;padding:0;counter-reset:s}
+  nav.toc li{margin:1px 0}
+  nav.toc a{display:block;color:#b9b9cf;padding:6px 10px;border-radius:7px;font-size:13.5px;
+    border-left:2px solid transparent;transition:all .15s}
+  nav.toc a:hover{background:#20202c;color:#fff;text-decoration:none}
+  nav.toc a.active{background:#241f3d;color:#fff;border-left-color:var(--accent)}
+  nav.toc a .n{display:inline-block;width:22px;color:#6b6b85;font-variant-numeric:tabular-nums}
+  nav.toc a.active .n{color:var(--accent)}
+  nav.toc .sep{margin:16px 10px 6px;font-size:11px;text-transform:uppercase;letter-spacing:1.4px;color:#5a5a72}
+
+  main{padding:0 0 120px;min-width:0}
+  .inner{max-width:860px;margin:0 auto;padding:0 40px}
+
+  /* ---------- Hero ---------- */
+  header.hero{background:linear-gradient(135deg,#1b1b3a 0%,#2d1f5e 55%,#3a1f4e 100%);
+    color:#fff;padding:64px 0 56px;margin-bottom:8px}
+  header.hero .inner{max-width:860px}
+  .kicker{font-size:12.5px;text-transform:uppercase;letter-spacing:2.4px;color:#b9a8ff;font-weight:600}
+  header.hero h1{font-size:40px;line-height:1.12;margin:14px 0 10px;font-weight:800;letter-spacing:-.5px}
+  header.hero p.sub{font-size:18px;color:#d7d2f0;margin:0 0 26px;max-width:680px}
+  .meta-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-top:8px}
+  .meta-grid .m{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.13);
+    border-radius:11px;padding:13px 15px}
+  .meta-grid .m b{display:block;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#a99fe0;margin-bottom:3px;font-weight:600}
+  .meta-grid .m span{font-size:14.5px;color:#fff;font-weight:500}
+
+  /* ---------- Sections ---------- */
+  section{padding:42px 0 8px;border-top:1px solid var(--line)}
+  section:first-of-type{border-top:none}
+  h2{font-size:27px;font-weight:800;letter-spacing:-.4px;margin:0 0 6px;display:flex;align-items:baseline;gap:13px}
+  h2 .secnum{font-size:15px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;
+    background:var(--q-soft);border-radius:8px;padding:3px 10px;flex:none}
+  h3{font-size:19px;font-weight:700;margin:30px 0 8px;color:var(--ink)}
+  h4{font-size:15.5px;font-weight:700;margin:20px 0 4px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.6px}
+  p{margin:11px 0}
+  .lead{font-size:18px;color:var(--ink-soft)}
+  ul,ol{margin:11px 0;padding-left:22px}
+  li{margin:5px 0}
+  strong{font-weight:700}
+  code{font-family:var(--mono);font-size:.88em;background:#ecebe4;color:#5b2db5;padding:1.5px 6px;border-radius:5px}
+
+  /* ---------- Callouts ---------- */
+  .callout{border-radius:12px;padding:15px 18px 15px 16px;margin:18px 0;border:1px solid var(--line);
+    background:var(--panel);box-shadow:var(--shadow);position:relative;border-left-width:4px}
+  .callout .tag{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.1px;margin-bottom:5px;display:block}
+  .callout p{margin:5px 0}
+  .callout.def{border-left-color:var(--dense)} .callout.def .tag{color:var(--dense)}
+  .callout.note{border-left-color:var(--good)} .callout.note .tag{color:var(--good)}
+  .callout.warn{border-left-color:var(--warn);background:var(--warn-soft)} .callout.warn .tag{color:var(--warn)}
+  .callout.q{border-left-color:var(--q);background:var(--q-soft)} .callout.q .tag{color:var(--q)}
+
+  /* ---------- Formula ---------- */
+  .formula{font-family:var(--mono);background:#15151f;color:#e6e6f5;border-radius:11px;
+    padding:16px 20px;margin:16px 0;font-size:15px;line-height:1.9;overflow-x:auto;border-left:4px solid var(--accent)}
+  .formula .c{color:#8d8da8;font-style:italic}
+  .formula .hl{color:#ffd479}
+  .formula .b{color:#7ec8ff}
+
+  /* ---------- Figures ---------- */
+  figure{margin:24px 0;background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:14px;box-shadow:var(--shadow)}
+  figure img{width:100%;display:block;border-radius:8px;background:#fff}
+  figcaption{font-size:13.5px;color:var(--ink-soft);margin-top:11px;padding:0 4px;line-height:1.55}
+  figcaption b{color:var(--ink)}
+
+  /* ---------- Tables ---------- */
+  .tablewrap{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+  table{border-collapse:collapse;width:100%;font-size:14px;background:var(--panel)}
+  th,td{padding:9px 13px;text-align:left;border-bottom:1px solid var(--line)}
+  th{background:#efeee8;font-weight:700;font-size:12.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--ink-soft)}
+  tr:last-child td{border-bottom:none}
+  td.num{font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:13px}
+  .best{background:var(--good-soft);font-weight:700;color:var(--good)}
+  .bad{background:var(--ncp-soft);color:var(--ncp)}
+
+  /* ---------- Pills ---------- */
+  .pill{display:inline-block;font-family:var(--mono);font-size:12px;font-weight:600;padding:2px 9px;
+    border-radius:20px;border:1px solid;margin:1px 1px}
+  .pill.dense{color:var(--dense);border-color:var(--dense);background:var(--dense-soft)}
+  .pill.ncp{color:var(--ncp);border-color:var(--ncp);background:var(--ncp-soft)}
+  .pill.fix{color:var(--good);border-color:var(--good);background:var(--good-soft)}
+  .pill.base{color:var(--ink-soft);border-color:var(--line);background:#efeee8}
+
+  /* ---------- Cards grid ---------- */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:18px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:16px 17px;box-shadow:var(--shadow)}
+  .card h5{margin:0 0 6px;font-size:15px;font-weight:700;display:flex;align-items:center;gap:8px}
+  .card .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .card p{margin:4px 0;font-size:13.5px;color:var(--ink-soft);line-height:1.5}
+  .card .eq{font-family:var(--mono);font-size:12px;color:var(--accent);background:#f3f1fb;padding:5px 8px;border-radius:6px;margin-top:8px;display:block;overflow-x:auto}
+
+  /* ---------- Step / flow ---------- */
+  .flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:0;margin:20px 0}
+  .flow .step{flex:1;min-width:120px;background:var(--panel);border:1px solid var(--line);padding:13px 15px;position:relative}
+  .flow .step:first-child{border-radius:11px 0 0 11px}
+  .flow .step:last-child{border-radius:0 11px 11px 0}
+  .flow .step b{display:block;font-size:13px;color:var(--accent);margin-bottom:3px}
+  .flow .step span{font-size:12.5px;color:var(--ink-soft)}
+  .flow .arrow{display:flex;align-items:center;color:var(--line);font-size:22px;padding:0 2px}
+
+  hr.soft{border:none;border-top:1px dashed var(--line);margin:26px 0}
+  .twocol{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:900px){
+    .wrap{grid-template-columns:1fr}
+    nav.toc{position:static;height:auto;border-right:none;border-bottom:1px solid #23232f}
+    nav.toc ol{columns:2;column-gap:18px}
+    .inner{padding:0 22px}
+    .twocol{grid-template-columns:1fr}
+    header.hero h1{font-size:30px}
+  }
+  .foot{max-width:860px;margin:40px auto 0;padding:24px 40px;color:var(--ink-soft);font-size:13px;border-top:1px solid var(--line)}
+  .tiny{font-size:12.5px;color:var(--ink-soft)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ===================== SIDEBAR TOC ===================== -->
+<nav class="toc">
+  <div class="brand">Masterarbeit — Refresh-Guide
+    <small>Bio-inspirierte Neuron-Typen im ML-Vergleich · Stand 13.06.2026</small>
+  </div>
+  <div class="sep">Mini-Vorlesung</div>
+  <ol>
+    <li><a href="#big-picture"><span class="n">1</span>Die große Frage</a></li>
+    <li><a href="#projekt"><span class="n">2</span>Projekt &amp; Wiki-Aufbau</a></li>
+    <li><a href="#zellen"><span class="n">3</span>Bausteine I — Zellen</a></li>
+    <li><a href="#wirings"><span class="n">4</span>Bausteine II — Wirings</a></li>
+    <li><a href="#problem"><span class="n">5</span>Das Gradienten-Problem</a></li>
+    <li><a href="#fixes"><span class="n">6</span>Verbesserungsmaßnahmen</a></li>
+    <li><a href="#benchmarks"><span class="n">7</span>Die Benchmarks</a></li>
+    <li><a href="#metrik"><span class="n">8</span>Metrik &amp; Statistik</a></li>
+    <li><a href="#v1"><span class="n">9</span>v1-Resultate</a></li>
+    <li><a href="#v2"><span class="n">10</span>v2-Resultate</a></li>
+    <li><a href="#vergleich"><span class="n">11</span>v1 vs. v2 direkt</a></li>
+    <li><a href="#interpretation"><span class="n">12</span>Kernbefunde</a></li>
+    <li><a href="#stand"><span class="n">13</span>Aktueller Stand</a></li>
+    <li><a href="#defense"><span class="n">14</span>Wenn die Betreuerin fragt</a></li>
+  </ol>
+</nav>
+
+<main>
+<!-- ===================== HERO ===================== -->
+<header class="hero">
+  <div class="inner">
+    <div class="kicker">Visueller Guide · Selbst-Refresh vor dem Betreuer-Gespräch</div>
+    <h1>Neue Neuron-Typen im Machine Learning</h1>
+    <p class="sub">Eine mini-Vorlesung über die eigene Masterarbeit: vom Projektaufbau über die
+      bio-inspirierten Zellen und Wirings bis zur Interpretation der v1- und v2-Benchmarks.</p>
+    <div class="meta-grid">
+      <div class="m"><b>Thema</b><span>LTC / LRC / CfC / NCP vs. klassisch</span></div>
+      <div class="m"><b>Phase</b><span>3a — Implementation &amp; Benchmark</span></div>
+      <div class="m"><b>Advisor</b><span>Radu Grosu · Monika Farsang</span></div>
+      <div class="m"><b>Submission</b><span>geplant 31.10.2026</span></div>
+    </div>
+  </div>
+</header>
+
+<!-- ===================== 1 BIG PICTURE ===================== -->
+<section id="big-picture"><div class="inner">
+  <h2><span class="secnum">1</span>Die große Frage</h2>
+  <p class="lead">Welche <strong>neuronalen Mechanismen</strong> bio-inspirierter rekurrenter Netze
+    treiben Leistung und Trainingsdynamik auf kleinen Zeitreihen- und Regelungsaufgaben — und wie
+    wirkt spärliche NCP-Verdrahtung mit diesen Mechanismen zusammen?</p>
+
+  <p>Die Arbeit vergleicht eine Familie kontinuierlich-zeitlicher Neuronenmodelle, die aus der
+    <em>Electrical-Equivalent-Circuit</em>-Sicht biologischer Neuronen abgeleitet sind, gegen
+    klassische gated RNNs (LSTM, GRU). Die Leitidee ist <strong>mechanistisch, nicht nur
+    performativ</strong>: nicht „welche Zelle gewinnt", sondern „welcher architektonische Baustein
+    — liquid elastance, Saturation, chemische vs. elektrische Synapsen — erklärt das Verhalten".</p>
+
+  <div class="callout note">
+    <span class="tag">Warum das die Defense trägt</span>
+    <p>Die mechanistische Rahmung ist bewusst gewählt: Selbst wenn keine Architektur klar gewinnt,
+      bleibt die Mechanismus-Analyse ein verwertbarer Beitrag. <strong>Ein Null-Ergebnis ist
+      publizierbar</strong> — es verortet die Schwäche der Liquid-Zellen im Task-/Datenregime statt
+      im Gradientenpfad. Das ist der eingebaute Fallback gegen „aber was, wenn nichts besser ist?".</p>
+  </div>
+
+  <h3>Die fünf kanonischen Forschungsfragen (Proposal v3)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>RQ</th><th>Thema</th><th>Kernfrage (verkürzt)</th></tr>
+    <tr><td><strong>RQ1</strong></td><td>Performance</td><td>Wann schlagen bio-inspirierte Zellen (LRC, STC) die gated RNNs (LSTM, GRU)?</td></tr>
+    <tr><td><strong>RQ2</strong></td><td>Mechanismen</td><td>Welches Feature — liquid elastance ε(w<sub>i</sub>), Saturation, Gating — treibt die Unterschiede?</td></tr>
+    <tr><td><strong>RQ3</strong></td><td>Wiring</td><td>Bringt NCP-Verdrahtung einen vom Neuronenmodell unabhängigen Vorteil? Wie interagieren beide?</td></tr>
+    <tr><td><strong>RQ4</strong></td><td>Konvergenz</td><td>Warum konvergiert LRC in spärlichem NCP schlechter als in Dense — welche Rolle spielt der Gradientenfluss?</td></tr>
+    <tr><td><strong>RQ5</strong></td><td>Intermediate</td><td>Können Zwischenmodelle (CT-RNN + ε(w<sub>i</sub>)) den Beitrag einzelner Features isolieren?</td></tr>
+  </table></div>
+
+  <p>Für die Defense sind diese fünf RQs zusätzlich in <strong>drei messbare Hypothesen H1–H3</strong>
+    operationalisiert (NRMSE-Schwellen, Wilcoxon-Tests, Bonferroni, explizite Fallbacks). Damit ist
+    „outperform" quantifiziert statt schwammig — der zentrale Kritikpunkt aus der internen
+    Risikoanalyse vom Mai.</p>
+</div></section>
+
+<!-- ===================== 2 PROJEKT ===================== -->
+<section id="projekt"><div class="inner">
+  <h2><span class="secnum">2</span>Projekt- &amp; Wiki-Aufbau</h2>
+  <p>Das Repository folgt dem <strong>Karpathy-„LLM-Wiki"-Muster</strong>: strikte Trennung zwischen
+    unveränderlichem Rohmaterial, einem gepflegten Wissens-Wiki und dem Code. Jede Schicht hat eine
+    klare Schreibhoheit — das verhindert, dass generierte Notizen Primärquellen überschreiben.</p>
+
+  <div class="tablewrap"><table>
+    <tr><th>Schicht</th><th>Ort</th><th>Inhalt</th><th>Wird gepflegt von</th></tr>
+    <tr><td>Raw / immutable</td><td><code>papers/</code>, <code>deep_research/</code>, <code>proposal/</code></td><td>PDFs, LLM-Reports, eingereichtes Proposal</td><td>nur Mensch</td></tr>
+    <tr><td>Wiki</td><td><code>obsidian_master_thesis/</code></td><td>Concepts, Paper-Notizen, Status, Timeline</td><td>LLM + Mensch</td></tr>
+    <tr><td>Code</td><td><code>code/</code></td><td>Zellen, Wirings, Benchmark-Pipeline</td><td>LLM + Mensch</td></tr>
+    <tr><td>Thesis</td><td><code>Thesis/</code>, <code>proposal/</code></td><td>LaTeX-Quellen (Englisch)</td><td>LLM + Mensch</td></tr>
+  </table></div>
+
+  <h3>Wie das Wiki organisiert ist</h3>
+  <p>Der Obsidian-Vault ist das „Zweitgehirn" der Arbeit. Wichtigste Bereiche:</p>
+  <ul>
+    <li><strong>Concepts/</strong> — didaktische Konzeptnotizen (Neural ODE, LTC, LRC, NCP, EEC, chemische vs. elektrische Synapsen). Jede ist eigenständig lesbar und über <code>[[Wikilinks]]</code> vernetzt.</li>
+    <li><strong>Papers/ &amp; Literature/</strong> — Paper-Zusammenfassungen + zentrale <code>references.bib</code> (Single Source of Truth für Zitierschlüssel).</li>
+    <li><strong>Thesis/</strong> — Forschungsfragen, Roadmap, Cluster-Runbook, <strong>Work-Log</strong> (jede Code-Session dokumentiert) und <strong>Timeline</strong> (Hook-gepflegt).</li>
+    <li><strong>Meta/</strong> — der Projektstatus, den ich bei jedem Session-Start automatisch injiziert bekomme.</li>
+  </ul>
+
+  <div class="callout def">
+    <span class="tag">Selbst-wartendes Setup</span>
+    <p>Hooks halten den Kontext aktuell: ein <em>SessionStart</em>-Hook injiziert Status + Timeline +
+      BibLaTeX-Drift, ein <em>Stop</em>-Hook schreibt automatische Work-Log-Einträge bei Code-Edits.
+      Slash-Commands wie <code>/status</code>, <code>/sync-bibs</code>, <code>/lint-wiki</code> halten
+      Vault und Setup konsistent. Praktischer Nutzen: Wer das Repo übernimmt, ist in Minuten orientiert.</p>
+  </div>
+
+  <h3>Code-Struktur</h3>
+  <div class="formula"><span class="c"># code/src/ — modular nach Verantwortung</span>
+neurons/   <span class="c"># die Zell-Implementierungen (LTC, LRC, CfC, GRU, LSTM, mixed-memory)</span>
+wirings/   <span class="c"># dense + ncp Verdrahtung</span>
+models/    <span class="c"># make_dense_model / make_ncp_model + Zell-Registry</span>
+tasks/     <span class="c"># neural_ode/: Datensätze (6 ODE-Systeme), Solver, Trainer</span>
+evaluation/<span class="c"># NRMSE/MSE, GradientFlowTracker (RQ4), Statistik</span>
+<span class="c"># code/experiments/ — Benchmark-Runner, Aggregation, Plots</span></div>
+</div></section>
+
+<!-- ===================== 3 ZELLEN ===================== -->
+<section id="zellen"><div class="inner">
+  <h2><span class="secnum">3</span>Bausteine I — die Zellen (Neuronentypen)</h2>
+  <p class="lead">Eine Zelle definiert, <strong>wie ein einzelnes Neuron seinen Zustand über die Zeit
+    fortschreibt</strong>. Alle bio-inspirierten Zellen hier sind spezielle <em>Neural ODEs</em>.</p>
+
+  <h3>Das Fundament: Neural ODE</h3>
+  <p>Statt diskrete Schichten zu stapeln, wird die versteckte Dynamik als kontinuierliche
+    Differentialgleichung beschrieben. Der Forward-Pass ist eine numerische Integration.</p>
+  <div class="formula">dh/dt = f<span class="b">(</span>h(t), t, &theta;<span class="b">)</span>      <span class="c"># &theta; = gelernte Parameter</span>
+h<sub>n+1</sub> = h<sub>n</sub> + &Delta;t &middot; f(h<sub>n</sub>)            <span class="c"># expliziter Euler-Schritt (hier verwendet)</span></div>
+  <p>Vorteile: konstanter Speicher in der Tiefe, native Behandlung irregulär abgetasteter Zeit
+    (&Delta;t variabel), kontinuierliche „Tiefe". RQ4 untersucht direkt die <strong>Stabilität dieses
+    Integrationspfads</strong> bei den Liquid-Varianten.</p>
+
+  <h3>Die EEC-Familie — vom Stromkreis zum Neuron</h3>
+  <p>Ein biologisches Neuron lässt sich als <strong>Electrical Equivalent Circuit</strong> modellieren
+    (Membran-Kapazität, Leitwert, Reversal-Potential). Die Zellen unterscheiden sich darin,
+    <em>welche dieser Größen konstant und welche „liquid" (zustands-/eingabeabhängig) sind</em>:</p>
+
+  <div class="cards">
+    <div class="card">
+      <h5><span class="dot" style="background:var(--ink-soft)"></span>CT-RNN</h5>
+      <p>Continuous-Time RNN: elektrische Synapsen, konstante Kapazität. Das einfachste EEC-Neuron.</p>
+    </div>
+    <div class="card">
+      <h5><span class="dot" style="background:#b7791f"></span>LTC <span class="pill base">ltc</span></h5>
+      <p>Liquid Time-Constant: <strong>chemische</strong> Synapsen. Die Zeitkonstante &tau; hängt von
+        Zustand <em>und</em> Eingabe ab — daher „liquid". Hasani et al. 2020.</p>
+      <span class="eq">h&#775;&#7522; = &minus;f&#7522;(h,x)&middot;h&#7522; + u&#7522;(h,x)&middot;e&#8343;&#7522;</span>
+      <p class="tiny">Nachteil: steife ODE → braucht teure Solver, neigt zu Oszillationen.</p>
+    </div>
+    <div class="card">
+      <h5><span class="dot" style="background:var(--dense)"></span>LRC <span class="pill base">lrc</span></h5>
+      <p>Liquid-Resistance Liquid-Capacitance: LTC <strong>plus liquid elastance</strong> &epsilon;(w<sub>i</sub>)
+        (= zustandsabhängige reziproke Kapazität) und Saturation. Farsang, Neubauer, Grosu, NeurIPS-W 2024.</p>
+      <span class="eq">h&#775;&#7522; = &epsilon;(w&#7522;)&middot;(&minus;&sigma;(f&#7522;)&middot;h&#7522; + &tau;(u&#7522;)&middot;e&#8343;&#7522;)</span>
+      <p class="tiny">Vorteil: explicit-Euler reicht (billig), kleinere Lipschitz-Konstante → robuster, dämpft die LTC-Oszillationen.</p>
+    </div>
+    <div class="card">
+      <h5><span class="dot" style="background:var(--good)"></span>CfC <span class="pill fix">cfc</span></h5>
+      <p>Closed-form Continuous-time: ersetzt die <strong>numerische Integration durch eine
+        geschlossene Lösung</strong>. Kein Solver, ein Sigmoid-Zeitgate statt Exponential-Decay.
+        Hasani et al. 2022.</p>
+      <span class="eq">x(t) = &sigma;(&minus;f&middot;t)&middot;g + (1&minus;&sigma;(&minus;f&middot;t))&middot;h</span>
+    </div>
+  </div>
+
+  <div class="callout def">
+    <span class="tag">Kern-Insight LRC vs. LTC</span>
+    <p>In der Implementierung ist die liquid elastance ein gelerntes Gate
+      <code>&epsilon;_t = &sigma;(Dense([x, h])) &middot; &Delta;t</code> (asymmetrische Variante). Genau dieses &epsilon;(w<sub>i</sub>)
+      ist der Mechanismus, den <strong>RQ2/RQ5 isolieren</strong> wollen — ist er für den
+      Performance-Unterschied verantwortlich? Ohne aktivierte Elastance fällt LRC auf eine
+      saturierte LTC zurück.</p>
+  </div>
+
+  <h3>Die klassischen Baselines</h3>
+  <p><span class="pill base">gru</span> <span class="pill base">lstm</span> — gated RNNs mit additivem
+    Memory-Zellzustand. Sie sind <strong>kein</strong> ODE-Modell, sondern der Referenzmaßstab: Die
+    bio-inspirierten Zellen müssen sich an ihnen messen. Ihr additiver Memory-Pfad ist zugleich der
+    Grund, warum sie das Gradientenproblem (Abschnitt 5) gar nicht erst haben — ein Hinweis, der die
+    Fixes in Abschnitt 6 motiviert.</p>
+</div></section>
+
+<!-- ===================== 4 WIRINGS ===================== -->
+<section id="wirings"><div class="inner">
+  <h2><span class="secnum">4</span>Bausteine II — die Wirings (Architekturen)</h2>
+  <p class="lead">Das Wiring legt fest, <strong>wer mit wem verbunden ist</strong>. Es ist orthogonal
+    zum Zelltyp — jede Zelle kann in jedes Wiring eingesetzt werden. Daher die 2×2-Logik der Arbeit:
+    Neuronentyp × Verdrahtung.</p>
+
+  <div class="twocol">
+    <div class="callout def" style="margin-top:0">
+      <span class="tag">Dense</span>
+      <p>Vollständig verbunden (fully-connected). Jedes Neuron sieht jedes andere. Maximale
+        Ausdruckskraft, aber diffuse, schwer interpretierbare Aktivierungen und quadratisch
+        wachsende Parameterzahl.</p>
+      <p class="tiny">In den Experimenten: <code>units = 16</code>.</p>
+    </div>
+    <div class="callout def" style="margin-top:0;border-left-color:var(--ncp)">
+      <span class="tag" style="color:var(--ncp)">NCP</span>
+      <p>Neural Circuit Policy — spärliche, gerichtete Verdrahtung nach dem Konnektom des Wurms
+        <em>C. elegans</em>. Vier Schichten mit biologischer Rollenverteilung.</p>
+      <p class="tiny">In den Experimenten: <code>inter=16, command=8, motor=2</code>, fester Wiring-Seed 42.</p>
+    </div>
+  </div>
+
+  <h3>Die NCP-Hierarchie</h3>
+  <div class="flow">
+    <div class="step"><b>Sensory</b><span>nehmen die Eingabe auf (feed-forward)</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><b>Inter</b><span>integrieren Information</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><b>Command</b><span>halten Zustand (rekurrent ↺)</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><b>Motor</b><span>erzeugen die Ausgabe</span></div>
+  </div>
+
+  <p>Der Witz: Ein NCP mit 19 Command-Neuronen kann Lenkaufgaben besser lösen als ein Dense-Netz mit
+    Millionen Parametern — bei <strong>hoher Interpretierbarkeit</strong> (einzelne Neuronen
+    korrelieren mit physikalischen Zustandsvariablen). Der Preis: weniger Gradientenpfade.</p>
+
+  <div class="callout warn">
+    <span class="tag">Die zentrale Spannung der Arbeit</span>
+    <p>NCP verspricht Effizienz und Interpretierbarkeit, aber die spärlichen Pfade erschweren das
+      Training — besonders bei den Liquid-Zellen. Genau diese Reibung zwischen <strong>Wiring-Vorteil
+      und Konvergenz-Nachteil</strong> ist der empirische Kern (RQ3 + RQ4) und zieht sich durch alle
+      Resultate weiter unten.</p>
+  </div>
+</div></section>
+
+<!-- ===================== 5 PROBLEM ===================== -->
+<section id="problem"><div class="inner">
+  <h2><span class="secnum">5</span>Das Problem — Vanishing/Exploding Gradients</h2>
+  <p class="lead">Warum konvergieren LTC/LRC in spärlichem NCP schlechter? Weil die Gradienten beim
+    Backpropagation-through-time <strong>durch die ODE-Jacobi-Matrizen</strong> müssen — und die
+    können schrumpfen oder explodieren.</p>
+
+  <p>Beim Training rollt BPTT den Integrationspfad rückwärts ab. Jeder Integrationsschritt multipliziert
+    eine weitere Jacobi-Matrix in die Gradientenkette. Bei steifen Dynamiken (LTC) oder spärlichen
+    Pfaden (NCP) wird dieses Produkt instabil — <strong>bewiesen für ODE-Netze von Lechner &amp;
+    Hasani (2020)</strong>, verstärkt durch LTC-Steifheit (Farsang et al. 2024).</p>
+
+  <figure>
+    <img class="figure" alt="Gradient-Flow LRC auf spiral, dense vs ncp" src="{{FIG_GRADFLOW_LRC}}">
+    <figcaption><b>Der RQ4-Beleg.</b> Layer-Gradientennorm über die Trainingsiterationen für
+      <span class="pill base">lrc</span> auf <code>spiral</code>. <b>Links (Dense):</b> die Normen
+      fallen sauber und monoton — gesundes Training. <b>Rechts (NCP):</b> ab ~Iteration 1500
+      <b>divergieren</b> die Normen mehrerer Layer sichtbar. Das ist die Gradient-Pathologie, die die
+      schlechtere NCP-Konvergenz mechanistisch erklärt — kein Hyperparameter-Artefakt, sondern im
+      Gradientenpfad sichtbar.</figcaption>
+  </figure>
+
+  <div class="callout note">
+    <span class="tag">Warum die Baselines das Problem nicht haben</span>
+    <p>LSTM/GRU besitzen einen <strong>additiven Memory-Pfad</strong> (der Zellzustand <code>c</code>
+      wird addiert, nicht durch eine Jacobi-Kette geschoben). Gradienten fließen entlang dieses Pfads
+      nahezu ungedämpft — „constant error carousel". Genau das ist die Blaupause für den ersten Fix.</p>
+  </div>
+</div></section>
+
+<!-- ===================== 6 FIXES ===================== -->
+<section id="fixes"><div class="inner">
+  <h2><span class="secnum">6</span>Die Verbesserungsmaßnahmen (Benchmark v2)</h2>
+  <p class="lead">v2 fügt <strong>gezielte Reparaturen</strong> des Gradientenproblems hinzu — und zwar
+    so, dass jeder Fix isoliert messbar ist: gleiche Tasks, gleiche Seeds, gleicher Trainer, nur der
+    Fix variiert. Drei orthogonale Achsen.</p>
+
+  <div class="cards">
+    <div class="card">
+      <h5><span class="dot" style="background:var(--good)"></span>1 · Mixed Memory</h5>
+      <p><span class="pill fix">mm_ltc</span> <span class="pill fix">mm_lrc</span></p>
+      <p><strong>Architektonisch.</strong> Ein LSTM-Gating besitzt den Memory-Pfad <code>c</code>
+        (additiv), die innere ODE-Zelle (LTC/LRC) evolviert nur den Hidden-State <code>h</code>.
+        Gradienten entlang <code>c</code> umgehen die ODE-Jacobi-Matrizen komplett. ODE-LSTM-Muster
+        (Lechner &amp; Hasani 2020).</p>
+    </div>
+    <div class="card">
+      <h5><span class="dot" style="background:var(--good)"></span>2 · Closed-form</h5>
+      <p><span class="pill fix">cfc</span></p>
+      <p><strong>Numerisch.</strong> Ersetzt den Solver durch eine analytische Approximation — es gibt
+        gar keine Integrationsschritt-Kette mehr, durch die Gradienten schrumpfen könnten. Eigene
+        Implementierung nach Hasani et al. 2022.</p>
+    </div>
+    <div class="card">
+      <h5><span class="dot" style="background:var(--good)"></span>3 · Gradient Clipping</h5>
+      <p><span class="pill fix">+clip</span></p>
+      <p><strong>Optimierungsseitig.</strong> <code>clip_by_global_norm(grads, 1.0)</code> deckelt die
+        Explosionsrichtung — adressiert aber <em>nicht</em> die Vanishing-Richtung. Eigene Achse, nicht
+        in die Zellen gebündelt, damit Architektur- und Optimizer-Fix trennbar bleiben.</p>
+    </div>
+  </div>
+
+  <h3>Das v2-Versuchsdesign (480 Runs)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Gruppe</th><th>Zellen</th><th>Clip</th><th>Runs</th><th>Isoliert</th></tr>
+    <tr><td>Architektur-Fix</td><td>mm_ltc, mm_lrc, cfc</td><td>aus</td><td class="num">180</td><td>mixed memory / closed form allein</td></tr>
+    <tr><td>Beide Fixes</td><td>mm_ltc, mm_lrc, cfc</td><td>1.0</td><td class="num">180</td><td>Interaktion Architektur × Optimizer</td></tr>
+    <tr><td>Optimizer-Fix</td><td>ltc, lrc</td><td>1.0</td><td class="num">120</td><td>Clipping allein auf den Problemzellen</td></tr>
+  </table></div>
+  <p class="tiny">GRU/LSTM mit Clipping wurden bewusst weggelassen (kein Konvergenzproblem) — spart 120 GPU-Runs.</p>
+
+  <div class="callout q">
+    <span class="tag">Hypothesen, die v2 prüft</span>
+    <p>(1) mm_* konvergieren, wo ltc/lrc oszillieren. (2) cfc erreicht vergleichbaren NRMSE ohne
+      Solver-Kosten. (3) Clipping hilft <em>weniger</em> als mixed memory (deckelt nur die Explosion).
+      (4) Die Gradientennorm-Streuung ist bei mm_*/cfc kleiner als bei ltc/lrc — der RQ4-Mechanismus-Beleg.</p>
+  </div>
+</div></section>
+
+<!-- ===================== 7 BENCHMARKS ===================== -->
+<section id="benchmarks"><div class="inner">
+  <h2><span class="secnum">7</span>Die Benchmarks — sechs ODE-Systeme</h2>
+  <p class="lead">Jede Aufgabe ist eine 2-dimensionale Differentialgleichung. Das Modell sieht eine
+    Trajektorie und muss die Dynamik so lernen, dass es sie <strong>vom Startpunkt aus frei
+    nachintegrieren</strong> kann (full-trajectory rollout). Die Systeme decken bewusst
+    unterschiedliche Schwierigkeitsregime ab.</p>
+
+  <div class="tablewrap"><table>
+    <tr><th>System</th><th>Was es darstellt</th><th>Charakter / Schwierigkeit</th></tr>
+    <tr><td><code>spiral</code></td><td>Lineares System, gedämpfte Rotation</td><td>Einfachste Aufgabe — glatte, vorhersagbare Spirale zum Ursprung</td></tr>
+    <tr><td><code>duffing</code></td><td>Duffing-Oszillator (Doppelmuldenpotential)</td><td>Nichtlinearer Oszillator, „Brezel"-Orbit — testet nichtlineare Dynamik</td></tr>
+    <tr><td><code>periodic_sinusoidal</code></td><td>Stabiler Grenzzyklus (Hopf-artig)</td><td>Limit-Cycle: das Modell muss einen periodischen Orbit halten, ohne wegzudriften</td></tr>
+    <tr><td><code>periodic_predator_prey</code></td><td>Lotka-Volterra (klassisch)</td><td>Geschlossene periodische Orbits — das namensgebende Proposal-System</td></tr>
+    <tr><td><code>limited_predator_prey</code></td><td>Logistisches LV mit Sättigung</td><td>Konvergiert zu einem Fixpunkt — meist die best-gelöste Aufgabe</td></tr>
+    <tr><td><code>nonlinear_predator_prey</code></td><td>Nichtlineares Konkurrenzsystem</td><td>Zwei interagierende logistische Populationen</td></tr>
+  </table></div>
+
+  <h3>Das Trainingsprotokoll (für alle Runs identisch)</h3>
+  <div class="formula">Zelltypen &times; Wirings &times; Systeme &times; Seeds
+2000 Iterationen &middot; batch_size 16 &middot; batch_time 16 &middot; lr 1e-3 &middot; MSE-Loss
+expliziter Euler &middot; 5 Seeds (0&ndash;4) &middot; NCP-Wiring-Seed fix = 42
+<span class="c"># v1 = {ltc,lrc,gru,lstm} &times; {dense,ncp} &times; 6 &times; 5 = 240 Runs</span>
+<span class="c"># v2 = fixed cells + clip-Achse                     = 480 Runs</span></div>
+
+  <div class="callout def">
+    <span class="tag">Fairness-Prinzip</span>
+    <p>Einheitliches Trainingsprotokoll pro Architektur — <strong>kein</strong> per-Zelle-Hyperparameter-Tuning,
+      kein NAS. Der feste Wiring-Seed sorgt dafür, dass Seed-Varianz nur Init-/Batch-Zufall misst, nicht
+      Verdrahtungs-Zufall. So bleibt der Vergleich kontrolliert und die Wilcoxon-Paarung (gleiche
+      System-Seed-Abdeckung) valide.</p>
+  </div>
+</div></section>
+
+<!-- ===================== 8 METRIK ===================== -->
+<section id="metrik"><div class="inner">
+  <h2><span class="secnum">8</span>Metrik &amp; Statistik — wie gemessen wird</h2>
+
+  <h3>NRMSE — die Hauptmetrik</h3>
+  <p>Normalized Root Mean Squared Error auf dem <strong>vollen Trajektorien-Rollout</strong>: Das
+    trainierte Modell startet bei y[0] und integriert über das gesamte Zeitgitter; der Fehler gegen
+    die echte Trajektorie wird normalisiert. <strong>Niedriger = besser.</strong> Die Normalisierung
+    macht Systeme unterschiedlicher Amplitude vergleichbar.</p>
+  <div class="formula">NRMSE = &radic;( mean<span class="b">(</span>(y &minus; &#375;)&sup2;<span class="b">)</span> ) / Normierung      <span class="hl">&darr; niedriger ist besser</span></div>
+  <p>Warum Rollout statt One-Step-Prediction? Weil sich Fehler bei freier Integration
+    <em>akkumulieren</em> — ein Modell, das die Dynamik nur lokal approximiert, driftet weg. Rollout-NRMSE
+    misst, ob die <strong>gelernte Dynamik global stimmt</strong>. Genau hier scheitern instabile Zellen
+    spektakulär (Trajektorie schießt ins Unendliche → NRMSE &#8811; 1).</p>
+
+  <h3>Die statistische Pipeline</h3>
+  <div class="cards">
+    <div class="card"><h5>Wilcoxon signed-rank</h5><p>Gepaarter, nicht-parametrischer Test über (System, Seed)-Paare. Keine Normalverteilungs-Annahme — robust gegen die Ausreißer, die instabile Zellen produzieren.</p></div>
+    <div class="card"><h5>Bonferroni-Korrektur</h5><p>Bei vielen paarweisen Vergleichen steigt die Falsch-Positiv-Rate. Bonferroni (m = Anzahl Tests) hält das &alpha;-Niveau. Gezielte Vergleichsfamilien → kleineres m → schärfere Tests.</p></div>
+    <div class="card"><h5>Cohen's d</h5><p>Effektgröße. Ein Ergebnis kann signifikant <em>und</em> winzig sein — d quantifiziert, wie groß der Unterschied praktisch ist (|d|≈0.5 mittel, ≈0.8 groß).</p></div>
+  </div>
+
+  <div class="callout warn">
+    <span class="tag">Signifikanz &ne; Relevanz</span>
+    <p>In der Defense wichtig: Ich berichte <strong>p-Wert UND Effektgröße</strong>. Viele paarweise
+      Vergleiche überleben Bonferroni nicht — das ist ehrlich so dokumentiert. „Nicht signifikant nach
+      Korrektur" ist ein valides Ergebnis, kein Versäumnis.</p>
+  </div>
+</div></section>
+
+<!-- ===================== 9 V1 ===================== -->
+<section id="v1"><div class="inner">
+  <h2><span class="secnum">9</span>v1-Resultate — die Baselines</h2>
+  <p class="lead">v1 misst die vier Zellen <em>in ihrer publizierten Form</em>. Erwartung: LTC/LRC
+    zeigen in NCP eine Konvergenzschwäche. Genau das ist sichtbar.</p>
+
+  <figure>
+    <img class="figure" alt="v1 mean NRMSE pro Zelle, dense vs ncp" src="{{FIG_NRMSE_V1}}">
+    <figcaption><b>Mittlerer NRMSE pro Zelle, über alle Systeme.</b> Blau = Dense, Orange = NCP.
+      Zwei Dinge springen ins Auge: (1) In Dense liegen alle Zellen eng beieinander (0.11–0.15),
+      <span class="pill base">lrc</span> ist sogar die beste. (2) In NCP <b>explodiert die Strafe</b> —
+      besonders für <span class="pill base">lrc</span> (0.11→0.38) und <span class="pill base">ltc</span>
+      (0.13→0.30). Die gated Baselines (gru, lstm) verkraften NCP deutlich besser.</figcaption>
+  </figure>
+
+  <figure>
+    <img class="figure" alt="Phase-Portraits Lotka-Volterra" src="{{FIG_PHASE_LV}}">
+    <figcaption><b>Phase-Portraits, <code>periodic_predator_prey</code> (Lotka-Volterra).</b> Rot =
+      Vorhersage, grau/schwarz = Wahrheit. Obere Reihe Dense, untere NCP. In Dense treffen
+      <span class="pill base">ltc</span> (NRMSE 0.060) und <span class="pill base">lrc</span> (0.087)
+      die geschlossenen Orbits sauber. In NCP bricht es ein — und <span class="pill base">ltc/ncp</span>
+      <b>versagt total</b> (NRMSE 2.30): die Trajektorie schießt als gerade Linie weg statt zu kreisen.</figcaption>
+  </figure>
+
+  <div class="callout note">
+    <span class="tag">Backfill abgeschlossen — Zahlen final (n=5)</span>
+    <p>Die schwersten Runs (ltc/ncp + mm_ltc/ncp) waren bei 12 Runs/GPU OOM-gelaufen; der
+      <strong>Backfill-Job 481470</strong> (6 Runs/GPU, 64 GB) hat sie sauber nachgezogen. Alle
+      <strong>720 Runs</strong> liegen jetzt mit vollen 5 Seeds vor. Inhaltlich änderte das nur
+      ltc/ncp — mit allen Seeds 0.30 statt der vorläufigen 0.40; die LRC-NCP-Schwäche als größter
+      Effekt bleibt.</p>
+  </div>
+
+  <div class="tablewrap"><table>
+    <tr><th>Zelle</th><th>Dense (mean NRMSE)</th><th>NCP (mean NRMSE)</th><th>NCP-Strafe</th></tr>
+    <tr><td><span class="pill base">lrc</span></td><td class="num">0.107</td><td class="num bad">0.378</td><td class="num">&times;3.5</td></tr>
+    <tr><td><span class="pill base">gru</span></td><td class="num">0.126</td><td class="num">0.198</td><td class="num">&times;1.6</td></tr>
+    <tr><td><span class="pill base">ltc</span></td><td class="num">0.133</td><td class="num">0.297</td><td class="num">&times;2.2</td></tr>
+    <tr><td><span class="pill base">lstm</span></td><td class="num">0.154</td><td class="num">0.252</td><td class="num">&times;1.6</td></tr>
+  </table></div>
+  <p class="tiny">„NCP-Strafe" = NCP-NRMSE &divide; Dense-NRMSE, gemittelt über 6 Systeme &times; 5 Seeds (720 Runs, alle n=5).</p>
+</div></section>
+
+<!-- ===================== 10 V2 ===================== -->
+<section id="v2"><div class="inner">
+  <h2><span class="secnum">10</span>v2-Resultate — wirken die Fixes?</h2>
+  <p class="lead">v2 wirft die reparierten Zellen ins gleiche Rennen. Die Antwort ist differenziert:
+    <strong>mixed memory auf LRC und closed-form sind die Gewinner — mixed memory auf LTC nicht.</strong></p>
+
+  <figure>
+    <img class="figure" alt="v2 mean NRMSE pro Zelle, dense vs ncp" src="{{FIG_NRMSE_V2}}">
+    <figcaption><b>Mittlerer NRMSE der v2-Zellen.</b> Sortiert nach Dense-Performance.
+      <span class="pill fix">mm_lrc</span> (0.05) und <span class="pill fix">cfc</span> (0.08) führen in
+      Dense klar — besser als alle v1-Baselines. Der eindrucksvollste Befund steht rechts:
+      <span class="pill fix">cfc</span> hat eine <b>fast verschwindende NCP-Strafe</b> (0.08→0.10),
+      während <span class="pill fix">mm_ltc</span> (0.19→0.52) zeigt, dass der Fix nicht universell
+      hilft — auf der steifen LTC bleibt es instabil.</figcaption>
+  </figure>
+
+  <figure>
+    <img class="figure" alt="Gradient-Flow mm_lrc auf spiral, dense vs ncp" src="{{FIG_GRADFLOW_MMLRC}}">
+    <figcaption><b>Der RQ4-Mechanismus-Beleg.</b> Gleicher Plot wie in Abschnitt 5, jetzt für
+      <span class="pill fix">mm_lrc</span>. Im direkten Vergleich zu reinem lrc (das in NCP divergierte)
+      bleibt der Gradientenfluss hier <b>auch in NCP stabil</b> — keine Divergenz ab Iteration 1500.
+      Das ist der visuelle Beweis, dass der additive Memory-Pfad die Pathologie repariert, nicht nur
+      die Endmetrik verbessert.</figcaption>
+  </figure>
+
+  <figure>
+    <img class="figure" alt="Phase-Portraits Duffing v2" src="{{FIG_PHASE_DUFFING}}">
+    <figcaption><b>Phase-Portraits, <code>duffing</code> (v2-Zellen).</b> Der nichtlineare „Brezel"-Orbit.
+      <span class="pill fix">mm_lrc</span> trifft ihn nahezu perfekt (NRMSE 0.008), während
+      <span class="pill fix">mm_ltc</span> divergiert (gerade Linie, NRMSE &#8811; 1). Derselbe Fix, zwei
+      Ausgänge — das ist genau die Mechanismus-Differenzierung, die RQ2 sucht: <b>mixed memory hilft
+      LRC, aber nicht der steifen LTC</b>.</figcaption>
+  </figure>
+</div></section>
+
+<!-- ===================== 11 VERGLEICH ===================== -->
+<section id="vergleich"><div class="inner">
+  <h2><span class="secnum">11</span>v1 vs. v2 — der Before/After-Vergleich</h2>
+  <p class="lead">Weil Tasks, Seeds und Trainer identisch sind, ist der Vergleich ein <strong>kontrolliertes
+    Experiment</strong>: Was ändert sich, wenn man nur den Fix einschaltet?</p>
+
+  <figure>
+    <img class="figure" alt="v1 vs v2 NRMSE Übersicht nebeneinander" src="{{FIG_NRMSE_BOTH}}">
+    <figcaption><b>Links die v1-Baselines, rechts die v2-Fixes — gleiche Achsenlogik.</b> Die beste
+      Dense-Zelle wandert von <span class="pill base">lrc</span> (0.11, v1) zu
+      <span class="pill fix">mm_lrc</span> (0.05, v2): der Fehler <b>halbiert sich</b>. In NCP fällt die
+      beste Zelle von ~0.20 (gru) auf ~0.10 (cfc). Die Fixes verschieben die Front messbar nach unten.</figcaption>
+  </figure>
+
+  <div class="tablewrap"><table>
+    <tr><th>Vergleich (gepaart, dense)</th><th>Befund</th><th>Cohen's d</th><th>signifikant?</th></tr>
+    <tr><td>lrc → <strong>mm_lrc</strong></td><td class="best">mixed memory verbessert LRC</td><td class="num">+0.46</td><td>JA (Bonf.)</td></tr>
+    <tr><td>lstm → <strong>mm_lrc</strong></td><td class="best">schlägt die Baseline klar</td><td class="num">+0.74</td><td>JA (Bonf.)</td></tr>
+    <tr><td>lstm → <strong>cfc</strong></td><td class="best">closed-form schlägt LSTM</td><td class="num">+0.66</td><td>JA (Bonf.)</td></tr>
+    <tr><td>cfc → cfc+clip</td><td>Clipping ändert in Dense ~nichts</td><td class="num">+0.21</td><td>nein</td></tr>
+  </table></div>
+
+  <div class="callout note">
+    <span class="tag">Was der Vergleich für die Hypothesen heißt</span>
+    <p><strong>H (mixed memory wirkt):</strong> bestätigt für LRC, falsifiziert für LTC.
+      <strong>H (clipping &lt; architektur):</strong> bestätigt — Clipping allein bewegt die Dense-Metrik
+      kaum, während mixed memory/closed-form sie signifikant senken. Die Fixes sind also
+      <em>nicht</em> austauschbar; der Mechanismus zählt.</p>
+  </div>
+</div></section>
+
+<!-- ===================== 12 INTERPRETATION ===================== -->
+<section id="interpretation"><div class="inner">
+  <h2><span class="secnum">12</span>Kernbefunde — was die Zahlen bedeuten</h2>
+
+  <h3>Die fünf Take-aways</h3>
+  <ol>
+    <li><strong>In Dense sind die Liquid-Zellen konkurrenzfähig.</strong> lrc (0.11) schlägt sogar lstm
+      (0.15). Die EEC-Familie ist kein Exot — bei dichter Verdrahtung trägt sie.</li>
+    <li><strong>NCP bestraft vor allem LRC</strong> (RQ3/RQ4). lrc &times;3.5, klar signifikant (Cohen's
+      d ≈ &minus;0.88, größter Wiring-Effekt der Matrix). Bei ltc ist der Median-Effekt dagegen klein und
+      nicht signifikant — die erhöhte ltc/ncp-Zahl (0.30) stammt von einzelnen divergierenden Seeds,
+      nicht von einer systematischen Schwäche. Das ist <em>das</em> empirische Phänomen der Arbeit.</li>
+    <li><strong>cfc ist die NCP-robusteste Zelle.</strong> Als einzige zeigt sie <em>keinen</em>
+      signifikanten Dense-vs-NCP-Unterschied (p ≈ 0.66). Closed-form umgeht die Solver-Gradientenkette —
+      genau der vorhergesagte Mechanismus.</li>
+    <li><strong>mixed memory ist der beste Fix — aber nur für LRC.</strong> mm_lrc führt das Feld an,
+      mm_ltc bleibt instabil. Der Fix interagiert mit der Steifheit der Basiszelle.</li>
+    <li><strong>Clipping allein reicht nicht.</strong> Es deckelt die Explosion, repariert aber die
+      Vanishing-Richtung nicht — wie vorhergesagt. Die Architektur-Fixes dominieren.</li>
+  </ol>
+
+  <div class="callout q">
+    <span class="tag">Die Verbindung zur übergeordneten RQ</span>
+    <p>Alle fünf Befunde sind <strong>mechanistisch</strong>: Sie sagen nicht nur <em>dass</em>, sondern
+      <em>warum</em> sich Zellen unterscheiden (additiver Memory-Pfad, fehlende Solver-Kette,
+      Steifheit). Genau das ist die Kern-Untersuchung — und der Grund, warum die Arbeit auch ohne einen
+      klaren „Gewinner" steht.</p>
+  </div>
+
+  <div class="callout warn">
+    <span class="tag">Ehrliche Limitierungen</span>
+    <p>(1) Kein Hyperparameter-Tuning — die Ergebnisse zeigen Verhalten unter <em>einheitlichem</em>
+      Protokoll, nicht optimale Performance. (2) <code>clip_norm = 1.0</code> ist gesetzt, nicht
+      getunt. (3) ltc/ncp + mm_ltc/ncp werden gerade per Backfill auf n=5 vervollständigt. (4) Die
+      Control-Tasks (PPO) und STC/Intermediate-Zellen stehen noch aus (Phase 3a/3b).</p>
+  </div>
+</div></section>
+
+<!-- ===================== 13 STAND ===================== -->
+<section id="stand"><div class="inner">
+  <h2><span class="secnum">13</span>Aktueller Stand &amp; nächste Schritte</h2>
+
+  <div class="twocol">
+    <div>
+      <h4>Fertig</h4>
+      <ul>
+        <li>Benchmark-Infrastruktur (v1 + v2), 112 Tests grün</li>
+        <li>Alle 8 v1-Kombinationen + v2-fixed-cells lauffähig</li>
+        <li>dataLAB-Cluster-Pipeline (SLURM-Array, rsync)</li>
+        <li>v1-Sweep (240) + v2-Sweep (480) auf dem Cluster gelaufen</li>
+        <li>Statistik + Plots (NRMSE, Wilcoxon, Gradient-Flow)</li>
+      </ul>
+    </div>
+    <div>
+      <h4>In Arbeit / offen</h4>
+      <ul>
+        <li><strong>Backfill 481470</strong> — OOM-Seeds für ltc/ncp + mm_ltc/ncp (läuft)</li>
+        <li>closed-form LRC (<code>cfc_lrc</code>) — eigene Ableitung, Branch step13</li>
+        <li>Phase 3b: faktorielle LRC-Matrix (Haupt- + Interaktionseffekte)</li>
+        <li>STC- + Intermediate-Zelle (RQ2/RQ5), Control-Tasks (PPO)</li>
+        <li>Hypothesen H1–H3 mit Monika/Radu abstimmen</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="callout def">
+    <span class="tag">Phasen-Logik</span>
+    <p><strong>Phase 3a (jetzt):</strong> v1 auswerten → generelle Performance &amp; Use-Cases; v2-Fixes
+      als Vergleich. <strong>Phase 3b (geplant):</strong> faktorielle LRC-Matrix — die Fix-Achsen
+      {numerisch | closed-form} × {kein | mixed-memory} × {clip aus | an} kombinieren, um
+      <em>Interaktionen</em> statt nur Einzeleffekte zu messen. <strong>Phase 4 (ab August):</strong>
+      Thesis schreiben.</p>
+  </div>
+</div></section>
+
+<!-- ===================== 14 DEFENSE ===================== -->
+<section id="defense"><div class="inner">
+  <h2><span class="secnum">14</span>Wenn die Betreuerin fragt …</h2>
+  <p class="lead">Antizipierte Fragen mit knappen, belastbaren Antworten — der eigentliche Refresh-Zweck.</p>
+
+  <div class="callout q"><span class="tag">„Was ist dein zentrales Ergebnis bisher?"</span>
+    <p>In Dense sind die Liquid-Zellen konkurrenzfähig (lrc schlägt lstm). In NCP bricht ihre Performance
+      ein — der größte Effekt der Matrix. Die v2-Fixes zeigen <em>warum</em>: mixed memory und
+      closed-form, die die ODE-Gradientenkette umgehen, reparieren es; mm_lrc und cfc führen das Feld an.
+      Clipping allein reicht nicht.</p></div>
+
+  <div class="callout q"><span class="tag">„Warum konvergiert LRC in NCP schlechter?" (RQ4)</span>
+    <p>Weil BPTT die Gradienten durch die ODE-Jacobi-Matrizen schiebt; in spärlichem NCP wird dieses
+      Produkt instabil. Der Gradient-Flow-Plot zeigt die Divergenz ab ~Iter 1500 direkt. Mixed memory
+      gibt einen additiven Pfad daneben — und die Divergenz verschwindet.</p></div>
+
+  <div class="callout q"><span class="tag">„Wieso ist cfc so robust gegen NCP?"</span>
+    <p>Closed-form hat gar keine Solver-Integrationskette — es gibt keinen Pfad, durch den Gradienten
+      über viele Schritte schrumpfen. Empirisch: cfc ist die einzige Zelle ohne signifikante
+      Dense-vs-NCP-Differenz.</p></div>
+
+  <div class="callout q"><span class="tag">„Mixed memory hilft LRC, aber nicht LTC — warum?"</span>
+    <p>Die LTC-ODE ist steif (Oszillationen, große Jacobi-Eigenwerte). Der additive Memory-Pfad
+      stabilisiert den Gradienten, aber die innere LTC-Dynamik bleibt schwer zu integrieren. LRC dämpft
+      diese Steifheit bereits über Saturation + elastance, daher greift der Fix dort. Das ist ein
+      Mechanismus-Befund, kein Bug.</p></div>
+
+  <div class="callout q"><span class="tag">„Was, wenn keine Zelle klar gewinnt?"</span>
+    <p>Geplant: Die Arbeit ist mechanistisch angelegt. Ein Null-Ergebnis verortet die Schwäche im
+      Task-/Datenregime statt im Gradientenpfad — selbst ein verwertbarer, dokumentierter Befund.
+      H1–H3 haben jeweils einen expliziten Fallback.</p></div>
+
+  <div class="callout q"><span class="tag">„Sind die Zahlen schon belastbar?"</span>
+    <p>Ja — vollständig. Alle 12 Zell-Varianten × 2 Wirings × 6 Systeme × 5 Seeds liegen vor (720 Runs).
+      Der OOM-Backfill (Job 481470, 6 statt 12 Runs/GPU) ist sauber durchgelaufen. Einziger inhaltlicher
+      Effekt der vollen Seeds: ltc/ncp fiel milder aus als im Zwischenstand (0.30 statt 0.40) — die
+      LRC-NCP-Schwäche als größter Effekt bleibt unverändert.</p></div>
+
+  <div class="callout q"><span class="tag">„Wie stellst du Fairness sicher?"</span>
+    <p>Einheitliches Trainingsprotokoll, kein per-Zelle-Tuning, fester Wiring-Seed (Seed-Varianz =
+      Init/Batch, nicht Wiring). Gepaarte Wilcoxon-Tests über identische (System, Seed)-Abdeckung,
+      Bonferroni-korrigiert, mit Effektgrößen berichtet.</p></div>
+</div></section>
+
+<div class="foot">
+  <p><strong>Masterarbeit-Refresh-Guide</strong> · automatisch aus Vault, Code und Benchmark-Resultaten
+    erzeugt · Stand 13.06.2026. Die eingebetteten Diagramme stammen aus
+    <code>results/figures_v1</code>, <code>figures_v2</code> und <code>figures_v1_vs_v2</code>.
+    Nach Abschluss des Backfill-Jobs 481470 (vollständige ltc/ncp-Seeds) per
+    <code>uv run python experiments/build_thesis_guide.py</code> neu generierbar.</p>
+</div>
+</main>
+</div>
+
+<script>
+// Scrollspy: aktive Section im TOC markieren
+(function(){
+  var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a'));
+  var map = {};
+  links.forEach(function(a){ var id=a.getAttribute('href').slice(1); var el=document.getElementById(id); if(el) map[id]=a; });
+  var obs = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if(e.isIntersecting){
+        links.forEach(function(a){a.classList.remove('active');});
+        var a = map[e.target.id]; if(a) a.classList.add('active');
+      }
+    });
+  }, {rootMargin:'-45% 0px -50% 0px', threshold:0});
+  Object.keys(map).forEach(function(id){ obs.observe(document.getElementById(id)); });
+})();
+</script>
+</body>
+</html>

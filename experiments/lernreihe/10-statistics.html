@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>10 · Von Zahlen zu Aussagen: Statistik</title>
+<meta name="description" content="Vorlesung 10: Wie aus 240 Roh-Läufen eine belastbare wissenschaftliche Behauptung wird — gepaarte Vergleiche, Wilcoxon signed-rank, Bonferroni-Korrektur und Cohen's d, exakt aus aggregate_results.py.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lecture="10">
+
+<!-- ============================ HERO ============================ -->
+<header class="hero">
+  <canvas class="hero-canvas" data-c1="#d64518" data-c2="#2563eb" data-c3="#0f9d6b"></canvas>
+  <div class="hero-inner">
+    <div class="hero-kicker reveal"><span class="lecnum">Vorlesung 10</span> Das Experiment · Auswertung</div>
+    <h1 class="hero-title reveal">Von Zahlen<br>zu <span class="liquid">Aussagen</span></h1>
+    <p class="hero-sub reveal">240 Roh-Läufe sind noch keine wissenschaftliche Behauptung. Erst die Statistik
+    macht aus „LRC sieht besser aus“ ein „LRC ist <em>signifikant</em> besser, mit großem Effekt, und das nicht
+    durch Zufall des Mehrfach-Testens“. Diese Vorlesung zeigt die vier Werkzeuge dahinter — exakt die aus
+    <code>aggregate_results.py</code>.</p>
+    <div class="hero-meta reveal">
+      <span class="hero-pill"><span class="dot" style="background:var(--accent)"></span>gepaart auf (System, Seed)</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--lrc)"></span>Wilcoxon signed-rank</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--cfc)"></span>Bonferroni · Cohen's d</span>
+    </div>
+  </div>
+  <div class="scroll-hint"><span>Scrollen</span><span class="line"></span></div>
+</header>
+
+<!-- ============================ 0 · EINSTIEG ============================ -->
+<section id="intro" data-toc="Einstieg">
+  <div class="wrap">
+    <div class="eyebrow reveal">Worum es geht</div>
+    <h2 class="reveal">Eine Zahl ist kein Beweis</h2>
+    <p class="lead reveal">Am Ende des Benchmarks liegt eine Tabelle voller NRMSE-Werte. Eine Zelle ist im
+    Schnitt ein bisschen besser als die andere. Die einzig interessante Frage: Würde dieser Unterschied auch
+    bei anderen Seeds, anderen Systemen bestehen — oder ist er Zufall?</p>
+
+    <p class="reveal">Genau diese Frage beantwortet die Statistik in deiner Auswertung. Sie ist kein nachträgliches
+    Beiwerk, sondern das, was die Hypothesen H1–H3 überhaupt <em>testbar</em> macht. Das Proposal sprach von
+    „outperform“ — undefiniert und nicht messbar. Die geschärfte Fassung ersetzt das durch ein konkretes
+    Kriterium plus Signifikanztest <span class="src src-paper" title="research-questions-hypotheses.md, H1">Paper · research-questions</span>.</p>
+
+    <div class="callout reveal">
+      <div class="ctag">Das Versprechen dieser Seite</div>
+      <p style="margin-bottom:.6em">Am Ende verstehst du vier Werkzeuge konkret: <strong>(1)</strong> warum
+      jeder Vergleich <em>gepaart auf dasselbe System und denselben Seed</em> läuft, <strong>(2)</strong> warum
+      der <em>Wilcoxon signed-rank Test</em> den t-Test ersetzt, <strong>(3)</strong> wie die
+      <em>Bonferroni-Korrektur</em> verhindert, dass viele Tests zufällig „etwas finden“, und <strong>(4)</strong>
+      warum <em>Cohen's d</em> oft mehr sagt als der p-Wert.</p>
+      <p style="margin-bottom:0">Jedes Lab rechnet die echte Methode aus <code>aggregate_results.py</code> —
+      nur mit synthetischen, klar als illustrativ markierten Zahlen.</p>
+    </div>
+
+    <div class="legend reveal">
+      <div class="li"><span class="src src-paper">Paper</span> Originalarbeit / Paper-Notiz</div>
+      <div class="li"><span class="src src-code">Code</span> exakt aus deiner Implementierung</div>
+      <div class="li"><span class="src src-dr">Deep-Research</span> LLM-Recherche, zu prüfen</div>
+      <div class="li"><span class="src src-classic">klassisch</span> Lehrbuchwissen</div>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 1 · GEPAART ============================ -->
+<section id="paired" data-toc="Gepaart">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--accent);color:var(--accent)"><span class="section-num">01</span> &nbsp;Immer Apfel mit Apfel</div>
+    <h2 class="reveal">Gepaarte Vergleiche: gleiches System, gleicher Seed</h2>
+    <p class="reveal">Der erste und wichtigste Schritt passiert, bevor irgendein Test läuft. Zwei Zellen werden
+    nie über pauschale Mittelwerte verglichen, sondern <strong>Lauf gegen Lauf auf identischer Bedingung</strong>.
+    Konfiguration A und Konfiguration B werden auf <span class="mono">(system, seed)</span> zusammengeführt — jeder
+    Wert von A hat genau einen Partner von B unter exakt denselben Startbedingungen
+    <span class="src src-code" title="aggregate_results.py:91-96 _paired_vectors, merge on [system, seed]">Code · aggregate_results.py:91</span>.</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">aggregate_results.py · _paired_vectors</span><span class="ref">Zeilen 91–96</span></div>
+<pre><span class="k">def</span> <span class="f">_paired_vectors</span>(df, key_a, key_b):
+    <span class="c">"""Metric vectors for two configs, paired on (system, seed)."""</span>
+    a = df.loc[(df[<span class="f">list</span>(key_a)] == pd.Series(key_a)).all(axis=1)]
+    b = df.loc[(df[<span class="f">list</span>(key_b)] == pd.Series(key_b)).all(axis=1)]
+<span class="hl">    merged = a.<span class="f">merge</span>(b, on=[<span class="s">'system'</span>, <span class="s">'seed'</span>], suffixes=(<span class="s">'_a'</span>, <span class="s">'_b'</span>))</span>
+    <span class="k">return</span> merged[<span class="s">f'{METRIC}_a'</span>].<span class="f">to_numpy</span>(), merged[<span class="s">f'{METRIC}_b'</span>].<span class="f">to_numpy</span>()</pre>
+    </div>
+    <p class="code-cap reveal">Die hervorgehobene Zeile ist der Kern: ein <span class="mono">merge</span> auf
+    <span class="mono">system</span> und <span class="mono">seed</span>. Ergebnis sind zwei gleich lange Vektoren,
+    bei denen Position <span class="mono">i</span> in beiden dieselbe Bedingung meint.
+    <span class="src src-code">Code · aggregate_results.py</span></p>
+
+    <div class="callout insight reveal">
+      <div class="ctag">Warum nicht einfach die Mittelwerte vergleichen?</div>
+      <p style="margin-bottom:.6em">Manche Systeme sind für <em>alle</em> Zellen schwer (hoher NRMSE), andere für
+      alle leicht. Vergleicht man nur die Gesamtmittel, mischt sich dieser „Schwierigkeits-Lärm“ in das Signal.
+      Die Paarung subtrahiert ihn weg: Was zählt, ist die <strong>Differenz innerhalb desselben Paares</strong>
+      — dort, wo System und Seed identisch sind, bleibt nur der Effekt der Zelle übrig.
+      <span class="src src-classic">klassisch</span></p>
+      <p style="margin-bottom:0">Deshalb arbeiten alle folgenden Tests auf dem Differenzvektor
+      <span class="mono">diff = nrmse_A − nrmse_B</span>, nicht auf den Rohwerten.</p>
+    </div>
+
+    <p class="reveal">Im Lab siehst du diese Paarung direkt. Links steht jeder NRMSE-Wert von Zelle A, rechts der
+    Partner von Zelle B; die Linie verbindet das Paar. Geht sie nach unten (B kleiner = besser),
+    <strong style="color:var(--cfc)">grün</strong>; geht sie nach oben, <strong style="color:var(--lstm)">rot</strong>.
+    Der Schieber „Effektstärke“ verschiebt B systematisch — beobachte, wie Cohen's d und die Mehrheit der
+    Pfeil-Richtungen reagieren.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-paired">
+      <div class="lab-head"><span class="led"></span><span class="title">Gepaarter Vergleich · LRC vs. LSTM (synthetisch)</span><span class="sub" id="pair-status">B besser in — von — Paaren</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-paired"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Effektstärke (verschiebt B) <span class="val" id="pair-shift-v">0.04</span></label><input type="range" id="pair-shift" class="acc-ltc" min="-0.08" max="0.12" step="0.005" value="0.04"></div>
+          <div class="ctrl"><label>Streuung der Differenzen <span class="val" id="pair-spread-v">0.05</span></label><input type="range" id="pair-spread" class="acc-ltc" min="0.01" max="0.12" step="0.005" value="0.05"></div>
+          <div class="ctrl"><label>Anzahl Paare (Systeme × Seeds) <span class="val" id="pair-n-v">30</span></label><input type="range" id="pair-n" class="acc-ltc" min="10" max="30" step="5" value="30"></div>
+          <div class="lab-readout">
+            B besser (A&gt;B) in <span class="big k" id="pair-wins">—</span> von <span class="k" id="pair-tot">—</span> Paaren<br>
+            Median-Differenz <span class="mono">median(nrmse_A − nrmse_B)</span> <span class="k" id="pair-med">—</span><br>
+            geschätztes Cohen's d <span class="big" id="pair-d">—</span> <span class="dim" id="pair-d-tag">—</span>
+          </div>
+          <div class="lab-task">Schieb die <b>Effektstärke</b> nach rechts: mehr Linien werden grün, d wächst.
+          Zieh sie ins Negative → B wird schlechter, rote Mehrheit. Erhöhe die <b>Streuung</b> bei gleicher
+          Effektstärke: d schrumpft, obwohl der Median gleich bleibt — genau das ist der Punkt von d.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Links Zelle A (LRC), rechts Zelle B (LSTM), je ein Punkt pro (System, Seed)-Paar. Grün: B kleiner = besser. Synthetische Zahlen; die Paarungs-Logik ist die echte aus <span class="src src-code">Code · _paired_vectors</span>.</p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 2 · WILCOXON ============================ -->
+<section id="wilcoxon" data-toc="Wilcoxon">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--lrc);color:var(--lrc)"><span class="section-num">02</span> &nbsp;Der nichtparametrische Test</div>
+    <h2 class="reveal">Wilcoxon signed-rank statt t-Test</h2>
+    <p class="reveal">Der klassische gepaarte t-Test unterstellt, dass die Differenzen
+    <strong>normalverteilt</strong> sind. Für NRMSE-Differenzen gilt das nicht: einzelne Seeds kollabieren und
+    erzeugen extreme Ausreißer (in deinen Daten etwa <span class="mono">ltc periodic_predator_prey 0.41 ± 0.73</span>),
+    die Verteilung ist schief und schwerschwänzig <span class="src src-paper" title="research-questions-hypotheses.md, RQ4-Begründung: varianzgetriebene LTC/mm_ltc-Instabilität">Paper · research-questions</span>.
+    Ein Test, der Normalverteilung annimmt, liefert dann verzerrte p-Werte.</p>
+
+    <p class="reveal">Deshalb verwendet die Auswertung den <strong>Wilcoxon signed-rank Test</strong>
+    (<span class="mono">scipy.stats.wilcoxon</span>) — einen nichtparametrischen, gepaarten Test
+    <span class="src src-code" title="aggregate_results.py:24 from scipy.stats import wilcoxon; :120 stat, p = wilcoxon(x, y)">Code · aggregate_results.py:120</span>
+    <span class="src src-classic" title="Wilcoxon 1945, Individual Comparisons by Ranking Methods">klassisch</span>.
+    Er fragt nicht „wie groß ist die Differenz?“, sondern nur:</p>
+
+    <div class="eq accent-lrc reveal">
+      <div class="eq-label"><span>Wilcoxon · Idee in einer Zeile</span><span class="src src-classic">klassisch</span></div>
+      <div data-eq="W^{+}=\!\!\sum_{i:\,d_i>0}\!\! R_i \;\;\text{vs.}\;\; W^{-}=\!\!\sum_{i:\,d_i<0}\!\! R_i\,,\qquad d_i = \text{nrmse}^{A}_i-\text{nrmse}^{B}_i\,,\quad R_i=\operatorname{rank}\big(|d_i|\big)"></div>
+    </div>
+
+    <p class="reveal">Die Differenzen werden nach <strong>Betrag</strong> sortiert und bekommen Ränge. Dann wird die
+    Rangsumme der positiven gegen die der negativen Differenzen gestellt. Liegen Verbesserungen und
+    Verschlechterungen zufällig durchmischt, sind beide Rangsummen ähnlich groß und <span class="mono">p</span>
+    ist hoch. Häufen sich Verbesserungen auf der einen Seite, wird eine Rangsumme klein und <span class="mono">p</span>
+    sinkt. Ein einzelner monströser Ausreißer kann das nicht kippen, weil nur sein <em>Rang</em> zählt, nicht sein Betrag.</p>
+
+    <div class="callout insight reveal">
+      <div class="ctag">Was Wilcoxon robust macht</div>
+      <p style="margin-bottom:.6em">Beim t-Test geht der Betrag jeder Differenz direkt in die Statistik ein —
+      ein einziger Kollaps-Seed mit Differenz <span class="mono">2.0</span> dominiert. Wilcoxon ersetzt Beträge
+      durch Ränge: Die größte Differenz bekommt Rang <span class="mono">n</span>, egal ob sie 0.3 oder 30 beträgt.
+      Robust gegen Ausreißer, ohne Normalverteilung vorauszusetzen.</p>
+      <p style="margin-bottom:0">Genau deshalb steht im Code-Kommentar: „Wilcoxon signed-rank tests, alpha = 0.05,
+      paired over (system, seed)“ — keine Wahl, sondern Konsequenz der Datenform.
+      <span class="src src-code">Code · aggregate_results.py:8-10</span></p>
+    </div>
+
+    <p class="reveal">Im Lab erzeugst du einen Differenzvektor und schaltest einen Ausreißer dazu. Beobachte, wie
+    die <strong>Vorzeichen-Mehrheit</strong> (die Wilcoxon-Intuition) stabil bleibt, während ein
+    mittelwert-basierter Blick durch den Ausreißer sofort umkippt.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-wilcoxon">
+      <div class="lab-head"><span class="led"></span><span class="title">Robustheit · Rang vs. Betrag</span><span class="sub" id="wil-status">Mehrheit verbessert</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-wilcoxon"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Echter Effekt (verschiebt alle Differenzen) <span class="val" id="wil-eff-v">0.03</span></label><input type="range" id="wil-eff" class="acc-lrc" min="-0.05" max="0.08" step="0.005" value="0.03"></div>
+          <div class="ctrl"><label>Ausreißer-Größe (1 Kollaps-Seed) <span class="val" id="wil-out-v">0.00</span></label><input type="range" id="wil-out" class="acc-lrc" min="0" max="2" step="0.05" value="0"></div>
+          <div class="lab-readout">
+            Mittelwert der Differenzen <span class="big" id="wil-mean">—</span> <span class="dim">(Ausreißer-anfällig)</span><br>
+            Vorzeichen-Mehrheit (Wilcoxon-Intuition) <span class="big k" id="wil-sign">—</span> <span class="dim">(robust)</span><br>
+            <span id="wil-flip" class="dim">—</span>
+          </div>
+          <div class="lab-task">Setz einen <b>echten Effekt</b> nach rechts: Mehrheit grün, Mittelwert positiv.
+          Jetzt dreh die <b>Ausreißer-Größe</b> hoch: der <b>Mittelwert kippt</b> ins Negative, die
+          <b>Vorzeichen-Mehrheit bleibt</b> — Wilcoxon lässt sich vom einzelnen Kollaps nicht täuschen.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Balken: die einzelnen Differenzen pro Paar (grün positiv, rot negativ); der dicke Ausreißer-Balken ist der Kollaps-Seed. Synthetisch; die Robustheits-Eigenschaft ist die echte Begründung für die Testwahl. <span class="src src-classic">Wilcoxon 1945</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 3 · BONFERRONI ============================ -->
+<section id="bonferroni" data-toc="Bonferroni">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--cfc);color:var(--cfc)"><span class="section-num">03</span> &nbsp;Gegen das multiple Testen</div>
+    <h2 class="reveal">Bonferroni: viele Tests, schärfere Schwelle</h2>
+    <p class="reveal">Wer 20 Vergleiche bei <span class="mono">α = 0.05</span> rechnet, findet im Schnitt
+    <strong>einen</strong> „signifikanten“ Unterschied rein durch Zufall — selbst wenn gar kein echter Effekt
+    existiert. Das ist die <em>Family-Wise Error Rate</em>: Je mehr Tests in einer Familie, desto wahrscheinlicher
+    mindestens ein falscher Treffer <span class="src src-classic" title="multiple comparisons problem, family-wise error rate">klassisch</span>.</p>
+
+    <p class="reveal">Dein Code testet Zelle gegen Zelle über alle Paare innerhalb einer Verdrahtung — das sind viele
+    Tests pro Familie. Die <strong>Bonferroni-Korrektur</strong> hält die Gesamt-Fehlerrate, indem sie jeden
+    rohen p-Wert mit der Anzahl der Tests multipliziert <span class="src src-code" title="aggregate_results.py:124 p_adj = min(1.0, p * n_tests)">Code · aggregate_results.py:124</span>:</p>
+
+    <div class="eq accent-cfc reveal">
+      <div class="eq-label"><span>Bonferroni · adjustierter p-Wert</span><span class="src src-code">Code</span></div>
+      <div data-eq="p_{\text{adj}} = \min\!\big(1,\; p \cdot m\big)\,,\qquad m = \text{Anzahl Tests in der Familie}\,,\qquad \text{signifikant} \iff p_{\text{adj}} < \alpha = 0.05"></div>
+    </div>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">aggregate_results.py · _test_block</span><span class="ref">Zeilen 106–127</span></div>
+<pre>n_tests = <span class="f">len</span>(pairs)                       <span class="c"># Größe der Vergleichs-Familie</span>
+<span class="k">for</span> label, key_a, key_b <span class="k">in</span> pairs:
+    x, y = <span class="f">_paired_vectors</span>(df, key_a, key_b)
+    stat, p = <span class="f">wilcoxon</span>(x, y)              <span class="c"># roher p-Wert</span>
+<span class="hl">    p_adj = <span class="f">min</span>(1.0, p * n_tests)           <span class="c"># Bonferroni</span></span>
+    d = <span class="f">_cohens_d_paired</span>(x, y)
+<span class="hl">    sig = <span class="s">'YES'</span> <span class="k">if</span> p_adj &lt; ALPHA <span class="k">else</span> <span class="s">'no'</span>   <span class="c"># ALPHA = 0.05</span></span></pre>
+    </div>
+    <p class="code-cap reveal">Der adjustierte p-Wert wird bei 1.0 gekappt (ein p kann nie über 1 liegen). Das
+    <span class="mono">min(1.0, …)</span> ist genau diese Kappung. <span class="src src-code">Code · aggregate_results.py</span></p>
+
+    <div class="callout warn reveal">
+      <div class="ctag">Der Preis: kleinere Familien sind besser</div>
+      <p style="margin-bottom:0">Bonferroni ist konservativ — bei sehr vielen Tests wird die Schwelle so streng,
+      dass auch echte Effekte durchfallen. Deshalb der Hinweis in der Auswertungs-Strategie: „kleinere m durch
+      gezielte Vergleichsfamilien“. Nicht alles gegen alles testen, sondern nur die Vergleiche, die eine RQ
+      wirklich braucht. <span class="src src-paper" title="research-questions-hypotheses.md, Operationalisierung faktorielle Ablation: kleinere m durch gezielte Vergleichsfamilien">Paper · research-questions</span></p>
+    </div>
+
+    <p class="reveal">Im Lab drehst du an <span class="mono">m</span> und am rohen p-Wert. Sieh zu, wie ein Ergebnis,
+    das einzeln glänzt (<span class="mono">p = 0.03</span>), nach Korrektur über die Schwelle rutscht, sobald die
+    Familie groß genug ist.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-bonf">
+      <div class="lab-head"><span class="led"></span><span class="title">Bonferroni · wann hält die Signifikanz?</span><span class="sub" id="bonf-status">signifikant</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-bonf"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Roher p-Wert <span class="val" id="bonf-p-v">0.030</span></label><input type="range" id="bonf-p" class="acc-cfc" min="0.001" max="0.2" step="0.001" value="0.03"></div>
+          <div class="ctrl"><label>Anzahl Tests m (Familiengröße) <span class="val" id="bonf-m-v">1</span></label><input type="range" id="bonf-m" class="acc-cfc" min="1" max="28" step="1" value="1"></div>
+          <div class="lab-readout">
+            p · m = <span class="big k" id="bonf-padj">—</span> &nbsp;(gekappt bei 1.0)<br>
+            Schwelle α = 0.05<br>
+            Verdikt <span class="big" id="bonf-verdict">—</span>
+          </div>
+          <div class="lab-task">Setz <b>p = 0.03</b> und <b>m = 1</b>: signifikant. Erhöhe <b>m</b> Schritt für
+          Schritt — bei <b>m = 2</b> ist 0.06 &gt; 0.05, der Treffer ist weg. Genau deshalb verkleinert die
+          Auswertung die Familien gezielt, statt blind alles zu testen.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Die Linie zeigt p·m über m; die rote Schwelle ist α = 0.05. Ab dem Schnittpunkt fällt der Test durch. Werte synthetisch; die Formel <span class="mono">min(1, p·m)</span> ist die echte aus <span class="src src-code">Code · aggregate_results.py:124</span>.</p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 4 · COHENS D ============================ -->
+<section id="cohensd" data-toc="Cohen's d">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--accent);color:var(--accent)"><span class="section-num">04</span> &nbsp;Wie groß ist der Effekt</div>
+    <h2 class="reveal">Cohen's d: der p-Wert sagt nicht alles</h2>
+    <p class="reveal">Ein p-Wert beantwortet nur eine Ja/Nein-Frage: existiert ein Unterschied? Bei genug Daten wird
+    fast jeder winzige Unterschied „signifikant“. Was er <strong>nicht</strong> sagt: ist der Unterschied groß
+    genug, um zu zählen? Diese Lücke füllt die <strong>Effektgröße</strong> — bei gepaarten Daten Cohen's d
+    <span class="src src-code" title="aggregate_results.py:99-102 _cohens_d_paired: diff.mean() / diff.std(ddof=1)">Code · _cohens_d_paired</span>
+    <span class="src src-classic" title="Cohen 1988, Statistical Power Analysis for the Behavioral Sciences">klassisch</span>.</p>
+
+    <div class="eq accent-ltc reveal">
+      <div class="eq-label"><span>Cohen's d (gepaart)</span><span class="src src-code">Code</span></div>
+      <div data-eq="d = \frac{\operatorname{mean}(\mathrm{diff})}{\operatorname{sd}(\mathrm{diff})}\,,\qquad \mathrm{diff}_i = \text{nrmse}^{A}_i - \text{nrmse}^{B}_i\,,\qquad \operatorname{sd} = \text{Stichproben-Std}\ (\text{ddof}=1)"></div>
+    </div>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">aggregate_results.py · _cohens_d_paired</span><span class="ref">Zeilen 99–102</span></div>
+<pre><span class="k">def</span> <span class="f">_cohens_d_paired</span>(x, y):
+    diff = x - y
+<span class="hl">    sd = diff.<span class="f">std</span>(ddof=1)</span>
+<span class="hl">    <span class="k">return</span> <span class="f">float</span>(diff.<span class="f">mean</span>() / sd) <span class="k">if</span> sd &gt; 0 <span class="k">else</span> <span class="f">float</span>(<span class="s">'nan'</span>)</span></pre>
+    </div>
+    <p class="code-cap reveal">d ist das Verhältnis von mittlerer Differenz zu deren Streuung — ein dimensionsloses
+    Maß. <span class="mono">ddof=1</span> ist die Stichproben-Standardabweichung. <span class="src src-code">Code · aggregate_results.py</span></p>
+
+    <p class="reveal">d normiert den Effekt an der Streuung der Differenzen. Ein großes d heißt: die Verbesserung ist
+    nicht nur im Mittel da, sie ist auch <em>konsistent</em> über die Paare. Genau so liest sich der dokumentierte
+    Befund deiner Daten: der NCP-Einbruch ist mit <span class="mono">d = −0.88</span> LRC-spezifisch (stark),
+    während LTC mit <span class="mono">d = −0.28</span> nicht signifikant ist (klein)
+    <span class="src src-paper" title="research-questions-hypotheses.md: Wiring-Effekt dense→ncp LRC d=-0.88, LTC d=-0.28">Paper · research-questions</span>.</p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>|d|</th><th>Interpretation (Cohen)</th><th>Lesart im Benchmark</th></tr></thead>
+      <tbody>
+        <tr><th>≈ 0.2</th><td>klein</td><td>kaum praktisch relevant, leicht von Rauschen verdeckt</td></tr>
+        <tr><th>≈ 0.5</th><td>mittel</td><td>mit bloßem Auge im Phasenporträt erkennbar</td></tr>
+        <tr><th>≈ 0.8</th><td>groß</td><td>konsistenter, belastbarer Effekt (z. B. LRC×NCP, d = −0.88)</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="lab-caption reveal">Cohen-Konventionen als Daumenwert. Vorzeichen folgt der Differenzrichtung A−B. <span class="src src-classic">Cohen 1988</span></p>
+
+    <div class="callout good reveal">
+      <div class="ctag" style="color:var(--cfc)">Warum H1 beide braucht</div>
+      <p style="margin-bottom:0">H1 verlangt zweierlei zugleich: <strong>Signifikanz</strong> (Wilcoxon nach
+      Bonferroni) <em>und</em> eine <strong>Mindest-Effektgröße</strong> — „Median-NRMSE-Reduktion ≥ 10 % gegenüber
+      LSTM“. Der p-Wert allein würde einen statistisch sicheren, aber praktisch belanglosen 0,5-%-Vorteil als
+      Erfolg verbuchen. Erst die Kombination aus p und d macht die Aussage belastbar.
+      <span class="src src-paper" title="research-questions-hypotheses.md, H1: Median-NRMSE-Reduktion >= 10 %">Paper · research-questions H1</span></p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 5 · SYNTHESE ============================ -->
+<section id="synthesis" data-toc="Vom Lauf zur Aussage">
+  <div class="wrap">
+    <div class="eyebrow reveal"><span class="section-num">05</span> &nbsp;Die vier Werkzeuge zusammen</div>
+    <h2 class="reveal">Vom Roh-Lauf zur belastbaren Behauptung</h2>
+    <p class="reveal">Die vier Bausteine greifen in einer festen Reihenfolge ineinander. Jeder hat genau eine
+    Aufgabe — und keiner ersetzt einen anderen.</p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>Begriff</th><th>Was es macht</th><th>Warum gerade so</th></tr></thead>
+      <tbody>
+        <tr><th>Gepaart auf (System, Seed)</th>
+          <td>führt zwei Konfigurationen Lauf gegen Lauf zusammen; getestet wird der Differenzvektor</td>
+          <td>entfernt den „Schwierigkeits-Lärm“ einzelner Systeme; isoliert den Zell-Effekt <span class="src src-code">Code</span></td></tr>
+        <tr><th>Wilcoxon signed-rank</th>
+          <td>nichtparametrischer, gepaarter Test über Ränge der Differenz-Beträge</td>
+          <td>NRMSE-Differenzen sind nicht normalverteilt (Kollaps-Seeds); robust gegen Ausreißer <span class="src src-code">Code</span> <span class="src src-classic">Wilcoxon 1945</span></td></tr>
+        <tr><th>Bonferroni</th>
+          <td><span class="mono">p_adj = min(1, p·m)</span> über m Tests einer Familie</td>
+          <td>hält die Family-Wise Error Rate; verhindert Zufallstreffer bei vielen Vergleichen <span class="src src-code">Code</span></td></tr>
+        <tr><th>Cohen's d (gepaart)</th>
+          <td><span class="mono">mean(diff) / sd(diff)</span> — dimensionslose Effektgröße</td>
+          <td>der p-Wert sagt nur „ob“, d sagt „wie groß und wie konsistent“ <span class="src src-code">Code</span> <span class="src src-classic">Cohen 1988</span></td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="callout insight reveal">
+      <div class="ctag">Die Kette in einem Satz</div>
+      <p style="margin-bottom:0"><strong>Paaren</strong> macht den Vergleich fair, <strong>Wilcoxon</strong>
+      fragt robust „ist da ein Unterschied?“, <strong>Bonferroni</strong> sorgt dafür, dass das Ja nicht durch
+      Vielfach-Testen erschlichen ist, und <strong>Cohen's d</strong> beantwortet „ist er groß genug, um zu
+      zählen?“. Erst alle vier zusammen tragen eine Hypothese durch die Defense.</p>
+    </div>
+
+    <div class="callout good reveal">
+      <div class="ctag" style="color:var(--cfc)">Reihe abgeschlossen</div>
+      <p style="margin-bottom:0">Das war die letzte Station: von der Membran-ODE einer einzelnen Zelle (00–06)
+      über das Experiment (07–09) bis zur Statistik, die aus den Läufen eine Aussage macht. Wer hier ankommt,
+      kann die Ergebnis-Tabelle der Thesis nicht nur lesen, sondern verteidigen.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ QUELLEN ============================ -->
+<section id="sources" data-toc="Quellen">
+  <div class="wrap">
+    <div class="eyebrow reveal">Belege</div>
+    <h2 class="reveal">Quellen dieser Vorlesung</h2>
+    <div class="bib reveal">
+      <div class="bib-item"><div class="bib-key">Code</div><div class="bib-cite">
+        <div class="t">Eigene Auswertung</div>
+        <div class="meta">code/experiments/aggregate_results.py</div>
+        <div class="where">_paired_vectors (Z. 91–96), wilcoxon (Z. 24, 120), Bonferroni p_adj = min(1, p·m) (Z. 124), _cohens_d_paired (Z. 99–102), ALPHA = 0.05 (Z. 26) — wörtlich zitiert</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">research-questions</div><div class="bib-cite">
+        <div class="t">Forschungsfragen und Hypothesen</div>
+        <div class="meta">obsidian_master_thesis/Thesis/research-questions-hypotheses.md</div>
+        <div class="where">H1 (Median-NRMSE-Reduktion ≥ 10 %, Wilcoxon, α = 0.05, Bonferroni), Befunde LRC×NCP d = −0.88 / LTC d = −0.28, gezielte Vergleichsfamilien für kleineres m</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Wilcoxon1945</div><div class="bib-cite">
+        <div class="t">Individual Comparisons by Ranking Methods</div>
+        <div class="meta">Frank Wilcoxon · Biometrics Bulletin 1(6), 1945</div>
+        <div class="where">Signed-rank Test — nichtparametrischer, gepaarter Vergleich über Ränge</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">Cohen1988</div><div class="bib-cite">
+        <div class="t">Statistical Power Analysis for the Behavioral Sciences</div>
+        <div class="meta">Jacob Cohen · 2. Aufl., Lawrence Erlbaum, 1988</div>
+        <div class="where">Effektgröße d, Konventionen klein/mittel/groß (0.2 / 0.5 / 0.8)</div>
+      </div></div>
+    </div>
+    <p class="note reveal">Alle Zahlen in den Labs sind synthetisch und über <code>rng(seed)</code> deterministisch
+    erzeugt — sie veranschaulichen das Verhalten der Verfahren, sie sind keine Benchmark-Ergebnisse. Die
+    <em>Methode</em> hingegen ist exakt die aus <code>aggregate_results.py</code>: gepaarte Vektoren, Cohen's d
+    als <span class="mono">mean(diff)/sd(diff)</span>, Bonferroni als <span class="mono">min(1, p·m)</span>, α = 0.05.
+    Der Wilcoxon-Test selbst wird im Lab nicht nachimplementiert; gezeigt wird seine Intuition (Vorzeichen-Mehrheit
+    der Ränge, Robustheit gegen Ausreißer).</p>
+  </div>
+</section>
+
+<footer>
+  <div class="f-title">Vorlesung 10 · Von Zahlen zu Aussagen: Statistik</div>
+  <p>Teil der interaktiven Lernreihe zur Masterarbeit. Jedes Lab rechnet die echte Methode aus der Auswertung.</p>
+  <p class="mono">aggregate_results.py · Wilcoxon 1945 · Cohen 1988</p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
+<script src="assets/engine.js"></script>
+<script>
+/* ============================================================
+   LAB 1 · Gepaarter Vergleich — LRC vs. LSTM (synthetisch)
+   ------------------------------------------------------------
+   Paarungs-Logik faithful zu _paired_vectors: ein Wert von A und
+   ein Wert von B pro (System,Seed); getestet wird die Differenz.
+   d = mean(diff)/sd(diff) — exakt _cohens_d_paired.
+   ============================================================ */
+function initPaired(){
+  const sc=new Scope('cv-paired',{l:30,r:18,t:18,b:24});
+  const P={shift:0.04, spread:0.05, n:30};
+  // feste, deterministische "Basis-NRMSE" je Paar (System-Schwierigkeit + Seed-Rauschen)
+  function basePairs(n){
+    const r=rng(7); const arr=[];
+    for(let i=0;i<n;i++){
+      const sysDifficulty=0.06+0.18*r();      // manche Systeme schwer, andere leicht
+      const seedJitter=(r()-0.5)*0.05;
+      arr.push(sysDifficulty+seedJitter);     // gemeinsamer Schwierigkeits-Level des Paares
+    }
+    return arr;
+  }
+  function build(){
+    const r=rng(101); const base=basePairs(P.n);
+    const A=[], B=[], diff=[];
+    for(let i=0;i<P.n;i++){
+      // A (LRC) und B (LSTM) teilen den Schwierigkeits-Level des Paares -> Paarung entfernt ihn
+      const noiseA=(r()-0.5)*P.spread, noiseB=(r()-0.5)*P.spread;
+      const a=clamp(base[i]+0.5*P.shift+noiseA, 0.01, 0.6);
+      const b=clamp(base[i]-0.5*P.shift+noiseB, 0.01, 0.6); // shift>0 -> B kleiner = besser
+      A.push(a); B.push(b); diff.push(a-b);                  // diff = nrmse_A - nrmse_B
+    }
+    return {A,B,diff};
+  }
+  function cohensD(diff){
+    const m=diff.reduce((s,v)=>s+v,0)/diff.length;
+    let s2=0; diff.forEach(v=>s2+=(v-m)*(v-m));
+    const sd=Math.sqrt(s2/(diff.length-1));   // ddof=1, wie diff.std(ddof=1)
+    return sd>0 ? m/sd : NaN;
+  }
+  function median(a){ const s=a.slice().sort((x,y)=>x-y); const n=s.length;
+    return n%2 ? s[(n-1)/2] : 0.5*(s[n/2-1]+s[n/2]); }
+  function draw(){
+    const {A,B,diff}=build();
+    sc.clear(); sc.range(0,1,0,0.6); sc.grid(0,4,{yd:2,yl:true});
+    const xA=0.30, xB=0.70;
+    sc.seg(xA,0,xA,0.6,COL.line,1); sc.seg(xB,0,xB,0.6,COL.line,1);
+    sc.text('LRC (A)', sc.X(xA), sc.Y(0.6)-6, COL.lrc, 'center', '600 11px JetBrains Mono', 'bottom');
+    sc.text('LSTM (B)', sc.X(xB), sc.Y(0.6)-6, COL.lstm, 'center', '600 11px JetBrains Mono', 'bottom');
+    sc.text('NRMSE', 10, sc.Y(0.30), COL.sub, 'left', '600 10px JetBrains Mono', 'middle');
+    let wins=0;
+    for(let i=0;i<A.length;i++){
+      const improved = B[i] < A[i];           // B besser als A
+      if(improved) wins++;
+      const col = improved ? COL.cfc : COL.lstm;
+      sc.seg(xA, A[i], xB, B[i], col, 1.6);
+      sc.dot(xA, A[i], COL.lrc, 3.2);
+      sc.dot(xB, B[i], COL.lstm, 3.2);
+    }
+    const d=cohensD(diff), med=median(diff);
+    $('#pair-wins').textContent=wins;
+    $('#pair-tot').textContent=A.length;
+    $('#pair-med').textContent=fmt(med,3);
+    $('#pair-d').textContent=isFinite(d)?fmt(d,2):'—';
+    let tag='';
+    const ad=Math.abs(d);
+    if(!isFinite(d)) tag='—';
+    else if(ad<0.35){ tag='klein'; }
+    else if(ad<0.65){ tag='mittel'; }
+    else { tag='groß'; }
+    $('#pair-d-tag').textContent=tag;
+    $('#pair-d').style.color = isFinite(d) ? (d>0?COL.cfc:COL.lstm) : COL.sub;
+    $('#pair-status').textContent='B besser in '+wins+' von '+A.length+' Paaren';
+  }
+  bind('pair-shift','pair-shift-v',v=>{P.shift=v; draw();},3);
+  bind('pair-spread','pair-spread-v',v=>{P.spread=v; draw();},3);
+  bind('pair-n','pair-n-v',v=>{P.n=Math.round(v); draw();},0);
+  whenVisible('lab-paired',draw);
+}
+
+/* ============================================================
+   LAB 2 · Wilcoxon-Intuition — Rang vs. Betrag
+   ------------------------------------------------------------
+   Zeigt, warum der Mittelwert (t-Test-Logik) durch einen
+   Kollaps-Seed kippt, die Vorzeichen-Mehrheit (Wilcoxon) nicht.
+   ============================================================ */
+function initWilcoxon(){
+  const sc=new Scope('cv-wilcoxon',{l:36,r:16,t:18,b:24});
+  const P={eff:0.03, out:0.0};
+  const N=18;
+  function build(){
+    const r=rng(2027); const d=[];
+    for(let i=0;i<N;i++){
+      const v=P.eff + (r()-0.5)*0.06;   // echter Effekt + moderates Rauschen
+      d.push(v);
+    }
+    // ein Kollaps-Seed: große NEGATIVE Differenz (B kollabiert -> A-B stark negativ)
+    if(P.out>0) d[Math.floor(N*0.4)] = -P.out;
+    return d;
+  }
+  function draw(){
+    const d=build();
+    const mean=d.reduce((a,b)=>a+b,0)/d.length;
+    let pos=0; d.forEach(v=>{ if(v>0) pos++; });
+    const ymax=Math.max(0.6, P.out*1.05);
+    sc.clear(); sc.range(-0.5,N-0.5,-ymax,ymax); sc.grid(0,4,{yd:2,yl:true});
+    sc.hline(0,COL.faint,1.2);
+    const bars=d.map((v,i)=>({x:i, h:v, w:0.34,
+      color: v>0?COL.cfc:COL.lstm, alpha: Math.abs(v)>0.5?0.95:0.8}));
+    sc.bars(bars,0);
+    sc.hline(mean,COL.ltc,1.6,[5,4]);
+    sc.label('Mittelwert', N-1, mean+ (mean>=0?0.04:-0.04), COL.ltc,'right');
+    $('#wil-mean').textContent=fmt(mean,3);
+    $('#wil-mean').style.color = mean>0?COL.cfc:COL.lstm;
+    $('#wil-sign').textContent=pos+' / '+N+' positiv';
+    const flip = (mean<0 && pos>N/2);
+    $('#wil-flip').textContent = flip
+      ? 'Mittelwert negativ, aber Mehrheit positiv — der Ausreißer täuscht den Mittelwert, Wilcoxon nicht.'
+      : 'Mittelwert und Mehrheit stimmen überein.';
+    $('#wil-flip').className = flip ? 'k' : 'dim';
+    $('#wil-status').textContent = pos>N/2 ? 'Mehrheit verbessert' : 'Mehrheit verschlechtert';
+  }
+  bind('wil-eff','wil-eff-v',v=>{P.eff=v; draw();},3);
+  bind('wil-out','wil-out-v',v=>{P.out=v; draw();},2);
+  whenVisible('lab-wilcoxon',draw);
+}
+
+/* ============================================================
+   LAB 3 · Bonferroni — wann hält die Signifikanz?
+   ------------------------------------------------------------
+   p_adj = min(1, p*m), Schwelle ALPHA = 0.05. Exakt Z. 124.
+   ============================================================ */
+function initBonf(){
+  const sc=new Scope('cv-bonf',{l:44,r:16,t:18,b:30});
+  const P={p:0.03, m:1};
+  const ALPHA=0.05;
+  function draw(){
+    const padj=Math.min(1.0, P.p*P.m);
+    const sig = padj < ALPHA;
+    // Kurve p_adj(m') = min(1, p*m') über m'
+    const pts=[]; const MMAX=28;
+    for(let mm=1; mm<=MMAX; mm++){ pts.push([mm, Math.min(1.0, P.p*mm)]); }
+    sc.clear(); sc.range(1,MMAX,0,Math.max(0.25, P.p*MMAX*0.6)); sc.grid(4,5,{yd:2,xl:true,xd:0});
+    sc.hline(ALPHA, COL.lstm, 1.6, [5,4]);
+    sc.label('α = 0.05', MMAX-0.5, ALPHA+0.012, COL.lstm,'right');
+    sc.area(pts, COL.cfc, 0, 0.10);
+    sc.path(pts, COL.cfc, 2.4);
+    sc.dot(P.m, padj, sig?COL.cfc:COL.lstm, 5);
+    sc.ring(P.m, padj, sig?COL.cfc:COL.lstm, 7, 1.6);
+    sc.text('m (Familiengröße)', sc.X(MMAX*0.5), sc.h-6, COL.sub, 'center', '600 10px JetBrains Mono', 'bottom');
+    $('#bonf-padj').textContent=fmt(padj,3);
+    $('#bonf-padj').style.color = sig?COL.cfc:COL.lstm;
+    const vd=$('#bonf-verdict');
+    if(sig){ vd.textContent='signifikant (p_adj < 0.05)'; vd.style.color=COL.cfc; $('#bonf-status').textContent='signifikant'; }
+    else { vd.textContent='NICHT signifikant'; vd.style.color=COL.lstm; $('#bonf-status').textContent='durchgefallen'; }
+  }
+  bind('bonf-p','bonf-p-v',v=>{P.p=v; draw();},3);
+  bind('bonf-m','bonf-m-v',v=>{P.m=Math.round(v); draw();},0);
+  whenVisible('lab-bonf',draw);
+}
+
+LR.boot([initPaired, initWilcoxon, initBonf]);
+</script>
+</body>
+</html>

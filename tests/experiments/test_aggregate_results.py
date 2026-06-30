@@ -56,3 +56,62 @@ def test_load_runs_schema1_backward_compatible(tmp_path):
     df = load_runs([d])
     assert list(df['cell']) == ['gru']
     assert list(df['clip_norm']) == [0.0]
+
+
+def test_load_runs_v5_stress_variant_label(tmp_path):
+    """v5 stress runs get a '+<regime>' cell label and a 'stress' column, so a
+    clean v4 run and its stressed v5 counterpart are distinct paired variants."""
+    d = str(tmp_path / 'runs_v5')
+    os.makedirs(d, exist_ok=True)
+    for regime in ('noise', 'extrapolation', 'ood_init'):
+        payload = {
+            'schema_version': 2,
+            'run': {'cell': 'cfc_lrc', 'wiring': 'ncp', 'system': 'spiral',
+                    'seed': 0, 'clip_norm': 0.0, 'stress': regime},
+            'config': {'clip_norm': 0.0, 'stress': regime},
+            'training': {'final_loss': 0.1, 'duration_s': 1.0},
+            'evaluation': {'mse': 0.2, 'nrmse': 0.5},
+        }
+        fname = f'cfc_lrc_ncp_spiral_seed0_stress-{regime}.json'
+        with open(os.path.join(d, fname), 'w', encoding='utf-8') as f:
+            json.dump(payload, f)
+    df = load_runs([d])
+    assert sorted(df['cell']) == ['cfc_lrc+extrapolation', 'cfc_lrc+noise',
+                                  'cfc_lrc+ood_init']
+    assert sorted(df['stress']) == ['extrapolation', 'noise', 'ood_init']
+
+
+def test_load_runs_v6_wiring_and_level_variant_labels(tmp_path):
+    """v6a wiring graphs get a +w<seed> label, v6b levels get a +lvl<v> label, so
+    each verification condition is a distinct paired variant and seed 42 (the v5
+    anchor) carries NO +w token (it merges with the v5 baseline by design)."""
+    d = str(tmp_path / 'runs_v6')
+    os.makedirs(d, exist_ok=True)
+
+    def write(name, run, cfg):
+        payload = {'schema_version': 2, 'run': run, 'config': cfg,
+                   'training': {'final_loss': 0.1, 'duration_s': 1.0},
+                   'evaluation': {'mse': 0.2, 'nrmse': 0.5}}
+        with open(os.path.join(d, name), 'w', encoding='utf-8') as f:
+            json.dump(payload, f)
+
+    # v6a: new wiring graph 7 under noise
+    write('cfc_ncp_spiral_seed0_stress-noise_wseed7.json',
+          {'cell': 'cfc', 'wiring': 'ncp', 'system': 'spiral', 'seed': 0,
+           'clip_norm': 0.0, 'stress': 'noise', 'ncp_wiring_seed': 7},
+          {'clip_norm': 0.0, 'stress': 'noise', 'ncp_wiring_seed': 7})
+    # v5 anchor graph 42: NO +w token
+    write('cfc_ncp_spiral_seed0_stress-noise.json',
+          {'cell': 'cfc', 'wiring': 'ncp', 'system': 'spiral', 'seed': 0,
+           'clip_norm': 0.0, 'stress': 'noise', 'ncp_wiring_seed': 42},
+          {'clip_norm': 0.0, 'stress': 'noise', 'ncp_wiring_seed': 42})
+    # v6b: noise level 0.2
+    write('cfc_ncp_spiral_seed0_stress-noise_lvl0.2.json',
+          {'cell': 'cfc', 'wiring': 'ncp', 'system': 'spiral', 'seed': 0,
+           'clip_norm': 0.0, 'stress': 'noise', 'stress_noise_level': 0.2},
+          {'clip_norm': 0.0, 'stress': 'noise', 'stress_level': 0.2})
+
+    df = load_runs([d])
+    assert sorted(df['cell']) == ['cfc+noise', 'cfc+noise+lvl0.2', 'cfc+noise+w7']
+    assert set(df['ncp_wiring_seed'].dropna()) == {7, 42}
+    assert 0.2 in set(df['stress_level'].dropna())

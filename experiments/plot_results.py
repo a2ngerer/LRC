@@ -30,8 +30,9 @@ STYLES = {'dense': '-', 'ncp': '--'}
 def load_runs(runs_dirs):
     """Load run JSONs from one or more directories.
 
-    Runs with an active gradient clip get the cell label '<cell>+clip' so
-    they appear as their own variant in every grouping/legend.
+    Runs get a variant suffix on the cell label ('+clip', '+unfolds<n>',
+    '+bt<n>') so each experimental condition appears as its own variant in
+    every grouping/legend. v1/v2 labels are unchanged.
     """
     if isinstance(runs_dirs, str):
         runs_dirs = [runs_dirs]
@@ -40,8 +41,18 @@ def load_runs(runs_dirs):
         for path in sorted(glob(os.path.join(runs_dir, '*.json'))):
             with open(path, encoding='utf-8') as f:
                 r = json.load(f)
-            if float(r.get('config', {}).get('clip_norm', 0.0)):
-                r['run']['cell'] += '+clip'
+            cfg = r.get('config', {})
+            unfolds = cfg.get('ode_unfolds')
+            batch_time = cfg.get('batch_time', 16)
+            suffix = ''
+            if float(cfg.get('clip_norm', 0.0)):
+                suffix += '+clip'
+            if unfolds and int(unfolds) != 6:
+                suffix += f'+unfolds{int(unfolds)}'
+            if batch_time and int(batch_time) != 16:
+                suffix += f'+bt{int(batch_time)}'
+            if suffix:
+                r['run']['cell'] += suffix
             runs.append(r)
     return runs
 

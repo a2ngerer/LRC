@@ -1,0 +1,1623 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Die EEC-Familie — vom Stromkreis zum Neuron</title>
+<meta name="description" content="Interaktive Lehrseite: Wie sich CT-RNN, LTC, LRC und CfC unterscheiden — steife ODEs, explicit Euler, Lipschitz-Konstante und closed-form Lösungen, am Fallbeispiel autonomes Fahren.">
+
+<!-- KaTeX für mathematische Formeln -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous">
+
+<!-- Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+/* ============================================================
+   DESIGN SYSTEM
+   ============================================================ */
+:root{
+  --bg:        #f5f4ef;
+  --bg-warm:   #efece3;
+  --card:      #fbfaf6;
+  --ink:       #1a1a1e;
+  --ink-soft:  #55555f;
+  --ink-faint: #8a8a93;
+  --line:      #e2ded3;
+  --line-soft: #ece9e0;
+
+  /* Zell-Akzentfarben (konsistent mit der Quell-Grafik) */
+  --ct:   #6b7280;   --ct-bg:   #eef0f2;
+  --ltc:  #c2710c;   --ltc-bg:  #fbf0e2;
+  --lrc:  #2563eb;   --lrc-bg:  #e7eefe;
+  --cfc:  #0f9d6b;   --cfc-bg:  #e3f5ec;
+
+  --accent: #d64518;            /* warmes Orange-Rot, Primär-Akzent */
+  --accent-soft: #fbe9e2;
+
+  /* Dunkle "Oszilloskop"-Panels */
+  --panel:      #0b0f16;
+  --panel-2:    #121826;
+  --panel-grid: #1d2738;
+  --panel-line: #283449;
+  --panel-ink:  #cdd6e4;
+  --panel-faint:#5d6b82;
+
+  --display: 'Fraunces', Georgia, serif;
+  --sans: 'Inter', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --col: 720px;
+  --wide: 1080px;
+  --radius: 14px;
+  --shadow: 0 1px 2px rgba(20,20,30,.04), 0 8px 30px -12px rgba(20,20,30,.14);
+  --shadow-lg: 0 2px 6px rgba(20,20,30,.06), 0 24px 60px -20px rgba(20,20,30,.28);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--sans);
+  font-size:18px;
+  line-height:1.7;
+  font-feature-settings:"kern","liga","cv05";
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  overflow-x:hidden;
+}
+
+/* ---- Lese-Raster ---- */
+.wrap{max-width:var(--col);margin-inline:auto;padding-inline:24px}
+.wide{max-width:var(--wide);margin-inline:auto;padding-inline:24px}
+section{padding-block:clamp(48px,9vh,104px);position:relative}
+
+/* ---- Typografie ---- */
+h1,h2,h3,h4{font-family:var(--display);font-weight:600;line-height:1.1;letter-spacing:-.012em}
+h2{font-size:clamp(28px,4.6vw,44px);margin-bottom:.5em;font-weight:600}
+h3{font-size:clamp(21px,3vw,28px);margin:1.6em 0 .5em;font-weight:600}
+h4{font-size:18px;font-family:var(--sans);font-weight:650;letter-spacing:0;margin:1.6em 0 .4em}
+p{margin-bottom:1.05em}
+p.lead{font-size:clamp(19px,2.4vw,23px);line-height:1.55;color:var(--ink);font-family:var(--display);font-weight:400}
+em{font-style:italic}
+strong{font-weight:650;color:var(--ink)}
+a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent) 32%,transparent)}
+a:hover{border-bottom-color:var(--accent)}
+.mono{font-family:var(--mono);font-size:.86em;font-weight:500}
+code{font-family:var(--mono);font-size:.84em;background:var(--bg-warm);padding:.1em .4em;border-radius:5px;border:1px solid var(--line)}
+
+.eyebrow{font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);margin-bottom:1em;display:flex;align-items:center;gap:10px}
+.eyebrow::before{content:"";width:26px;height:1.5px;background:var(--accent);display:inline-block}
+
+.section-num{font-family:var(--mono);font-size:13px;color:var(--ink-faint);font-weight:500}
+
+/* ============================================================
+   HERO
+   ============================================================ */
+#hero{
+  min-height:100vh;display:flex;flex-direction:column;justify-content:center;
+  position:relative;overflow:hidden;padding-block:0;
+  background:radial-gradient(120% 90% at 50% 0%, #fcfbf8 0%, var(--bg) 55%, var(--bg-warm) 100%);
+}
+#hero-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:1}
+.hero-inner{position:relative;z-index:2;max-width:var(--wide);margin-inline:auto;padding-inline:24px;width:100%}
+.hero-kicker{font-family:var(--mono);font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent);margin-bottom:24px;font-weight:600}
+.hero-title{font-family:var(--display);font-size:clamp(38px,7.5vw,84px);line-height:.98;font-weight:600;letter-spacing:-.022em;max-width:14ch}
+.hero-title .liquid{font-style:italic;font-weight:500;background:linear-gradient(100deg,var(--ltc),var(--lrc) 55%,var(--cfc));-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero-sub{font-size:clamp(18px,2.3vw,22px);color:var(--ink-soft);max-width:54ch;margin-top:28px;line-height:1.5;font-family:var(--display);font-weight:400}
+.hero-cells{display:flex;gap:10px;margin-top:36px;flex-wrap:wrap}
+.hero-pill{font-family:var(--mono);font-size:12.5px;font-weight:600;padding:7px 14px;border-radius:100px;border:1px solid var(--line);background:var(--card);display:inline-flex;align-items:center;gap:8px}
+.hero-pill .dot{width:9px;height:9px;border-radius:50%}
+.scroll-hint{position:absolute;bottom:30px;left:50%;transform:translateX(-50%);z-index:2;font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-faint);display:flex;flex-direction:column;align-items:center;gap:8px}
+.scroll-hint .line{width:1px;height:34px;background:linear-gradient(var(--ink-faint),transparent);animation:scrolldown 2s ease-in-out infinite}
+@keyframes scrolldown{0%,100%{opacity:.3;transform:scaleY(.6);transform-origin:top}50%{opacity:1;transform:scaleY(1)}}
+
+/* ---- Fortschrittsbalken ---- */
+#progress{position:fixed;top:0;left:0;height:3px;background:linear-gradient(90deg,var(--ltc),var(--lrc),var(--cfc));z-index:100;width:0%;transition:width .1s linear}
+
+/* ---- Floating-Navigation ---- */
+#toc{position:fixed;top:50%;right:22px;transform:translateY(-50%);z-index:60;display:flex;flex-direction:column;gap:11px;opacity:0;transition:opacity .4s}
+#toc.show{opacity:1}
+#toc a{width:11px;height:11px;border-radius:50%;background:var(--line);border:1px solid var(--line-soft);transition:all .25s;position:relative}
+#toc a:hover,#toc a.active{background:var(--accent);transform:scale(1.25)}
+#toc a span{position:absolute;right:22px;top:50%;transform:translateY(-50%);white-space:nowrap;font-family:var(--mono);font-size:11px;background:var(--ink);color:#fff;padding:3px 9px;border-radius:6px;opacity:0;pointer-events:none;transition:opacity .2s;letter-spacing:.03em}
+#toc a:hover span{opacity:1}
+@media(max-width:1180px){#toc{display:none}}
+
+/* ============================================================
+   BAUSTEINE
+   ============================================================ */
+.reveal{opacity:0;transform:translateY(24px)}
+
+/* Quellen-Badge: macht Provenienz sichtbar */
+.src{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.02em;padding:1px 7px;border-radius:5px;white-space:nowrap;vertical-align:middle;border:1px solid;position:relative;top:-1px;cursor:help}
+.src-paper{color:#1d6b3f;background:#e6f4ec;border-color:#bfe3cd}
+.src-code{color:#3d4a8a;background:#e9ebfa;border-color:#c9cef0}
+.src-dr{color:#9a5a12;background:#fbefdc;border-color:#eccfa0}
+.src-classic{color:#555;background:#eee;border-color:#d8d8d8}
+
+.callout{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:0 var(--radius) var(--radius) 0;padding:22px 26px;margin:28px 0;box-shadow:var(--shadow)}
+.callout .ctag{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-bottom:8px}
+.callout p:last-child{margin-bottom:0}
+.callout.insight{border-left-color:var(--lrc)}
+.callout.insight .ctag{color:var(--lrc)}
+.callout.warn{border-left-color:var(--ltc);background:var(--ltc-bg)}
+.callout.warn .ctag{color:var(--ltc)}
+
+.note{font-size:14.5px;color:var(--ink-soft);line-height:1.55;border-top:1px solid var(--line);padding-top:12px;margin-top:18px}
+
+/* Formelblock */
+.eq{margin:26px 0;padding:18px 22px;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);overflow-x:auto;box-shadow:var(--shadow)}
+.eq.accent-ltc{border-left:4px solid var(--ltc)}
+.eq.accent-lrc{border-left:4px solid var(--lrc)}
+.eq.accent-cfc{border-left:4px solid var(--cfc)}
+.eq.accent-ct{border-left:4px solid var(--ct)}
+.eq-label{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:12px}
+
+/* ============================================================
+   ZELL-KARTEN (Übersicht)
+   ============================================================ */
+.cell-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:18px;margin:36px 0}
+@media(max-width:680px){.cell-grid{grid-template-columns:1fr}}
+.cellcard{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:22px 24px;position:relative;overflow:hidden;transition:transform .3s,box-shadow .3s;box-shadow:var(--shadow)}
+.cellcard:hover{transform:translateY(-3px);box-shadow:var(--shadow-lg)}
+.cellcard::before{content:"";position:absolute;top:0;left:0;right:0;height:3px}
+.cellcard.ct::before{background:var(--ct)} .cellcard.ltc::before{background:var(--ltc)}
+.cellcard.lrc::before{background:var(--lrc)} .cellcard.cfc::before{background:var(--cfc)}
+.cellcard .ch{display:flex;align-items:center;gap:11px;margin-bottom:6px}
+.cellcard .ch .dot{width:11px;height:11px;border-radius:50%;flex:none}
+.cellcard.ct .dot{background:var(--ct)} .cellcard.ltc .dot{background:var(--ltc)}
+.cellcard.lrc .dot{background:var(--lrc)} .cellcard.cfc .dot{background:var(--cfc)}
+.cellcard h4{margin:0;font-size:17px;font-weight:700}
+.cellcard .tag{font-family:var(--mono);font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:5px;margin-left:auto;letter-spacing:.04em}
+.cellcard.ct .tag{background:var(--ct-bg);color:var(--ct)} .cellcard.ltc .tag{background:var(--ltc-bg);color:var(--ltc)}
+.cellcard.lrc .tag{background:var(--lrc-bg);color:var(--lrc)} .cellcard.cfc .tag{background:var(--cfc-bg);color:var(--cfc)}
+.cellcard .desc{font-size:14.5px;color:var(--ink-soft);line-height:1.5}
+.cellcard .one{font-family:var(--display);font-style:italic;font-size:15px;color:var(--ink);margin-top:10px}
+
+/* ============================================================
+   INTERAKTIVE LABS
+   ============================================================ */
+.lab{background:var(--panel);border-radius:18px;padding:0;margin:40px 0;overflow:hidden;box-shadow:var(--shadow-lg);border:1px solid var(--panel-line)}
+.lab-head{display:flex;align-items:center;gap:12px;padding:16px 22px;border-bottom:1px solid var(--panel-line);background:linear-gradient(var(--panel-2),var(--panel))}
+.lab-head .led{width:9px;height:9px;border-radius:50%;background:var(--cfc);box-shadow:0 0 10px var(--cfc);animation:blink 2.4s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+.lab-head .title{font-family:var(--mono);font-size:12.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--panel-ink)}
+.lab-head .sub{font-family:var(--mono);font-size:11px;color:var(--panel-faint);margin-left:auto}
+.lab-body{display:grid;grid-template-columns:1fr 280px;gap:0}
+@media(max-width:760px){.lab-body{grid-template-columns:1fr}}
+.lab-canvas-wrap{position:relative;background:var(--panel);min-height:300px;display:flex;align-items:stretch}
+.lab-canvas-wrap canvas{width:100%;display:block}
+.lab-controls{background:var(--panel-2);border-left:1px solid var(--panel-line);padding:20px;display:flex;flex-direction:column;gap:16px}
+@media(max-width:760px){.lab-controls{border-left:none;border-top:1px solid var(--panel-line)}}
+
+.ctrl{display:flex;flex-direction:column;gap:7px}
+.ctrl label{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.04em;color:var(--panel-faint);display:flex;justify-content:space-between;align-items:baseline;text-transform:uppercase}
+.ctrl label .val{color:var(--cfc);font-weight:700;font-size:12px}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:4px;border-radius:3px;background:var(--panel-line);outline:none;cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:var(--panel-ink);border:2px solid var(--panel-2);box-shadow:0 1px 4px rgba(0,0,0,.4);transition:transform .15s,background .15s}
+input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.2);background:#fff}
+input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--panel-ink);border:2px solid var(--panel-2);cursor:pointer}
+input[type=range].acc-ltc::-webkit-slider-thumb{background:var(--ltc)}
+input[type=range].acc-lrc::-webkit-slider-thumb{background:var(--lrc)}
+
+.seg{display:flex;background:var(--panel);border:1px solid var(--panel-line);border-radius:8px;padding:3px;gap:3px}
+.seg button{flex:1;font-family:var(--mono);font-size:11px;font-weight:600;padding:7px 4px;border:none;background:none;color:var(--panel-faint);border-radius:6px;cursor:pointer;transition:all .18s;letter-spacing:.03em}
+.seg button.on{background:var(--panel-line);color:#fff}
+.seg button:hover:not(.on){color:var(--panel-ink)}
+
+.toggle-row{display:flex;flex-wrap:wrap;gap:7px}
+.chip{font-family:var(--mono);font-size:11px;font-weight:600;padding:6px 11px;border-radius:7px;border:1px solid var(--panel-line);background:var(--panel);color:var(--panel-faint);cursor:pointer;transition:all .18s;display:flex;align-items:center;gap:7px;user-select:none}
+.chip .dot{width:8px;height:8px;border-radius:50%;opacity:.35;transition:opacity .18s}
+.chip.on{color:#fff;border-color:var(--panel-faint)}
+.chip.on .dot{opacity:1}
+
+.lab-readout{font-family:var(--mono);font-size:12px;line-height:1.7;color:var(--panel-faint);border-top:1px solid var(--panel-line);padding-top:14px;margin-top:2px}
+.lab-readout .k{color:var(--panel-ink)}
+.lab-readout .big{font-size:15px;font-weight:700}
+.lab-readout .ok{color:var(--cfc)} .lab-readout .bad{color:#ef6f5a} .lab-readout .warn-c{color:var(--ltc)}
+
+.lab-task{font-family:var(--sans);font-size:13.5px;line-height:1.5;color:var(--panel-ink);background:rgba(214,69,24,.1);border:1px solid rgba(214,69,24,.25);border-radius:9px;padding:12px 14px;margin-top:2px}
+.lab-task b{color:#fff;font-weight:600}
+
+.lab-caption{font-size:14px;color:var(--ink-soft);margin-top:-26px;margin-bottom:40px;padding:0 4px}
+.lab-caption .src{font-size:10.5px}
+
+/* ============================================================
+   VERGLEICHSTABELLE
+   ============================================================ */
+.cmp-table{width:100%;border-collapse:collapse;margin:30px 0;font-size:14.5px;background:var(--card);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow);border:1px solid var(--line)}
+.cmp-table th,.cmp-table td{padding:13px 15px;text-align:left;border-bottom:1px solid var(--line-soft);vertical-align:top}
+.cmp-table thead th{background:var(--bg-warm);font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-soft);position:sticky;top:0}
+.cmp-table tbody th{font-weight:600;color:var(--ink);font-size:14px;background:color-mix(in srgb,var(--bg-warm) 50%,transparent)}
+.cmp-table .c-ct{border-top:2px solid var(--ct)} .cmp-table .c-ltc{border-top:2px solid var(--ltc)}
+.cmp-table .c-lrc{border-top:2px solid var(--lrc)} .cmp-table .c-cfc{border-top:2px solid var(--cfc)}
+.cmp-head{display:flex;align-items:center;gap:8px;font-weight:700;font-family:var(--sans)}
+.cmp-head .dot{width:9px;height:9px;border-radius:50%}
+.cmp-table td.good{color:#1d6b3f} .cmp-table td.bad{color:#b4530b}
+.cmp-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+@media(max-width:680px){.cmp-table{font-size:13px}.cmp-table th,.cmp-table td{padding:10px}}
+
+/* ============================================================
+   QUELLEN
+   ============================================================ */
+.bib{display:flex;flex-direction:column;gap:2px;margin:24px 0}
+.bib-item{display:grid;grid-template-columns:auto 1fr;gap:16px;padding:15px 0;border-bottom:1px solid var(--line-soft)}
+.bib-key{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--accent);padding-top:2px}
+.bib-cite{font-size:14.5px;line-height:1.5}
+.bib-cite .t{font-weight:600}
+.bib-cite .meta{color:var(--ink-soft);font-size:13px}
+.bib-cite .where{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-top:3px}
+
+.legend{display:flex;flex-wrap:wrap;gap:10px;margin:20px 0 8px}
+.legend .li{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-soft)}
+
+footer{padding:60px 24px 80px;text-align:center;border-top:1px solid var(--line);background:var(--bg-warm)}
+footer .f-title{font-family:var(--display);font-size:20px;font-weight:600;margin-bottom:8px}
+footer p{font-size:13.5px;color:var(--ink-soft);max-width:50ch;margin-inline:auto}
+footer .mono{font-size:12px;color:var(--ink-faint);margin-top:18px}
+
+/* KaTeX Feinschliff */
+.katex{font-size:1.04em}
+.katex-display{margin:0;overflow-x:auto;overflow-y:hidden;padding:2px 0}
+
+/* Hervorhebung im Fließtext */
+mark{background:linear-gradient(transparent 58%, color-mix(in srgb,var(--ltc) 28%,transparent) 58%);color:inherit;padding:0 1px}
+mark.lrc{background:linear-gradient(transparent 58%, color-mix(in srgb,var(--lrc) 28%,transparent) 58%)}
+mark.cfc{background:linear-gradient(transparent 58%, color-mix(in srgb,var(--cfc) 30%,transparent) 58%)}
+
+.kbd{font-family:var(--mono);font-size:.8em;background:var(--ink);color:#fff;padding:2px 7px;border-radius:5px;font-weight:600}
+
+hr.div{border:none;height:1px;background:var(--line);margin:0}
+.spacer{height:1px;background:linear-gradient(90deg,transparent,var(--line),transparent);max-width:var(--col);margin:0 auto}
+
+.dim{color:var(--ink-faint)}
+</style>
+</head>
+<body>
+
+<div id="progress"></div>
+<nav id="toc"></nav>
+
+<!-- ============================================================
+     HERO
+     ============================================================ -->
+<header id="hero">
+  <canvas id="hero-canvas"></canvas>
+  <div class="hero-inner">
+    <div class="hero-kicker reveal">Masterthesis · Liquid Neural Networks · Interaktive Lehrseite</div>
+    <h1 class="hero-title reveal">Vom Stromkreis<br>zum <span class="liquid">liquiden</span> Neuron</h1>
+    <p class="hero-sub reveal">Vier Zelltypen, ein biologisches Vorbild. Wie aus einem simplen
+    <em>RC-Glied</em> ein Neuron wird, das die Zeit versteht — und warum die Unterschiede zwischen
+    CT-RNN, LTC, LRC und CfC darüber entscheiden, ob ein selbstfahrendes Auto ruhig lenkt oder zittert.</p>
+    <div class="hero-cells reveal">
+      <span class="hero-pill"><span class="dot" style="background:var(--ct)"></span>CT-RNN</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--ltc)"></span>LTC</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--lrc)"></span>LRC</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--cfc)"></span>CfC</span>
+    </div>
+  </div>
+  <div class="scroll-hint"><span>Scrollen</span><span class="line"></span></div>
+</header>
+
+<!-- ============================================================
+     0 · DAS PROBLEM (Fallbeispiel)
+     ============================================================ -->
+<section id="intro">
+  <div class="wrap">
+    <div class="eyebrow reveal">Das Fallbeispiel</div>
+    <h2 class="reveal">Ein Auto, eine Kamera, eine Frage an die Zeit</h2>
+    <p class="lead reveal">Stell dir ein selbstfahrendes Auto vor, das einer Landstraße folgt.
+    Die Kamera liefert ein <em>kontinuierliches</em> Signal, die Lenkung verlangt eine <em>kontinuierliche</em>
+    Antwort. Das Neuron dazwischen muss nicht nur „was sehe ich jetzt?" beantworten, sondern
+    „wie ändert sich, was ich sehe — und wie schnell?"</p>
+
+    <p class="reveal">Genau dieses Szenario ist der rote Faden dieser Seite. Es ist nicht ausgedacht:
+    die hier verglichenen Zelltypen wurden am MIT und an der TU Wien an exakt dieser Aufgabe entwickelt
+    und gemessen — Spurhaltung bei Sonne, Regen und Schnee
+    <span class="src src-paper" title="Farsang et al. 2024, ICRA — Lane-Keeping, Lipschitz summer/winter">Paper · farsang2024learning</span>.
+    Vier Mal werden wir dasselbe Auto bauen, mit vier verschiedenen „Gehirnzellen", und sehen,
+    woran die einfachen scheitern und was die liquiden Varianten besser machen.</p>
+
+    <div class="callout reveal">
+      <div class="ctag">Worum es konkret geht</div>
+      <p style="margin-bottom:.6em">Im Quell-Kapitel deiner Thesis stehen vier Zellen nebeneinander — <strong>CT-RNN</strong>,
+      <strong>LTC</strong>, <strong>LRC</strong>, <strong>CfC</strong> — und vier kryptische Stichworte:
+      <em>steife ODE</em>, <em>explicit Euler</em>, <em>kleinere Lipschitz-Konstante</em> und
+      <em>CfC mit numerischer Integration statt geschlossener Lösung</em>.</p>
+      <p style="margin-bottom:0">Diese Seite zerlegt jedes davon — mit interaktiven Simulationen der
+      <strong>echten Gleichungen aus deinem Code</strong>, nicht mit Pseudo-Beispielen. Jeder Regler,
+      den du bewegst, rechnet die tatsächliche Update-Regel aus <code>ltc_cell.py</code>,
+      <code>lrc_cell.py</code> &amp; Co.</p>
+    </div>
+
+    <div class="legend reveal">
+      <div class="li"><span class="src src-paper">Paper</span> direkt aus Originalarbeit / Paper-Notiz belegt</div>
+      <div class="li"><span class="src src-code">Code</span> exakt aus deiner Implementierung</div>
+      <div class="li"><span class="src src-dr">Deep-Research</span> aus LLM-Recherche, gegen Original noch zu prüfen</div>
+      <div class="li"><span class="src src-classic">klassisch</span> Lehrbuchwissen / nicht im Thesis-bib</div>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================================================
+     1 · DIE EEC-GRUNDLAGE
+     ============================================================ -->
+<section id="eec">
+  <div class="wrap">
+    <div class="eyebrow reveal"><span class="section-num">01</span> &nbsp;Die gemeinsame Wurzel</div>
+    <h2 class="reveal">Jedes dieser Neuronen ist ein Stromkreis</h2>
+    <p class="reveal">Bevor wir die vier unterscheiden, das Verbindende: Alle sind ein
+    <strong>Electrical Equivalent Circuit</strong> (EEC) — ein elektrisches Ersatzschaltbild einer
+    Zellmembran. Die Biologie liefert drei Bauteile
+    <span class="src src-paper" title="electrical-equivalent-circuit.md / hasani2020-ltc.md">Paper · Hasani 2021</span>:</p>
+
+    <ul style="margin:0 0 1.2em 1.2em;line-height:1.8">
+      <li>eine <strong style="color:var(--lrc)">Kapazität</strong> <span class="mono">C</span> — die Membran speichert Ladung wie ein Kondensator;</li>
+      <li>einen <strong style="color:var(--ltc)">Leitwert</strong> <span class="mono">g</span> — Ionenkanäle lassen Strom durch (Kehrwert des Widerstands);</li>
+      <li>ein <strong>Reversal-Potential</strong> <span class="mono">E</span> — die „Zielspannung", zu der ein Kanal treibt.</li>
+    </ul>
+
+    <p class="reveal">Kirchhoffs Knotenregel — alle Ströme in die Membran summieren sich zur Änderung
+    der Ladung — liefert die Mutter-Gleichung, aus der <em>jede</em> der vier Zellen hervorgeht:</p>
+
+    <div class="eq accent-lrc reveal">
+      <div class="eq-label"><span>Membran-ODE (Electrical Equivalent Circuit)</span><span class="src src-paper">Paper</span></div>
+      <div data-eq="C\,\dot v \;=\; \underbrace{g_{\text{leak}}\,(E_{\text{leak}} - v)}_{\text{Leckstrom}} \;+\; \underbrace{\textstyle\sum_j g_{ij}(v,x)\,(E_{ij} - v)}_{\text{synaptische Ströme}}"></div>
+    </div>
+
+    <p class="reveal">Lies sie wörtlich: Die <strong>Spannungsänderung</strong> <span class="mono">v̇</span>
+    ist die Summe der Ströme, geteilt durch die Kapazität. Ein Strom <span class="mono">g·(E−v)</span>
+    zieht die Spannung <span class="mono">v</span> Richtung <span class="mono">E</span> — und zwar
+    umso schneller, je größer der Leitwert <span class="mono">g</span>. Genau in der Frage
+    <em>„welche dieser Größen ist konstant, und welche darf vom Zustand abhängen?"</em> liegt der
+    ganze Unterschied zwischen den vier Zellen.</p>
+
+    <p class="reveal">Spiel mit dem Stromkreis: Schieb den Eingangsstrom hoch und runter und beobachte,
+    wie die Membranspannung der Zielspannung „hinterherläuft" — träge, mit einer Zeitkonstante
+    <span class="mono">τ = C/g</span>.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-eec">
+      <div class="lab-head"><span class="led"></span><span class="title">EEC · Membran als RC-Glied</span><span class="sub">C v̇ = g(E−v)</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-eec"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Eingangsstrom <span class="val" id="eec-in-v">0.60</span></label><input type="range" id="eec-in" min="-1" max="1" step="0.01" value="0.6"></div>
+          <div class="ctrl"><label>Leitwert g <span class="val" id="eec-g-v">1.0</span></label><input type="range" id="eec-g" min="0.1" max="4" step="0.05" value="1.0"></div>
+          <div class="ctrl"><label>Kapazität C <span class="val" id="eec-c-v">1.0</span></label><input type="range" id="eec-c" min="0.2" max="3" step="0.05" value="1.0"></div>
+          <div class="lab-readout">
+            Zeitkonstante <span class="k">τ = C/g =</span> <span class="big k" id="eec-tau">1.00</span><br>
+            Membranspannung <span class="k" id="eec-v">0.00</span>
+          </div>
+          <div class="lab-task">Dreh <b>g</b> hoch: die Spannung folgt schneller (kleines τ). Das ist der Hebel,
+          den LTC später <i>dynamisch</i> macht.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Ein RC-Glied: Ladung fließt über den Leitwert <span class="mono">g</span> auf die Kapazität <span class="mono">C</span>, die Spannung nähert sich exponentiell der Zielspannung. Bei konstantem <span class="mono">g</span> ist das ein klassisches CT-RNN-Neuron. <span class="src src-paper">Paper · EEC</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================================================
+     2 · DIE VIER ZELLEN IM ÜBERBLICK
+     ============================================================ -->
+<section id="family">
+  <div class="wrap">
+    <div class="eyebrow reveal"><span class="section-num">02</span> &nbsp;Die Familie</div>
+    <h2 class="reveal">Vier Antworten auf „was darf liquid sein?"</h2>
+    <p class="reveal">Jede Zelle nimmt dieselbe Membran-ODE und entscheidet anders, welche Größe fix
+    bleibt und welche <em>„liquid"</em> wird — also zustands- und eingabeabhängig. Das ist die
+    Landkarte; danach besuchen wir jede Station einzeln.</p>
+  </div>
+  <div class="wide">
+    <div class="cell-grid">
+      <div class="cellcard ct reveal">
+        <div class="ch"><span class="dot"></span><h4>CT-RNN</h4><span class="tag">baseline</span></div>
+        <div class="desc">Continuous-Time RNN: elektrische Synapsen, <strong>konstante</strong> Kapazität <em>und</em> Zeitkonstante. Das einfachste EEC-Neuron — ein leaky integrator.</div>
+        <div class="one">„Festes τ — reagiert immer gleich schnell."</div>
+      </div>
+      <div class="cellcard ltc reveal">
+        <div class="ch"><span class="dot"></span><h4>LTC</h4><span class="tag">ltc</span></div>
+        <div class="desc">Liquid Time-Constant: chemische Synapsen machen die Zeitkonstante <strong>τ liquid</strong> — sie hängt von Zustand und Eingabe ab. <span class="src src-paper" title="Hasani 2021, AAAI">Hasani 2021</span></div>
+        <div class="one">„Liquid τ — aber die ODE wird steif."</div>
+      </div>
+      <div class="cellcard lrc reveal">
+        <div class="ch"><span class="dot"></span><h4>LRC</h4><span class="tag">lrc</span></div>
+        <div class="desc">Liquid-Resistance Liquid-Capacitance: LTC <strong>plus liquid elastance</strong> ε (reziproke, zustandsabhängige Kapazität) und Sättigung. <span class="src src-paper" title="Farsang, Neubauer, Grosu 2024, NeuroAI@NeurIPS">Farsang 2024</span></div>
+        <div class="one">„Auch C liquid — dämpft, billiger Solver reicht."</div>
+      </div>
+      <div class="cellcard cfc reveal">
+        <div class="ch"><span class="dot"></span><h4>CfC</h4><span class="tag">cfc</span></div>
+        <div class="desc">Closed-form Continuous-time: ersetzt die <strong>numerische Integration durch eine geschlossene Lösung</strong>. Kein Solver, ein Sigmoid-Zeitgate. <span class="src src-paper" title="Hasani et al. 2022, Nature Machine Intelligence">Hasani 2022</span></div>
+        <div class="one">„Keine Integration mehr — direkt h(t)."</div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap">
+    <p class="reveal">Bevor wir ins Detail gehen — <strong>sieh sie nebeneinander arbeiten</strong>. Dasselbe
+    Sensorsignal läuft durch alle vier Zellen, die exakt die Update-Regeln aus deinem Code ausführen
+    <span class="src src-code">Code · *_cell.py</span>. Wechsle das Eingangssignal und dreh besonders an der
+    <strong>Schrittweite Δt</strong> — und sieh, wie verschieden sie auf dasselbe Signal antworten: die liquiden
+    reagieren flinker, eine bleibt bei jedem Δt exakt gleich.</p>
+  </div>
+  <div class="wide">
+    <div class="lab reveal" id="lab-compare">
+      <div class="lab-head"><span class="led"></span><span class="title">Live-Vergleich · vier Zellen, ein Signal</span><span class="sub" id="cmp-status">Δt = 0.10</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-compare"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Eingangssignal</label>
+            <div class="seg" id="cmp-signal"><button data-s="step" class="on">Stufe</button><button data-s="sine">Sinus</button><button data-s="noisy">Verrauscht</button></div>
+          </div>
+          <div class="ctrl"><label>Schrittweite Δt <span class="val" id="cmp-dt-v">0.10</span></label><input type="range" id="cmp-dt" min="0.02" max="1.6" step="0.02" value="0.1"></div>
+          <div class="ctrl"><label>Signalstärke <span class="val" id="cmp-amp-v">1.0</span></label><input type="range" id="cmp-amp" min="0.2" max="3" step="0.05" value="1.0"></div>
+          <div class="ctrl"><label>Sichtbar</label>
+            <div class="toggle-row" id="cmp-cells">
+              <span class="chip on" data-c="ctrnn"><span class="dot" style="background:var(--ct)"></span>CT-RNN</span>
+              <span class="chip on" data-c="ltc"><span class="dot" style="background:var(--ltc)"></span>LTC</span>
+              <span class="chip on" data-c="lrc"><span class="dot" style="background:var(--lrc)"></span>LRC</span>
+              <span class="chip on" data-c="cfc"><span class="dot" style="background:var(--cfc)"></span>CfC</span>
+            </div>
+          </div>
+          <div class="lab-task">Bei der <b>Stufe</b>: <b style="color:var(--ltc)">LTC</b>/<b style="color:var(--lrc)">LRC</b>
+          reagieren dank <i>liquider</i> Zeitkonstante flinker als das träge <b style="color:var(--ct)">CT-RNN</b>. Dreh dann
+          <b>Δt</b> hoch — <b style="color:var(--cfc)">CfC</b> bleibt exakt gleich (es integriert nicht!), die Integratoren werden gröber.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Alle vier Integratoren rechnen ihre echte Update-Regel (CT-RNN: forward Euler; LTC: fused semi-implicit, 6 unfolds; LRC: explicit Euler, 1 unfold; CfC: closed-form). Gleicher Input, sichtbar unterschiedliche Antwort. <span class="src src-code">Code</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================================================
+     3 · CT-RNN
+     ============================================================ -->
+<section id="ctrnn">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--ct);color:var(--ct)"><span class="section-num">03</span> &nbsp;Station 1 — die Baseline</div>
+    <h2 class="reveal">CT-RNN: das Neuron mit festem Takt</h2>
+    <p class="reveal">Wir starten beim einfachsten Fall. Das CT-RNN nimmt die Membran-ODE und macht eine
+    radikale Vereinfachung: <strong>alles ist konstant</strong> außer der Spannung. Ein fester Leitwert,
+    eine feste Zeitkonstante <span class="mono">τ</span>, elektrische (ohmsche) Synapsen. Aus deinem Code
+    <span class="src src-code" title="ctrnn_cell.py:50-58">Code · ctrnn_cell.py</span>:</p>
+
+    <div class="eq accent-ct reveal">
+      <div class="eq-label"><span>CT-RNN · forward-Euler-Schritt (genau wie im Code)</span><span class="src src-code">Code</span></div>
+      <div data-eq="h_{t+1} \;=\; h_t \;+\; \frac{\Delta t}{\tau}\Big(\,-h_t \;+\; \tanh(W_x x + W_h h_t + b)\,\Big)"></div>
+    </div>
+
+    <p class="reveal">Der Term <span class="mono">−h</span> ist das „Vergessen" (die Spannung leckt zur Ruhelage zurück),
+    <span class="mono">tanh(...)</span> ist der Antrieb durch Eingabe und Rückkopplung. Der entscheidende Punkt:
+    der Faktor <span class="mono" style="color:var(--ct)">1/τ</span> ist eine <strong>gelernte Konstante</strong>
+    — für jedes Neuron einmal festgelegt, dann unveränderlich
+    <span class="src src-code" title="ctrnn_cell.py:42-47: trainierbarer τ-Vektor, init 1.0, NonNeg">Code</span>.</p>
+
+    <p class="reveal"><strong>Was das fürs Auto bedeutet:</strong> Ein CT-RNN-Neuron reagiert auf eine ruckartige
+    Kurve genauso träge oder hektisch wie auf eine sanfte Gerade — sein „Reaktionstempo" ist eingefroren.
+    Es kann nicht entscheiden, in einer kritischen Situation schneller hinzuschauen. Im Spurhalte-Benchmark
+    zeigt sich das messbar: ein CT-RNN-Netz mit voller Vernetzung <em>„crasht im Winter"</em>, wenn das
+    Bild verrauschter wird <span class="src src-paper" title="farsang2024-chemical-synapses.md: CT-RNN fully-64 crashes in winter">Paper · farsang2024learning</span>.</p>
+
+    <div class="callout reveal" style="--accent:var(--ct)">
+      <div class="ctag" style="color:var(--ct)">Der nächste Schritt</div>
+      <p style="margin-bottom:0">Was, wenn <span class="mono">τ</span> nicht fest wäre, sondern das Neuron selbst entscheiden
+      dürfte, wann es schnell und wann es langsam reagiert? Dann hängt der „Takt" von der Situation ab — die
+      Zeitkonstante wird <em>liquid</em>. Genau das ist der Schritt zum LTC.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================================================
+     4 · LTC + STEIFE ODE
+     ============================================================ -->
+<section id="ltc">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--ltc);color:var(--ltc)"><span class="section-num">04</span> &nbsp;Station 2 — liquid wird die Zeit</div>
+    <h2 class="reveal">LTC: die Zeitkonstante wird flüssig</h2>
+    <p class="reveal">Das Liquid Time-Constant Network <span class="src src-paper" title="Hasani et al., Liquid Time-constant Networks, AAAI 2021, arXiv:2006.04439">Paper · Hasani 2021</span>
+    ersetzt die elektrischen Synapsen durch <strong>chemische</strong>: ihr Leitwert ist selbst eine
+    sigmoide Funktion der Eingabe. Damit hängt die effektive Zeitkonstante von Zustand und Input ab —
+    sie ist <em>liquid</em>. In kompakter Form
+    <span class="src src-paper" title="hasani2020-ltc.md:28">Paper</span>:</p>
+
+    <div class="eq accent-ltc reveal">
+      <div class="eq-label"><span>LTC · kompakte ODE</span><span class="src src-paper">Paper</span></div>
+      <div data-eq="\dot x \;=\; -\Big[\tfrac{1}{\tau} + f(x,I)\Big]\,x \;+\; f(x,I)\,A \qquad\text{mit}\qquad \tau_{\text{sys}}(x,I) \;=\; \frac{\tau}{1 + \tau\, f(x,I)}"></div>
+    </div>
+
+    <p class="reveal">Lies die rechte Gleichung: Je stärker die Synapse <span class="mono">f(x,I)</span> feuert,
+    desto <strong>kleiner</strong> wird die effektive Zeitkonstante <span class="mono">τ_sys</span> — das Neuron
+    reagiert dann blitzschnell; bei stiller Eingabe wird es träge. Das Auto kann jetzt in der Kurve „schneller
+    hinschauen" als auf der Geraden. Genau das macht LTCs ausdrucksstark.</p>
+
+    <p class="reveal">Aber dieser Mechanismus hat einen Preis, der im Bild als Nachteil steht:
+    <em>„steife ODE → braucht teure Solver, neigt zu Oszillationen"</em>. Das ist das erste der vier
+    Tiefenkonzepte — und es lohnt, es wirklich zu verstehen.</p>
+
+    <h3 class="reveal" style="color:var(--ltc)">Tiefenkonzept I — Was ist eine „steife ODE"?</h3>
+    <p class="reveal">Eine Differentialgleichung heißt <strong>steif</strong> (engl. <em>stiff</em>), wenn ihre
+    Lösung Anteile mit <strong>sehr unterschiedlichen Zeitskalen</strong> enthält — etwas zerfällt
+    blitzschnell, etwas anderes ändert sich gemächlich. Numerisch bedeutet das: ein einfacher Solver muss
+    <em>winzige</em> Schritte machen, sonst wird die Integration „explosiv instabil"
+    <span class="src src-dr" title="gemini_dr_1: 'violently unstable unless step size reduced to infinitesimally small intervals … widely disparate timescales'">Deep-Research</span>.</p>
+
+    <p class="reveal"><strong>Warum wird die LTC-ODE steif?</strong> Der Gesamtleitwert
+    <span class="mono">g(x) = g_leak + Σ wⱼ·σ(vⱼ)</span> ist <strong>nach oben unbeschränkt</strong>: je mehr
+    Synapsen feuern, desto größer <span class="mono">g</span>, desto winziger
+    <span class="mono">τ = 1/g</span> <span class="src src-paper" title="ltc-lrc-stc-zelltypen.md:138">Paper-Notiz</span>.
+    Ein kleiner Zeittakt in einem System, das wir in groben Schritten <span class="mono">Δt</span> integrieren —
+    das ist das Rezept für Überschießen und Schwingen.</p>
+
+    <p class="reveal">Hier kannst du Steifheit <em>erzeugen</em>. Das Lab integriert die LTC mit
+    <strong>explicit Euler</strong> (ein naiver Schritt). Dreh die <strong>Steifheit</strong> hoch (mehr aktiver
+    Leitwert) und die <strong>Schrittweite Δt</strong> — und finde die Kante, an der die Lösung kippt:</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-stiff">
+      <div class="lab-head"><span class="led"></span><span class="title">Stiffness-Explorer · wann kippt die LTC?</span><span class="sub" id="stiff-status">stabil</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-stiff"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Schrittweite Δt <span class="val" id="stiff-dt-v">0.30</span></label><input type="range" id="stiff-dt" class="acc-ltc" min="0.02" max="2.2" step="0.02" value="0.3"></div>
+          <div class="ctrl"><label>Steifheit (Leitwert g) <span class="val" id="stiff-g-v">3.0</span></label><input type="range" id="stiff-g" class="acc-ltc" min="0.5" max="12" step="0.1" value="3"></div>
+          <div class="ctrl"><label>Solver</label>
+            <div class="seg" id="stiff-solver"><button data-v="explicit" class="on">explicit Euler</button><button data-v="semi">fused (semi-impl.)</button></div>
+          </div>
+          <div class="lab-readout">
+            Stabilitätsmaß <span class="k">(1/τ + f)·Δt</span><br>
+            <span class="big" id="stiff-crit">0.00</span> <span id="stiff-verdict" class="ok">&lt; 2 → stabil</span><br>
+            <span class="dim">explicit Euler braucht &lt; 2; darüber wächst jeder Fehler.</span>
+          </div>
+          <div class="lab-task">Mit <b>explicit Euler</b>: dreh Δt und g hoch, bis das Maß über <b>2</b> springt — die
+          Kurve explodiert. Schalt dann auf <b>fused</b>: dieselben Werte, glatt. <i>Das</i> ist der teure Solver,
+          den LTC braucht.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap">
+    <p class="lab-caption">Explicit Euler ist nur stabil, solange <span class="mono">(1/τ+f)·Δt &lt; 2</span> bleibt. Die liquide Zeitkonstante kann <span class="mono">f</span> beliebig groß machen → die Schranke reißt → Oszillation. Der fused/semi-implicit Solver hat diese Schranke nicht. <span class="src src-paper">Paper · Hasani 2021</span></p>
+
+    <p class="reveal">Deshalb integriert deine LTC-Implementierung <strong>nicht</strong> mit naivem Euler, sondern mit
+    dem <strong>fused (semi-impliziten) Euler</strong> und wiederholt ihn <span class="mono">6×</span> pro Zeitschritt
+    <span class="src src-code" title="ltc_cell.py: ode_unfolds=6, semi-implicit numerator/denominator">Code · ltc_cell.py</span>.
+    Das ist genau der „teure Solver" aus dem Bild — er kostet das Sechsfache an Rechenschritten, kauft dafür
+    aber Stabilität. Warum das hilft, ist Tiefenkonzept II.</p>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================================================
+     5 · EXPLICIT EULER DEEP-DIVE
+     ============================================================ -->
+<section id="euler">
+  <div class="wrap">
+    <div class="eyebrow reveal"><span class="section-num">05</span> &nbsp;Tiefenkonzept II</div>
+    <h2 class="reveal">Explicit Euler — und warum LRC ihn sich leisten kann</h2>
+    <p class="reveal">Eine ODE sagt nur, wie sich der Zustand <em>gerade jetzt</em> ändert
+    (<span class="mono">ẋ</span>). Um die Trajektorie zu bekommen, müssen wir <strong>integrieren</strong> —
+    in kleinen Zeitschritten vorwärts hangeln. Der einfachste Weg ist der <strong>explizite (forward) Euler</strong>:</p>
+
+    <div class="eq reveal">
+      <div class="eq-label"><span>Expliziter Euler — „nimm die jetzige Steigung und geh Δt weit"</span><span class="src src-classic">klassisch</span></div>
+      <div data-eq="x_{t+1} \;=\; x_t \;+\; \Delta t\cdot \dot x(x_t) \qquad\text{vs.}\qquad \underbrace{x_{t+1} \;=\; x_t \;+\; \Delta t\cdot \dot x(x_{t+1})}_{\text{implizit / fused}}"></div>
+    </div>
+
+    <p class="reveal">Geometrisch: explicit Euler legt am <em>Startpunkt</em> eine Tangente an und folgt ihr
+    blind über die ganze Schrittweite. Ist die Kurve stark gekrümmt (steif!) und <span class="mono">Δt</span>
+    groß, schießt die Tangente weit über das Ziel hinaus — beim nächsten Schritt korrigiert sie überzogen
+    in die Gegenrichtung: <strong>Oszillation</strong>. Der <em>semi-implizite</em> Schritt benutzt stattdessen
+    die Steigung am <em>Zielpunkt</em>, was wie eine Bremse wirkt. Sieh den Unterschied an einem einzigen Schritt:</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-euler">
+      <div class="lab-head"><span class="led"></span><span class="title">Ein Euler-Schritt unter der Lupe</span><span class="sub" id="euler-status">Δt = 0.8</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-euler"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Schrittweite Δt <span class="val" id="euler-dt-v">0.80</span></label><input type="range" id="euler-dt" min="0.1" max="2.5" step="0.05" value="0.8"></div>
+          <div class="ctrl"><label>Krümmung / Steifheit <span class="val" id="euler-k-v">2.5</span></label><input type="range" id="euler-k" min="0.5" max="6" step="0.1" value="2.5"></div>
+          <div class="ctrl"><label>Verfahren</label>
+            <div class="seg" id="euler-method"><button data-v="explicit" class="on">explicit</button><button data-v="semi">semi-implicit</button></div>
+          </div>
+          <div class="lab-readout">
+            wahres Ziel <span class="k" id="euler-true">0.00</span><br>
+            Euler-Schätzung <span class="k" id="euler-est">0.00</span><br>
+            Fehler <span class="big" id="euler-err">0.00</span>
+          </div>
+          <div class="lab-task">Vergrößere <b>Δt</b> bei <b>explicit</b>: der Pfeil schießt über die graue
+          Soll-Kurve. Bei <b>semi-implicit</b> bleibt er angeschmiegt — selbst bei großem Δt.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <p class="lab-caption">Grau: die wahre Lösungskurve. Pfeil: der Euler-Schritt. Explicit folgt der Anfangstangente (überschießt bei großem Δt); semi-implicit zielt auf die Endsteigung (selbstdämpfend). <span class="src src-classic">klassisch</span></p>
+
+    <h3 class="reveal">Die entscheidende Beobachtung fürs Bild</h3>
+    <p class="reveal">Im Quell-Kapitel steht bei LRC: <em>„explicit-Euler reicht (billig)"</em>. Das ist bemerkenswert,
+    denn dieselbe Wahl lässt LTC explodieren. Der Grund: Farsang et al. zeigen empirisch, dass
+    <strong>LTCs mit explizitem Euler erster Ordnung und nur einem unfolding gar nicht konvergieren</strong>
+    — sie entwickeln Scheinoszillationen <span class="src src-paper" title="LTC-Interpretation-Report zitiert Farsang 2024 wörtlich">Paper · Farsang 2024</span>.
+    LRC dagegen läuft mit genau diesem billigen Verfahren <em>„with a very small validation loss"</em>.</p>
+
+    <p class="reveal">Warum darf LRC, was LTC verboten ist? Weil LRC die Dynamik so umbaut, dass sie nicht mehr
+    steif ist — konkret über eine <mark class="lrc">kleinere Lipschitz-Konstante</mark>. Das ist Tiefenkonzept III,
+    und zugleich Station 3 unserer Reise.</p>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================================================
+     6 · LRC + LIPSCHITZ
+     ============================================================ -->
+<section id="lrc">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--lrc);color:var(--lrc)"><span class="section-num">06</span> &nbsp;Station 3 — liquid wird auch die Kapazität</div>
+    <h2 class="reveal">LRC: Sättigung, Elastance und ruhige Hände</h2>
+    <p class="reveal">Liquid-Resistance Liquid-Capacitance <span class="src src-paper" title="Farsang, Neubauer, Grosu 2024, NeuroAI@NeurIPS, arXiv:2403.08791">Paper · Farsang 2024</span>
+    nimmt die LTC und fügt zwei Zutaten hinzu, die das Schwingen bändigen. Erstens <strong>Sättigung</strong>:
+    der Antrieb wird durch ein <span class="mono">tanh</span> begrenzt, der Zerfall durch ein
+    <span class="mono">σ</span> — beide können nicht mehr unbeschränkt wachsen. Zweitens
+    <strong>liquid elastance</strong> <span class="mono" style="color:var(--lrc)">ε</span>, eine gelernte,
+    zustandsabhängige reziproke Kapazität. Aus deinem Code
+    <span class="src src-code" title="lrc_cell.py:265-278, forget_gate-Form">Code · lrc_cell.py</span>:</p>
+
+    <div class="eq accent-lrc reveal">
+      <div class="eq-label"><span>LRC · explicit-Euler-Update mit Elastance-Gate</span><span class="src src-code">Code</span></div>
+      <div data-eq="v' = \underbrace{-\,v\,\sigma(f)}_{\text{gesättigter Zerfall}} + \underbrace{E_{\text{leak}}\tanh(g)}_{\text{gesättigter Antrieb}}\,,\qquad v_{t+1} = v_t + \underbrace{\varepsilon(x,v)}_{\in(0,1)}\!\cdot\Delta t\cdot v'"></div>
+    </div>
+
+    <p class="reveal">Der Clou steckt im <span class="mono" style="color:var(--lrc)">ε(x,v)·Δt</span>: Die Elastance ist
+    ein <strong>gelerntes Gate</strong> <span class="mono">ε = σ(Dense([x,v]))</span>, das zwischen 0 und 1 liegt
+    und die effektive Schrittweite zustandsabhängig <em>verkleinert</em>, wo die Dynamik sonst überschießen würde
+    <span class="src src-code" title="lrc_cell.py: asymmetric elastance = sigmoid(Dense)·dt">Code</span>.
+    Das Paper beschreibt das als „Variation dämpfen, wenn sie sanft sein soll, und unverändert lassen, wenn
+    steifes Verhalten erwünscht ist" <span class="src src-paper" title="farsang2024-lrc.md:25">Paper</span>.</p>
+
+    <div class="callout insight reveal">
+      <div class="ctag">Kern-Insight LRC vs. LTC — direkt aus deiner Thesis</div>
+      <p style="margin-bottom:.6em">Genau dieses <span class="mono" style="color:var(--lrc)">ε(wᵢ)</span> ist der Mechanismus, den
+      <strong>RQ2/RQ5 isolieren</strong> wollen: Ist die liquid elastance für den Performance-Unterschied
+      verantwortlich? <strong>Ohne aktivierte Elastance fällt LRC auf eine saturierte LTC zurück</strong>
+      (<span class="mono">ε = 1</span>).</p>
+      <p style="margin-bottom:0">Im nächsten Lab kannst du genau diesen Schalter umlegen — Elastance an/aus — und
+      siehst live, wie aus „ruhige Hände" ein nervöses LTC-Verhalten wird.</p>
+    </div>
+
+    <h3 class="reveal" style="color:var(--lrc)">Tiefenkonzept III — die Lipschitz-Konstante</h3>
+    <p class="reveal">Die <strong>Lipschitz-Konstante</strong> <span class="mono">L</span> einer Funktion misst, wie
+    stark sie Abstände <em>maximal</em> verstärkt: <span class="mono">‖F(a) − F(b)‖ ≤ L·‖a − b‖</span>. Ein kleines
+    <span class="mono">L</span> heißt: zwei nahe Eingaben bleiben auch nach der Funktion nah beieinander — die
+    Dynamik ist <em>glatt</em> und gutmütig. Ein großes <span class="mono">L</span> heißt: winzige Unterschiede
+    werden aufgeblasen — empfindlich, chaotisch, schwer zu integrieren.</p>
+
+    <p class="reveal">Für unsere Zellen heißt das zweierlei. <strong>Numerisch:</strong> eine kleinere Lipschitz-Konstante
+    bedeutet Jacobi-Matrizen näher an der Identität, der explicit Euler bleibt stabil — deshalb reicht der billige
+    Solver <span class="src src-dr" title="Vanishing-Gradient-Loesung-LTC-LRC.md:76 — Jacobi näher an Identität, Gradient zerfällt langsamer">Deep-Research</span>.
+    <strong>Praktisch fürs Auto:</strong> ein glatteres Modell wird durch Sensorrauschen — Regen, Schnee, Gegenlicht —
+    weniger aus der Bahn geworfen. Farsang et al. beweisen formal, dass LRC eine <strong>kleinere Lipschitz-Konstante
+    als die saturierte STC</strong> hat <span class="src src-paper" title="farsang2024-lrc.md:15 — 'formally proven smaller than STC'">Paper</span>.</p>
+
+    <p class="reveal">Das folgende Lab macht Lipschitz greifbar — als das, worauf es im Auto ankommt: Robustheit.
+    Dasselbe Sensorsignal läuft <strong>zweimal</strong> durch dieselbe Zelle, einmal sauber (<em>Sonne</em>) und einmal
+    mit Rauschen (<em>Regen</em>). Die Schere zwischen den beiden Ausgängen ist die in die Lenkung übertragene Störung.
+    Schalt <strong>Sättigung + Elastance</strong> (das, was LRC von LTC unterscheidet) ein und aus:</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-lip">
+      <div class="lab-head"><span class="led"></span><span class="title">Lipschitz-Lab · überträgt die Zelle das Rauschen?</span><span class="sub" id="lip-status">Sonne vs. Regen</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-lip"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Sensorrauschen <span class="val" id="lip-noise-v">0.50</span></label><input type="range" id="lip-noise" min="0" max="1" step="0.02" value="0.5"></div>
+          <div class="ctrl"><label>Antriebsstärke <span class="val" id="lip-drive-v">3.0</span></label><input type="range" id="lip-drive" min="0.5" max="8" step="0.1" value="3"></div>
+          <div class="ctrl"><label>LRC-Elastance + Sättigung</label>
+            <div class="seg" id="lip-mode"><button data-v="off" class="on">aus (≈ LTC)</button><button data-v="on">an (LRC)</button></div>
+          </div>
+          <div class="lab-readout">
+            Output-Drift (Regen vs. Sonne)<br>
+            <span class="big" id="lip-spread">0.00</span> <span id="lip-verdict" class="bad">überträgt Rauschen →</span><br>
+            <span class="dim">Klein = kleine Lipschitz-Konstante = robust.</span>
+          </div>
+          <div class="lab-task">Bei <b>aus</b> überträgt die empfindliche Dynamik jeden Rausch-Zacken in den Ausgang
+          (große Schere = hohe Lipschitz-Konstante). Schalt <b>an</b>: Sättigung + Elastance glätten — der Ausgang
+          bleibt ruhig, trotz gleichem Rauschen.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <p class="lab-caption">Sauberes (durchgezogen) vs. verrauschtes (gestrichelt) Sensorsignal durch dieselbe Zelle. Die Schere ist die in den Ausgang übertragene Störung — ein anschaulicher Proxy für die Lipschitz-Konstante. <span class="src src-paper">Paper · Farsang 2024</span></p>
+
+    <div class="callout warn reveal">
+      <div class="ctag">Quellen-Ehrlichkeit zu den Zahlen</div>
+      <p style="margin-bottom:.5em">In der Recherche kursieren zwei <em>verschiedene</em> Lipschitz-Zahlensätze — bitte nicht verwechseln:</p>
+      <p style="margin-bottom:.5em"><strong>Paper-belegt</strong> (Lane-Keeping-Glattheit, ICRA 2024): LTC-NCP <span class="mono">0.0081</span> vs. CT-RNN-NCP <span class="mono">0.0109</span> — chemische/komplexere Dynamik ist glatter <span class="src src-paper">Paper · farsang2024learning</span>.</p>
+      <p style="margin-bottom:0"><strong>Deep-Research, unverifiziert</strong> (effektive Zell-Lipschitz, ×10⁻⁴): LTC ≈ 90, STC ≈ 101, LRC ≈ 43–47 — diese Zahlen stammen aus LLM-Recherche und sind <em>vor Zitation gegen das Originalpaper zu prüfen</em> <span class="src src-dr">Deep-Research</span>.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================================================
+     7 · CfC + CLOSED-FORM
+     ============================================================ -->
+<section id="cfc">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--cfc);color:var(--cfc)"><span class="section-num">07</span> &nbsp;Station 4 — die Integration verschwindet</div>
+    <h2 class="reveal">CfC: warum integrieren, wenn man die Lösung kennt?</h2>
+    <p class="reveal">CT-RNN, LTC und LRC haben eines gemeinsam: Sie <strong>integrieren</strong> die ODE Schritt für
+    Schritt. Jeder Schritt kostet, jeder Schritt kann instabil werden. Die Closed-form Continuous-time-Zelle
+    <span class="src src-paper" title="Hasani et al. 2022, Closed-form continuous-time neural networks, Nature Machine Intelligence, arXiv:2106.13898">Paper · Hasani 2022</span>
+    stellt eine radikale Frage: Was, wenn wir die ODE <em>einmalig analytisch lösen</em> und die Lösung direkt
+    als Formel hinschreiben?</p>
+
+    <h3 class="reveal" style="color:var(--cfc)">Tiefenkonzept IV — numerische Integration vs. geschlossene Lösung</h3>
+    <p class="reveal">Das ist genau die Formulierung aus dem Bild: <em>„CfC ersetzt die numerische Integration durch
+    eine geschlossene Lösung. Kein Solver, ein Sigmoid-Zeitgate statt Exponential-Decay."</em> Konkret: Die exakte
+    Lösung der LTC-ODE enthält einen Term <span class="mono">e^(−f·t)</span>, der exponentiell gegen null zerfällt.
+    Das ist numerisch heikel und — wichtiger — es erzeugt beim Training einen <strong>verschwindenden Gradienten</strong>:
+    Information über frühe Zeitschritte stirbt exponentiell weg <span class="src src-dr" title="Vanishing-Gradient-Loesung-LTC-LRC.md:56-62">Deep-Research</span>.</p>
+
+    <p class="reveal">CfC ersetzt diesen exponentiellen Zerfall durch ein <strong>Sigmoid-Zeitgate</strong>, das
+    sanft zwischen zwei gelernten „Regimen" interpoliert. Deine Implementierung
+    <span class="src src-code" title="cfc_cell.py:86-91">Code · cfc_cell.py</span>:</p>
+
+    <div class="eq accent-cfc reveal">
+      <div class="eq-label"><span>CfC · geschlossene Lösung (Code-Parametrisierung)</span><span class="src src-code">Code</span></div>
+      <div data-eq="h(t) \;=\; \underbrace{\big(1-\sigma(t_a\,t + t_b)\big)}_{\text{Gate}}\cdot \mathrm{ff}_1(x) \;+\; \underbrace{\sigma(t_a\,t + t_b)}_{\text{Gegen-Gate}}\cdot \mathrm{ff}_2(x)"></div>
+    </div>
+
+    <p class="reveal">Kein <span class="mono">Δt</span>-Loop, kein Solver, kein unfolding — der Zustand bei
+    Zeitpunkt <span class="mono">t</span> ist <em>direkt</em> berechenbar. Das Gate
+    <span class="mono">σ(t_a·t + t_b)</span> wandert sanft von 0 nach 1, statt abrupt zu zerfallen, und die
+    Zelle interpoliert zwischen zwei Dynamikregimen <span class="mono">ff₁</span> und <span class="mono">ff₂</span>,
+    statt gegen einen Fixpunkt zu kollabieren.</p>
+
+    <p class="reveal">Im Lab siehst du beide nebeneinander: links der <strong style="color:var(--ltc)">exponentielle
+    Zerfall</strong> (was eine naive geschlossene LTC-Lösung täte), rechts das <strong style="color:var(--cfc)">CfC-Sigmoid-Gate</strong>.
+    Achte auf die <em>Steigung am Rand</em> — sie ist das, was der Gradient „sieht":</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-cfc">
+      <div class="lab-head"><span class="led"></span><span class="title">Closed-form · Exponential-Decay vs. Sigmoid-Gate</span><span class="sub" id="cfc-status">t_a = 1.4</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-cfc"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Zerfallsrate f &nbsp;/&nbsp; Gate-Steilheit t_a <span class="val" id="cfc-a-v">1.4</span></label><input type="range" id="cfc-a" min="0.2" max="6" step="0.1" value="1.4"></div>
+          <div class="ctrl"><label>Gate-Verschiebung t_b <span class="val" id="cfc-b-v">-2.0</span></label><input type="range" id="cfc-b" min="-5" max="2" step="0.1" value="-2"></div>
+          <div class="ctrl"><label>Anzeige</label>
+            <div class="seg" id="cfc-show"><button data-v="both" class="on">beide</button><button data-v="grad">Gradient-Sicht</button></div>
+          </div>
+          <div class="lab-readout">
+            Restgradient am Zeithorizont<br>
+            exp-Decay <span class="big bad" id="cfc-g-exp">0.00</span> &nbsp; CfC <span class="big ok" id="cfc-g-sig">0.00</span><br>
+            <span class="dim">Höher = mehr lernbares Signal aus der Ferne.</span>
+          </div>
+          <div class="lab-task">Dreh <b>f/t_a</b> hoch: der <b style="color:var(--ltc)">exp-Decay</b> wird am Rand
+          flach (Gradient → 0, „vanishing"). Das <b style="color:var(--cfc)">CfC-Gate</b> behält Steigung — daher besserer Gradientenfluss.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <p class="lab-caption">Beide sind geschlossene Lösungen — kein Solver. Der Unterschied ist die Form: exponentieller Zerfall verliert am Horizont jede Steigung (vanishing gradient); das Sigmoid-Gate bleibt informativ. <span class="src src-code">Code</span> · <span class="src src-dr">Deep-Research (Gate-Vorzeichen)</span></p>
+
+    <div class="callout warn reveal">
+      <div class="ctag">Quellen-Ehrlichkeit zur CfC-Gleichung</div>
+      <p style="margin-bottom:0">Es kursieren zwei Schreibweisen: dein <strong>Code</strong> nutzt
+      <span class="mono">σ(t_a·t + t_b)</span> mit zwei Heads <span class="mono">ff₁, ff₂</span>; das <strong>Paper</strong>
+      notiert <span class="mono">x(t) = σ(−f·t)·g + (1−σ(−f·t))·h</span>. Beide beschreiben dieselbe Idee
+      (Sigmoid-Gate statt Decay), unterscheiden sich aber in Vorzeichen und Parametrisierung. Dein Code trägt
+      bewusst die Notiz <em>„cross-check gate signs against the paper PDF before citing"</em>
+      <span class="src src-code">Code · cfc_cell.py:5</span>.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================================================
+     8 · SYNTHESE
+     ============================================================ -->
+<section id="synthesis">
+  <div class="wrap">
+    <div class="eyebrow reveal"><span class="section-num">08</span> &nbsp;Zusammenführung</div>
+    <h2 class="reveal">Die vier nebeneinander</h2>
+    <p class="reveal">Dieselbe Membran-ODE, vier Designentscheidungen. Die Tabelle fasst zusammen, was wir
+    interaktiv gesehen haben — Quellenherkunft je Zeile markiert.</p>
+  </div>
+  <div class="wide">
+    <div class="cmp-wrap reveal">
+      <table class="cmp-table">
+        <thead>
+          <tr>
+            <th style="min-width:150px">Eigenschaft</th>
+            <th class="c-ct"><div class="cmp-head"><span class="dot" style="background:var(--ct)"></span>CT-RNN</div></th>
+            <th class="c-ltc"><div class="cmp-head"><span class="dot" style="background:var(--ltc)"></span>LTC</div></th>
+            <th class="c-lrc"><div class="cmp-head"><span class="dot" style="background:var(--lrc)"></span>LRC</div></th>
+            <th class="c-cfc"><div class="cmp-head"><span class="dot" style="background:var(--cfc)"></span>CfC</div></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th>Synapsen</th>
+            <td>elektrisch (ohmsch)</td><td>chemisch (sigmoid)</td><td>chemisch + Sättigung</td><td>chemisch (gelöst)</td>
+          </tr>
+          <tr>
+            <th>Zeitkonstante τ</th>
+            <td class="bad">konstant</td><td class="good">liquid (input-abh.)</td><td class="good">liquid</td><td class="good">liquid (implizit)</td>
+          </tr>
+          <tr>
+            <th>Kapazität / Elastance</th>
+            <td>konstant</td><td>konstant (C=1)</td><td class="good">liquid ε(x,v)</td><td>—</td>
+          </tr>
+          <tr>
+            <th>Lösungsverfahren</th>
+            <td>forward Euler, 1×</td><td class="bad">fused semi-impl., 6×</td><td class="good">explicit Euler, 1×</td><td class="good">geschlossen, 0×</td>
+          </tr>
+          <tr>
+            <th>Steife ODE?</th>
+            <td>mild</td><td class="bad">ja — Hauptnachteil</td><td class="good">weitgehend gelöst</td><td class="good">umgangen (keine Integration)</td>
+          </tr>
+          <tr>
+            <th>Lipschitz-Konstante</th>
+            <td>hoch</td><td class="bad">groß (unbeschränkt)</td><td class="good">kleiner (formal bewiesen &lt; STC)</td><td>n/a</td>
+          </tr>
+          <tr>
+            <th>Oszillationen</th>
+            <td>möglich</td><td class="bad">neigt dazu</td><td class="good">gedämpft</td><td class="good">gesättigt, stabil</td>
+          </tr>
+          <tr>
+            <th>Rechenkosten</th>
+            <td>niedrig</td><td class="bad">hoch (6 unfolds)</td><td class="good">niedrig (2.5× schneller als LTC)</td><td class="good">sehr niedrig (1–5 Größenordn.)</td>
+          </tr>
+          <tr>
+            <th>Quelle</th>
+            <td><span class="src src-classic">klassisch</span></td>
+            <td><span class="src src-paper">Hasani 2021</span></td>
+            <td><span class="src src-paper">Farsang 2024</span></td>
+            <td><span class="src src-paper">Hasani 2022</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="wrap">
+    <p class="reveal note" style="margin-top:8px">Rechenkosten-Zahlen: „2.5× schneller als LTC" und „1–5 Größenordnungen"
+    sind paper-/notiznah belegt <span class="src src-paper">Paper · Farsang 2024 / neural-ode.md</span>; konkrete
+    Benchmark-Tabellen (psMNIST, Crash-Likelihood) stammen aus Deep-Research und sind als solche zu behandeln
+    <span class="src src-dr">Deep-Research</span>.</p>
+
+    <h3 class="reveal">Was das für deine Forschungsfragen heißt</h3>
+    <p class="reveal">Die Reise erklärt, warum deine Matrix <strong>LRC vs. LTC</strong> in den Mittelpunkt stellt:
+    Die beiden unterscheiden sich nur in der liquid elastance <span class="mono" style="color:var(--lrc)">ε</span>
+    und der Sättigung. Schaltet man ε ab, ist LRC eine saturierte LTC — also lässt sich der Effekt
+    <em>sauber isolieren</em>. CfC ist die Gegenprobe von der anderen Seite: dasselbe Vanishing-Gradient-Problem,
+    aber durch <em>Abschaffen</em> der Integration gelöst statt durch <em>Zähmen</em> der Dynamik. Vier Zellen,
+    zwei Strategien gegen dasselbe numerische Übel.</p>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================================================
+     9 · QUELLEN
+     ============================================================ -->
+<section id="sources">
+  <div class="wrap">
+    <div class="eyebrow reveal"><span class="section-num">09</span> &nbsp;Quellen &amp; Provenienz</div>
+    <h2 class="reveal">Worauf das hier beruht</h2>
+    <p class="reveal">Jede inhaltliche Aussage trägt oben ein Herkunfts-Badge. Die Primärquellen mit ihren
+    BibLaTeX-Citekeys aus <code>references.bib</code>:</p>
+
+    <div class="bib reveal">
+      <div class="bib-item">
+        <div class="bib-key">Hasani2020</div>
+        <div class="bib-cite"><span class="t">Liquid Time-constant Networks.</span> <span class="meta">Hasani, Lechner, Amini, Rus, Grosu. Proc. AAAI 35(9), 7657–7666, 2021.</span><div class="where">arXiv:2006.04439 · LTC, steife ODE, fused Euler</div></div>
+      </div>
+      <div class="bib-item">
+        <div class="bib-key">Hasani_2022</div>
+        <div class="bib-cite"><span class="t">Closed-form continuous-time neural networks.</span> <span class="meta">Hasani, Lechner, Amini, Liebenwein, Ray, Tschaikowski, Teschl, Rus. Nature Machine Intelligence 4(11), 992–1003, 2022.</span><div class="where">arXiv:2106.13898 · DOI 10.1038/s42256-022-00556-7 · CfC, closed-form, Sigmoid-Gate</div></div>
+      </div>
+      <div class="bib-item">
+        <div class="bib-key">Farsang2024liquid</div>
+        <div class="bib-cite"><span class="t">Liquid Resistance Liquid Capacitance Networks.</span> <span class="meta">Farsang, Neubauer, Grosu. 1st Workshop on NeuroAI, 38th NeurIPS, 2024 (non-archival).</span><div class="where">arXiv:2403.08791 · LRC, liquid elastance, Lipschitz, explicit Euler</div></div>
+      </div>
+      <div class="bib-item">
+        <div class="bib-key">farsang2024learning</div>
+        <div class="bib-cite"><span class="t">Learning with Chemical versus Electrical Synapses — Does it Make a Difference?</span> <span class="meta">Farsang et al. Proc. IEEE ICRA, 15106–15112, 2024.</span><div class="where">DOI 10.1109/ICRA57147.2024.10611016 · Lane-Keeping, Lipschitz summer/winter, „crashes in winter"</div></div>
+      </div>
+      <div class="bib-item">
+        <div class="bib-key">lechner2020neural</div>
+        <div class="bib-cite"><span class="t">Neural Circuit Policies enabling auditable autonomy.</span> <span class="meta">Lechner, Hasani, Amini, Henzinger, Rus, Grosu. Nature Machine Intelligence 2, 2020.</span><div class="where">DOI 10.1038/s42256-020-00237-3 · NCP-Wiring, Membran-ODE</div></div>
+      </div>
+      <div class="bib-item">
+        <div class="bib-key">(arXiv:2006.04418)</div>
+        <div class="bib-cite"><span class="t">Learning Long-Term Dependencies in Irregularly-Sampled Time Series.</span> <span class="meta">Lechner &amp; Hasani, 2020.</span><div class="where">ODE-LSTM / Mixed-Memory · Vanishing-Gradient-Theorem (EVGP) · noch nicht im Thesis-bib</div></div>
+      </div>
+      <div class="bib-item">
+        <div class="bib-key">(Funahashi 1993)</div>
+        <div class="bib-cite"><span class="t">Approximation of dynamical systems by continuous time recurrent neural networks.</span> <span class="meta">Funahashi &amp; Nakamura. Neural Networks 6(6), 801–806, 1993.</span><div class="where">CT-RNN-Ursprung · <strong>nicht im Thesis-bib</strong>, Lehrbuch-Referenz — vor Zitation anlegen &amp; prüfen</div></div>
+      </div>
+    </div>
+
+    <div class="callout reveal">
+      <div class="ctag">Transparenz-Hinweis</div>
+      <p style="margin-bottom:0">Die Original-PDFs von LTC, LRC und CfC liegen <em>nicht</em> im Repo — alle wörtlichen
+      Paper-Aussagen stammen aus deinen Paper-Notizen im Vault. Die mit <span class="src src-dr">Deep-Research</span>
+      markierten Zahlen (Lipschitz ×10⁻⁴, Benchmark-Tabellen, CfC-Gate-Vorzeichen) sind LLM-Recherche und vor
+      einer Thesis-Zitation gegen die Primärquellen zu prüfen. Die <span class="src src-code">Code</span>-markierten
+      Gleichungen sind exakt aus deiner Implementierung übernommen und im Browser live nachgerechnet.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="f-title">Vom Stromkreis zum liquiden Neuron</div>
+  <p>Interaktive Lehrseite zur EEC-Familie · CT-RNN · LTC · LRC · CfC. Alle Simulationen rechnen die echten
+  Update-Regeln aus dem Thesis-Code im Browser.</p>
+  <p class="mono">Masterthesis · Neue Neuron-Typen im ML · TU Wien</p>
+</footer>
+
+<!-- ============================================================
+     BIBLIOTHEKEN
+     ============================================================ -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" integrity="sha384-43gviWU0YVjaDtb/GhzOouOXtZMP/7XUzwPTstBeZFe/+rCMvRwr4yROQP43s0Xk" crossorigin="anonymous"></script>
+
+<script>
+/* ============================================================
+   EEC-FAMILY EXPLAINER — Interaktive Engine
+   Alle Zell-Updates rechnen die echten Gleichungen aus dem
+   Thesis-Code (skalare 1-Neuron-Reduktion).
+   ============================================================ */
+(function(){
+'use strict';
+
+/* ---------- Mini-Utils ---------- */
+const $  = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const sig   = x => 1/(1+Math.exp(-x));
+const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+const fmt   = (v,n=2) => (v>=0?' ':'') + v.toFixed(n);
+function rng(seed){ return function(){ seed|=0; seed=seed+0x6D2B79F5|0; let t=Math.imul(seed^seed>>>15,1|seed); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+
+/* CSS-Variablen lesen */
+const CSS = getComputedStyle(document.documentElement);
+const COL = {
+  ct:  CSS.getPropertyValue('--ct').trim()  || '#6b7280',
+  ltc: CSS.getPropertyValue('--ltc').trim() || '#c2710c',
+  lrc: CSS.getPropertyValue('--lrc').trim() || '#2563eb',
+  cfc: CSS.getPropertyValue('--cfc').trim() || '#0f9d6b',
+  grid:'#1d2738', line:'#283449', faint:'#5d6b82', ink:'#cdd6e4'
+};
+
+/* ============================================================
+   SCOPE — schlankes Canvas-Plot-Framework (DPR-scharf)
+   ============================================================ */
+class Scope{
+  constructor(id, pad){
+    this.cv = document.getElementById(id);
+    this.ctx = this.cv.getContext('2d');
+    this.dpr = Math.min(window.devicePixelRatio||1, 2);
+    this.pad = pad || {l:44,r:16,t:18,b:26};
+    this.resize();
+    if(window.ResizeObserver){
+      new ResizeObserver(()=>{ this.resize(); this.onresize && this.onresize(); })
+        .observe(this.cv.parentElement);
+    }
+  }
+  resize(){
+    const r = this.cv.parentElement.getBoundingClientRect();
+    this.w = Math.max(r.width, 240);
+    this.h = Math.max(r.height, 300);
+    this.cv.width  = this.w*this.dpr;
+    this.cv.height = this.h*this.dpr;
+    this.cv.style.height = this.h+'px';
+    this.ctx.setTransform(this.dpr,0,0,this.dpr,0,0);
+  }
+  range(x0,x1,y0,y1){ this.x0=x0; this.x1=x1; this.y0=y0; this.y1=y1; }
+  X(x){ return this.pad.l + (x-this.x0)/(this.x1-this.x0)*(this.w-this.pad.l-this.pad.r); }
+  Y(y){ return this.pad.t + (1-(y-this.y0)/(this.y1-this.y0))*(this.h-this.pad.t-this.pad.b); }
+  clear(){ this.ctx.clearRect(0,0,this.w,this.h); }
+  grid(nx,ny,opt){
+    opt=opt||{}; const c=this.ctx;
+    c.strokeStyle=COL.grid; c.lineWidth=1; c.font='10px JetBrains Mono';
+    c.fillStyle=COL.faint; c.textAlign='right'; c.textBaseline='middle';
+    for(let i=0;i<=ny;i++){
+      const y=this.y0+(this.y1-this.y0)*i/ny, py=this.Y(y);
+      c.globalAlpha = (Math.abs(y)<1e-9)?0.9:0.4;
+      c.beginPath(); c.moveTo(this.pad.l,py); c.lineTo(this.w-this.pad.r,py); c.stroke();
+      c.globalAlpha=1;
+      if(opt.yl!==false) c.fillText(y.toFixed(opt.yd!=null?opt.yd:1), this.pad.l-6, py);
+    }
+    c.textAlign='center'; c.textBaseline='top';
+    for(let i=0;i<=nx;i++){
+      const x=this.x0+(this.x1-this.x0)*i/nx, px=this.X(x);
+      c.globalAlpha=0.28;
+      c.beginPath(); c.moveTo(px,this.pad.t); c.lineTo(px,this.h-this.pad.b); c.stroke();
+      c.globalAlpha=1;
+      if(opt.xl) c.fillText(x.toFixed(opt.xd!=null?opt.xd:0), px, this.h-this.pad.b+5);
+    }
+  }
+  path(pts, color, w, opt){
+    opt=opt||{}; const c=this.ctx; if(pts.length<1) return;
+    c.lineJoin='round'; c.lineCap='round'; c.strokeStyle=color; c.lineWidth=w||2;
+    if(opt.dash) c.setLineDash(opt.dash); else c.setLineDash([]);
+    c.globalAlpha = opt.alpha!=null?opt.alpha:1;
+    c.beginPath();
+    let started=false;
+    for(const p of pts){
+      const px=this.X(p[0]), py=this.Y(clamp(p[1],this.y0-99,this.y1+99));
+      if(!started){ c.moveTo(px,py); started=true; } else c.lineTo(px,py);
+    }
+    c.stroke(); c.setLineDash([]); c.globalAlpha=1;
+  }
+  dot(x,y,color,r){ const c=this.ctx; c.fillStyle=color; c.beginPath(); c.arc(this.X(x),this.Y(y),r||3.5,0,7); c.fill(); }
+  label(txt,x,y,color,align){
+    const c=this.ctx; c.font='600 11px JetBrains Mono'; c.fillStyle=color;
+    c.textAlign=align||'left'; c.textBaseline='middle'; c.fillText(txt,this.X(x),this.Y(y));
+  }
+}
+
+/* ============================================================
+   ZELL-INTEGRATOREN — skalare Reduktion der echten Updates
+   ============================================================ */
+// CT-RNN: forward Euler, festes τ.  (ctrnn_cell.py)
+function stepCTRNN(h,x,dt,p){
+  const drive = Math.tanh(p.win*x + p.wrec*h + p.b);
+  return h + (dt/p.tau)*(-h + drive);
+}
+// LTC: kompakte ODE, wählbarer Solver, ode_unfolds.  (hasani2020-ltc.md / ltc_cell.py)
+function stepLTC(h,x,dt,p){
+  let v=h; const sub=dt/(p.unfolds||1);
+  for(let i=0;i<(p.unfolds||1);i++){
+    const f = p.gain*sig(p.win*x + p.wrec*v + p.b);     // liquide Synapse, f>0
+    if(p.solver==='explicit') v = v + sub*(-(1/p.tau + f)*v + f*p.A);
+    else                      v = (v + sub*f*p.A)/(1 + sub*(1/p.tau + f)); // fused semi-implicit
+  }
+  return v;
+}
+// LRC: forget-gate-Form, Sättigung + Elastance-Gate, explicit Euler.  (lrc_cell.py)
+function stepLRC(h,x,dt,p){
+  const v=h;
+  const fpre = p.wfIn*x + p.wfRec*v + p.bf;
+  const gpre = p.wgIn*x + p.wgRec*v + p.bg;
+  const vprime = -v*sig(fpre) + p.vleak*Math.tanh(gpre);   // beide Terme gesättigt
+  const eps = p.elast ? sig(p.weIn*x + p.weRec*v + p.be) : 1.0;  // ε∈(0,1) bzw. =1 → saturierte LTC
+  return v + eps*dt*vprime;
+}
+// CfC: closed-form, Sigmoid-Zeitgate interpoliert zwei Heads.  (cfc_cell.py)
+function stepCFC(h,x,dt,p){
+  const z   = Math.tanh(p.win*x + p.wrec*h + p.b);   // backbone (lecun-tanh-artig)
+  const ff1 = Math.tanh(p.a1*z + p.wrec*h + p.c1);   // Regime 1 (halten)
+  const ff2 = Math.tanh(p.a2*z + p.win*x + p.c2);    // Regime 2 (Ziel)
+  const ta  = p.ta*(1 + 0.4*Math.abs(x));            // leicht input-abhängiges Zeitgate
+  const gate= sig(ta*dt + p.tb);
+  return (1-gate)*ff1 + gate*ff2;
+}
+
+/* Trajektorie über ein Zeitfenster integrieren */
+function integrate(stepFn, p, signal, dt, T, h0){
+  let h = h0||0; const pts=[[0,h]]; const n=Math.max(2,Math.round(T/dt));
+  for(let i=1;i<=n;i++){ const t=i*dt; h=stepFn(h, signal(t-dt), dt, p); pts.push([t, h]); }
+  return pts;
+}
+
+/* ============================================================
+   BOOT
+   ============================================================ */
+function boot(){
+  renderMath();
+  initReveal();
+  initProgress();
+  initTOC();
+  try{ initHero(); }catch(e){ console.warn('hero failed', e); }
+  // Labs (jeder einzeln gekapselt — ein Fehler killt nicht die anderen)
+  [initEEC, initCompare, initStiffness, initEuler, initLipschitz, initCfC].forEach(fn=>{
+    try{ fn(); }catch(e){ console.warn(fn.name, e); }
+  });
+}
+
+/* ---------- KaTeX ---------- */
+function renderMath(){
+  if(typeof katex==='undefined'){ return setTimeout(renderMath, 80); }
+  $$('[data-eq]').forEach(el=>{
+    try{ katex.render(el.dataset.eq, el, {displayMode:true, throwOnError:false}); }
+    catch(e){ el.textContent=el.dataset.eq; }
+  });
+}
+
+/* ---------- Reveal (GSAP) ---------- */
+function initReveal(){
+  const heroR = $$('#hero .reveal');
+  if(typeof gsap==='undefined'){ $$('.reveal').forEach(e=>{e.style.opacity=1; e.style.transform='none';}); return; }
+  // Hero sofort
+  gsap.to(heroR, {opacity:1, y:0, duration:1, ease:'power3.out', stagger:0.12, delay:0.2});
+  if(typeof ScrollTrigger==='undefined'){ $$('.reveal:not(#hero .reveal)').forEach(e=>{e.style.opacity=1;e.style.transform='none';}); return; }
+  gsap.registerPlugin(ScrollTrigger);
+  $$('.reveal').forEach(el=>{
+    if(el.closest('#hero')) return;
+    gsap.to(el, {opacity:1, y:0, duration:0.75, ease:'power2.out',
+      scrollTrigger:{trigger:el, start:'top 90%'}});
+  });
+}
+
+/* ---------- Fortschrittsbalken ---------- */
+function initProgress(){
+  const bar=$('#progress');
+  const upd=()=>{ const h=document.documentElement.scrollHeight-innerHeight; bar.style.width=(h>0?clamp(scrollY/h,0,1)*100:0)+'%'; };
+  addEventListener('scroll', upd, {passive:true}); upd();
+}
+
+/* ---------- TOC (Punkt-Navigation) ---------- */
+function initTOC(){
+  const secs=[['intro','Fallbeispiel'],['eec','EEC-Stromkreis'],['family','Die Familie'],
+    ['ctrnn','CT-RNN'],['ltc','LTC · steife ODE'],['euler','Explicit Euler'],
+    ['lrc','LRC · Lipschitz'],['cfc','CfC · closed-form'],['synthesis','Vergleich'],['sources','Quellen']];
+  const nav=$('#toc');
+  secs.forEach(([id,t])=>{ const a=document.createElement('a'); a.href='#'+id; a.innerHTML=`<span>${t}</span>`; a.dataset.id=id; nav.appendChild(a); });
+  const links=$$('#toc a');
+  const obs=new IntersectionObserver(es=>{
+    es.forEach(e=>{ if(e.isIntersecting){ links.forEach(l=>l.classList.toggle('active', l.dataset.id===e.target.id)); } });
+  }, {rootMargin:'-45% 0px -45% 0px'});
+  secs.forEach(([id])=>{ const el=document.getElementById(id); if(el) obs.observe(el); });
+  addEventListener('scroll', ()=>{ nav.classList.toggle('show', scrollY>innerHeight*0.7); }, {passive:true});
+}
+
+/* ============================================================
+   HERO — Three.js Membran-Wellen-Gitter
+   ============================================================ */
+function initHero(){
+  if(typeof THREE==='undefined') return;
+  const canvas=$('#hero-canvas');
+  const renderer=new THREE.WebGLRenderer({canvas, alpha:true, antialias:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  const scene=new THREE.Scene();
+  const cam=new THREE.PerspectiveCamera(52,1,0.1,200);
+  cam.position.set(0,7.5,15); cam.lookAt(0,-0.5,0);
+
+  const NX=46, NY=30, gap=0.92, N=NX*NY;
+  const pos=new Float32Array(N*3), col=new Float32Array(N*3), base=[];
+  const c1=new THREE.Color(COL.ltc), c2=new THREE.Color(COL.lrc), c3=new THREE.Color(COL.cfc), cink=new THREE.Color('#243043');
+  let i=0;
+  for(let y=0;y<NY;y++)for(let x=0;x<NX;x++){
+    const px=(x-NX/2)*gap, pz=(y-NY/2)*gap; base.push([px,pz]);
+    pos[i*3]=px; pos[i*3+1]=0; pos[i*3+2]=pz; i++;
+  }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos,3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col,3));
+  const points=new THREE.Points(geo, new THREE.PointsMaterial({size:0.085, vertexColors:true, transparent:true, opacity:0.85, sizeAttenuation:true}));
+  scene.add(points);
+
+  // Verbindungslinien (leichtes Netz)
+  const lpos=[]; const STRIDE=2;
+  for(let y=0;y<NY;y+=STRIDE)for(let x=0;x<NX;x+=STRIDE){
+    const a=base[y*NX+x];
+    if(x+STRIDE<NX){ const b=base[y*NX+x+STRIDE]; lpos.push(a[0],0,a[1], b[0],0,b[1]); }
+    if(y+STRIDE<NY){ const b=base[(y+STRIDE)*NX+x]; lpos.push(a[0],0,a[1], b[0],0,b[1]); }
+  }
+  const lgeo=new THREE.BufferGeometry(); lgeo.setAttribute('position', new THREE.Float32BufferAttribute(lpos,3));
+  const lines=new THREE.LineSegments(lgeo, new THREE.LineBasicMaterial({color:0x9fb0c8, transparent:true, opacity:0.14}));
+  scene.add(lines);
+
+  function resize(){ const r=canvas.getBoundingClientRect(); renderer.setSize(r.width,r.height,false); cam.aspect=r.width/Math.max(r.height,1); cam.updateProjectionMatrix(); }
+  resize(); addEventListener('resize', resize);
+
+  let mx=0,my=0;
+  addEventListener('pointermove', e=>{ mx=(e.clientX/innerWidth-0.5); my=(e.clientY/innerHeight-0.5); });
+
+  let t=0, raf;
+  const tmp=new THREE.Color();
+  function wave(px,pz,t){
+    const d=Math.sqrt(px*px+pz*pz);
+    return Math.sin(d*0.52 - t*1.5)*0.95*Math.exp(-d*0.05)
+         + Math.sin(px*0.32 + t*0.9)*0.28
+         + Math.cos(pz*0.4 - t*0.7)*0.2;
+  }
+  function loop(){
+    t+=0.016;
+    const P=geo.attributes.position.array, C=geo.attributes.color.array;
+    for(let k=0;k<N;k++){
+      const px=base[k][0], pz=base[k][1], h=wave(px,pz,t);
+      P[k*3+1]=h;
+      const u=clamp((h+1.1)/2.2,0,1);
+      if(u<0.5) tmp.copy(cink).lerp(c1, u*2); else { const v=(u-0.5)*2; tmp.copy(c1).lerp(c2,v).lerp(c3,v*0.5); }
+      const lum=0.45+0.55*u;
+      C[k*3]=tmp.r*lum; C[k*3+1]=tmp.g*lum; C[k*3+2]=tmp.b*lum;
+    }
+    geo.attributes.position.needsUpdate=true; geo.attributes.color.needsUpdate=true;
+    const lp=lgeo.attributes.position.array;
+    for(let k=0;k<lp.length;k+=3){ lp[k+1]=wave(lp[k],lp[k+2],t); }
+    lgeo.attributes.position.needsUpdate=true;
+    points.rotation.y = lines.rotation.y = Math.sin(t*0.08)*0.12 + mx*0.25;
+    cam.position.x += ((mx*3) - cam.position.x)*0.03;
+    cam.position.y += ((7.5 - my*2) - cam.position.y)*0.03;
+    cam.lookAt(0,-0.5,0);
+    renderer.render(scene,cam);
+    raf=requestAnimationFrame(loop);
+  }
+  loop();
+  // Anhalten, wenn Hero aus dem Blick scrollt
+  new IntersectionObserver(es=>{ es.forEach(e=>{ if(e.isIntersecting && !raf) loop(); else if(!e.isIntersecting && raf){ cancelAnimationFrame(raf); raf=null; } }); })
+    .observe(canvas);
+}
+
+/* ---------- Helfer: Slider an Wertanzeige binden ---------- */
+function bind(id, valId, fn, dec){
+  const el=$('#'+id); const v=valId?$('#'+valId):null;
+  const upd=()=>{ if(v) v.textContent=parseFloat(el.value).toFixed(dec!=null?dec:2); fn(parseFloat(el.value)); };
+  el.addEventListener('input', upd); return {el, upd};
+}
+function seg(containerId, fn){
+  const cont=$('#'+containerId);
+  cont.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+    cont.querySelectorAll('button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); fn(b.dataset.v||b.dataset.s);
+  }));
+}
+/* nur rendern, wenn Lab sichtbar (spart Akku) */
+function whenVisible(el, cb){
+  if(!window.IntersectionObserver){ cb(); return; }
+  new IntersectionObserver((es,o)=>{ es.forEach(e=>{ if(e.isIntersecting){ cb(); } }); }, {threshold:0.05}).observe(el);
+}
+
+/* ============================================================
+   LAB 1 · EEC — RC-Glied (animiert: Schaltbild + v(t))
+   ============================================================ */
+function initEEC(){
+  const sc=new Scope('cv-eec', {l:46,r:18,t:18,b:26});
+  const P={inp:0.6, g:1.0, C:1.0};
+  let v=0, t=0, flow=0, raf=null;
+  const T=14, DT=0.05, SUB=3;               // gleitendes Live-Fenster
+  let trace=[]; for(let k=-T;k<=0;k+=DT) trace.push([k,0]);  // vorbefüllt → sofort sichtbar
+  bind('eec-in','eec-in-v',x=>P.inp=x); bind('eec-g','eec-g-v',x=>{P.g=x; updTau();},1); bind('eec-c','eec-c-v',x=>{P.C=x; updTau();},1);
+  function updTau(){ $('#eec-tau').textContent=(P.C/P.g).toFixed(2); }
+  updTau();
+  sc.onresize=draw;
+  function draw(){
+    sc.clear();
+    const splitX = Math.min(170, sc.w*0.34);
+    drawCircuit(sc.ctx, 14, splitX-22, sc.h, v, P, flow);   // Schaltbild links
+    sc.pad.l = splitX+30;
+    sc.range(t-T, t, -1.1, 1.1);                            // gleitendes Fenster
+    sc.grid(5,4,{yl:true,yd:1});
+    const tgt = Math.tanh(P.inp*1.4);
+    sc.path([[t-T,tgt],[t,tgt]], COL.faint, 1.5, {dash:[4,4], alpha:0.7});
+    sc.label('Ziel E', t-0.3, tgt+0.13, COL.faint, 'right');
+    sc.path(trace, COL.lrc, 2.6);
+    sc.dot(t, v, COL.lrc, 4.5);
+    sc.label('v(t)', t-0.3, v-0.16, COL.lrc, 'right');
+    sc.pad.l=46;
+    $('#eec-v').textContent=v.toFixed(2);
+  }
+  function frame(){
+    for(let s=0;s<SUB;s++){
+      const tgt=Math.tanh(P.inp*1.4);
+      const dv=(P.g/P.C)*(tgt - v);
+      v += DT*dv; t+=DT; flow += Math.abs(dv)*DT + 0.008;
+      trace.push([t,v]);
+    }
+    while(trace.length && trace[0][0] < t-T) trace.shift();
+    draw(); raf=requestAnimationFrame(frame);
+  }
+  new IntersectionObserver(es=>es.forEach(e=>{ if(!e.isIntersecting && raf){ cancelAnimationFrame(raf); raf=null; } else if(e.isIntersecting && !raf){ frame(); } }),{threshold:0.02}).observe($('#lab-eec'));
+}
+function drawCircuit(c,x0,w,h,v,P,flow){
+  const cx=x0+w/2, top=46, bot=h-46;
+  c.save();
+  c.strokeStyle=COL.line; c.lineWidth=2; c.lineJoin='round';
+  // Rahmen-Drähte
+  c.beginPath();
+  c.moveTo(x0+14,top); c.lineTo(x0+w-14,top);          // oben
+  c.lineTo(x0+w-14,bot); c.lineTo(x0+14,bot);           // rechts+unten
+  c.lineTo(x0+14,top);                                  // links
+  c.stroke();
+  // Spannungsquelle (links) — Eingangsstrom
+  c.strokeStyle=COL.faint;
+  c.beginPath(); c.moveTo(x0+14,h/2-12); c.lineTo(x0+14,h/2+12); c.stroke();
+  // Kondensator (rechts, C)
+  const capY=h/2;
+  c.strokeStyle=COL.lrc; c.lineWidth=2.4;
+  c.beginPath(); c.moveTo(x0+w-26,capY-9); c.lineTo(x0+w-2,capY-9); c.moveTo(x0+w-26,capY+9); c.lineTo(x0+w-2,capY+9); c.stroke();
+  // Widerstand (oben, g) — Zickzack
+  c.strokeStyle=COL.ltc; c.lineWidth=2.2; c.beginPath();
+  const rx=cx-26, rw=52; c.moveTo(rx,top);
+  for(let k=0;k<6;k++) c.lineTo(rx+rw*(k+0.5)/6, top+(k%2?7:-7));
+  c.lineTo(rx+rw,top); c.stroke();
+  // fließende Strompartikel (Geschwindigkeit ∝ g)
+  c.fillStyle=COL.cfc;
+  const np=5, peri=2*((w-28)+(bot-top));
+  for(let k=0;k<np;k++){
+    let d=((flow*P.g*40 + k*peri/np) % peri + peri)%peri;
+    let px,py; const W=w-28,Hh=bot-top;
+    if(d< W){ px=x0+14+d; py=top; }
+    else if(d<W+Hh){ px=x0+w-14; py=top+(d-W); }
+    else if(d<2*W+Hh){ px=x0+w-14-(d-W-Hh); py=bot; }
+    else { px=x0+14; py=bot-(d-2*W-Hh); }
+    c.beginPath(); c.arc(px,py,3,0,7); c.fill();
+  }
+  // Labels
+  c.font='600 11px JetBrains Mono'; c.textAlign='center';
+  c.fillStyle=COL.ltc; c.fillText('g', cx, top-12);
+  c.fillStyle=COL.lrc; c.fillText('C', x0+w-13, capY-18);
+  c.fillStyle=COL.faint; c.fillText('I', x0+8, h/2-20);
+  // Spannungsbalken im Kondensator
+  c.fillStyle=COL.lrc; c.globalAlpha=0.25;
+  const bh=clamp(v,-1,1)*7;
+  c.fillRect(x0+w-26, capY-(bh>0?bh:0), 24, Math.abs(bh));
+  c.globalAlpha=1;
+  c.restore();
+}
+
+/* ============================================================
+   LAB 2 · COMPARE — vier Zellen, ein Signal
+   ============================================================ */
+function initCompare(){
+  const sc=new Scope('cv-compare');
+  const T=22;
+  const st={sig:'step', dt:0.1, amp:1.0, show:{ctrnn:1,ltc:1,lrc:1,cfc:1}};
+  const noise=rng(12345);
+  const noiseSeq=Array.from({length:4000},()=>noise()*2-1);
+  function signal(t){
+    const a=st.amp;
+    if(st.sig==='step')  return t<4?0:a*0.85;
+    if(st.sig==='sine')  return a*0.8*Math.sin(2*Math.PI*t/6.5);
+    // noisy: Rechteck + Rauschen
+    const k=Math.floor(t*6)%noiseSeq.length;
+    return a*(0.5*Math.sign(Math.sin(t/3.2)) + 0.35*noiseSeq[k]);
+  }
+  const P={
+    ctrnn:{tau:3.2, win:1.5, wrec:0.0, b:0},
+    ltc:{tau:1.2, A:1.0, win:2.6, wrec:-0.9, b:-0.5, gain:1.3, unfolds:6, solver:'semi'},
+    lrc:{vleak:1.0, wfIn:1.2, wfRec:0.3, bf:0.3, wgIn:1.9, wgRec:-0.4, bg:0.0, elast:true, weIn:1.0, weRec:0.0, be:0.3},
+    cfc:{win:1.7, wrec:0.65, b:0, a1:0.9, a2:1.1, c1:0, c2:0, ta:0.95, tb:-0.5}
+  };
+  const defs=[['ctrnn',stepCTRNN,COL.ct,'CT-RNN'],['ltc',stepLTC,COL.ltc,'LTC'],['lrc',stepLRC,COL.lrc,'LRC'],['cfc',stepCFC,COL.cfc,'CfC']];
+  function draw(){
+    sc.clear(); sc.range(0,T,-1.3,1.3); sc.grid(6,4,{yl:true,yd:1,xl:true,xd:0});
+    // Eingangssignal
+    const sigPts=[]; for(let t=0;t<=T;t+=Math.min(st.dt,0.1)) sigPts.push([t, clamp(signal(t),-1.3,1.3)]);
+    sc.path(sigPts, COL.faint, 1.3, {dash:[3,4], alpha:0.6});
+    sc.label('Eingabe', 0.4, signal(0.01)+0.16, COL.faint, 'left');
+    // Zellen
+    let ly=1.18;
+    defs.forEach(([key,fn,color,name])=>{
+      if(!st.show[key]) return;
+      const tr=integrate(fn, P[key], signal, st.dt, T, 0);
+      sc.path(tr, color, 2.4);
+      if(tr.length) sc.dot(tr[tr.length-1][0], tr[tr.length-1][1], color, 3.5);
+    });
+    $('#cmp-status').textContent='Δt = '+st.dt.toFixed(2);
+  }
+  bind('cmp-dt','cmp-dt-v',x=>{st.dt=x; draw();});
+  bind('cmp-amp','cmp-amp-v',x=>{st.amp=x; draw();},1);
+  seg('cmp-signal', v=>{st.sig=v; draw();}); // data-s wird in seg über dataset.s gelesen? -> uses data-v||data-s
+  $('#cmp-signal').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{st.sig=b.dataset.s; draw();}));
+  $('#cmp-cells').querySelectorAll('.chip').forEach(ch=>ch.addEventListener('click',()=>{
+    ch.classList.toggle('on'); st.show[ch.dataset.c]=ch.classList.contains('on')?1:0; draw();
+  }));
+  sc.onresize=draw;
+  whenVisible($('#lab-compare'), draw);
+}
+
+/* ============================================================
+   LAB 3 · STIFFNESS — explicit vs. fused, wann kippt LTC?
+   ============================================================ */
+function initStiffness(){
+  const sc=new Scope('cv-stiff');
+  const T=20; const st={dt:0.3, g:3.0, solver:'explicit'};
+  // Stufeneingang, der die liquide Synapse stark feuern lässt
+  function signal(t){ return t<3?0.1:1.0; }
+  function draw(){
+    const P={tau:1.0, A:1.0, win:0.0, wrec:0.0, b:0, gain:st.g, unfolds:1, solver:st.solver};
+    // f bei aktivem Input (Synapse gesättigt ~ gain*sig(b+...) hier konstant via gain)
+    const fEff = st.g*sig(0.0); // = g*0.5 als repräsentativer Leitwert
+    const crit = (1/P.tau + fEff)*st.dt;
+    sc.clear(); sc.range(0,T,-1.6,1.8); sc.grid(5,5,{yl:true,yd:1,xl:true,xd:0});
+    // Referenz: feine Lösung (semi-implicit, winziges dt)
+    const ref=integrate(stepLTC, {...P, solver:'semi', unfolds:1}, signal, 0.01, T, 0);
+    sc.path(ref, COL.faint, 1.4, {dash:[4,4], alpha:0.6});
+    sc.label('wahre Lösung', T-0.4, ref[ref.length-1][1]+0.18, COL.faint, 'right');
+    // gewählter Solver mit gewähltem dt
+    const tr=integrate(stepLTC, P, signal, st.dt, T, 0);
+    const blew = tr.some(p=>Math.abs(p[1])>1.7);
+    sc.path(tr, blew?'#ef6f5a':COL.ltc, 2.6);
+    tr.forEach(p=>{ if(Math.abs(p[1])<=1.75) sc.dot(p[0],p[1], blew?'#ef6f5a':COL.ltc, 2.6); });
+    // Readout
+    $('#stiff-crit').textContent=crit.toFixed(2);
+    const vd=$('#stiff-verdict'), status=$('#stiff-status');
+    if(st.solver==='semi'){ vd.textContent='fused → immer stabil'; vd.className='ok'; status.textContent='fused: stabil'; }
+    else if(crit<2){ vd.textContent='< 2 → stabil'; vd.className='ok'; status.textContent='stabil'; }
+    else { vd.textContent='> 2 → explodiert!'; vd.className='bad'; status.textContent='instabil!'; }
+  }
+  bind('stiff-dt','stiff-dt-v',x=>{st.dt=x; draw();});
+  bind('stiff-g','stiff-g-v',x=>{st.g=x; draw();},1);
+  seg('stiff-solver', v=>{st.solver=v; draw();});
+  sc.onresize=draw;
+  whenVisible($('#lab-stiff'), draw);
+}
+
+/* ============================================================
+   LAB 4 · EULER — ein Schritt geometrisch
+   ============================================================ */
+function initEuler(){
+  const sc=new Scope('cv-euler');
+  const st={dt:0.8, k:2.5, method:'explicit'};
+  // wahre Lösung der Test-ODE x' = -k·x (Zerfall) ab x0=1
+  function draw(){
+    const k=st.k, dt=st.dt, x0=1, t0=0.0;
+    sc.clear(); sc.range(0,3,-1.1,1.25); sc.grid(6,4,{yl:true,yd:1,xl:true,xd:0});
+    // wahre Kurve x(t)=x0·e^{-k t}
+    const tru=[]; for(let t=0;t<=3;t+=0.03) tru.push([t, x0*Math.exp(-k*t)]);
+    sc.path(tru, COL.faint, 2, {alpha:0.85});
+    sc.label('wahr: e^(−k t)', 2.95, x0*Math.exp(-k*2.95)+0.12, COL.faint,'right');
+    // Startpunkt
+    sc.dot(t0, x0, COL.ink, 5);
+    // Euler-Schritt
+    let slope, xEnd, color;
+    if(st.method==='explicit'){ slope=-k*x0; xEnd=x0+dt*slope; color=COL.ltc; }
+    else { xEnd=x0/(1+dt*k); slope=(xEnd-x0)/dt; color=COL.lrc; } // semi-implicit (backward) für x'=-kx
+    // Tangente/Sehne
+    sc.ctx.strokeStyle=color; sc.ctx.lineWidth=2.6;
+    sc.ctx.beginPath(); sc.ctx.moveTo(sc.X(t0),sc.Y(x0)); sc.ctx.lineTo(sc.X(dt),sc.Y(xEnd)); sc.ctx.stroke();
+    // Pfeilspitze
+    drawArrow(sc, t0, x0, dt, xEnd, color);
+    sc.dot(dt, xEnd, color, 5);
+    // wahres Ziel bei t=dt
+    const tgt=x0*Math.exp(-k*dt);
+    sc.dot(dt, tgt, COL.cfc, 4.5);
+    sc.label('Soll', dt+0.05, tgt, COL.cfc,'left');
+    // vertikale Fehlerlinie
+    sc.ctx.strokeStyle='#ef6f5a'; sc.ctx.setLineDash([3,3]); sc.ctx.lineWidth=1.6;
+    sc.ctx.beginPath(); sc.ctx.moveTo(sc.X(dt),sc.Y(xEnd)); sc.ctx.lineTo(sc.X(dt),sc.Y(tgt)); sc.ctx.stroke(); sc.ctx.setLineDash([]);
+    $('#euler-true').textContent=fmt(tgt); $('#euler-est').textContent=fmt(xEnd);
+    $('#euler-err').textContent=fmt(Math.abs(xEnd-tgt));
+    $('#euler-status').textContent='Δt = '+dt.toFixed(2);
+    const er=$('#euler-err'); er.className='big '+(Math.abs(xEnd-tgt)>0.25?'bad':(Math.abs(xEnd-tgt)>0.08?'warn-c':'ok'));
+  }
+  bind('euler-dt','euler-dt-v',x=>{st.dt=x; draw();});
+  bind('euler-k','euler-k-v',x=>{st.k=x; draw();},1);
+  seg('euler-method', v=>{st.method=v; draw();});
+  sc.onresize=draw;
+  whenVisible($('#lab-euler'), draw);
+}
+function drawArrow(sc,x0,y0,x1,y1,color){
+  const c=sc.ctx; const px0=sc.X(x0),py0=sc.Y(y0),px1=sc.X(x1),py1=sc.Y(y1);
+  const ang=Math.atan2(py1-py0,px1-px0); c.fillStyle=color;
+  c.beginPath(); c.moveTo(px1,py1);
+  c.lineTo(px1-9*Math.cos(ang-0.4),py1-9*Math.sin(ang-0.4));
+  c.lineTo(px1-9*Math.cos(ang+0.4),py1-9*Math.sin(ang+0.4));
+  c.closePath(); c.fill();
+}
+
+/* ============================================================
+   LAB 5 · LIPSCHITZ — zwei Trajektorien, Schere
+   ============================================================ */
+function initLipschitz(){
+  const sc=new Scope('cv-lip');
+  const T=18; const st={noise:0.5, drive:3.0, mode:'off'};
+  const nz=rng(777); const seq=Array.from({length:400},()=>nz()*2-1);
+  const hold = t => seq[Math.floor(t/0.32) % seq.length];                 // sample-and-hold (niederfrequent)
+  const clean = t => 0.55*Math.sin(t/2.4) + 0.12*Math.sin(t/0.8);         // "Sonne": glattes Signal
+  const noisy = t => clean(t) + st.noise*hold(t);                          // "Regen": + Sensorrauschen
+  // LRC-Update-Form v += ε·Δt·(−decay·v + drive); Elastance ε ist der Schalter,
+  // im LRC-Modus zusätzlich tanh-Sättigung des Antriebs (genau LTC + Sättigung + Elastance).
+  function run(sigFn){
+    const pts=[]; let v=0; const dt=0.06; const drv=st.drive*0.33;
+    for(let i=0; i*dt<=T; i++){
+      const t=i*dt, x=sigFn(t);
+      let eps, drive;
+      if(st.mode==='on'){ eps=0.14; drive=Math.tanh(drv*x); }   // LRC: ε klein + gesättigt → glättet
+      else              { eps=1.0;  drive=drv*x; }              // ≈LTC: ε=1, ungesättigt → überträgt Rauschen
+      v += eps*dt*(-2.0*v + 2.0*drive);
+      pts.push([t, v]);
+    }
+    return pts;
+  }
+  function draw(){
+    sc.clear(); sc.range(0,T,-1.5,1.5); sc.grid(6,4,{yl:true,yd:1,xl:true,xd:0});
+    const a=run(clean), b=run(noisy);
+    sc.ctx.fillStyle = st.mode==='on'? 'rgba(15,157,107,0.15)':'rgba(239,111,90,0.17)';
+    sc.ctx.beginPath();
+    a.forEach((p,i)=>{ const X=sc.X(p[0]),Y=sc.Y(clamp(p[1],-1.5,1.5)); i?sc.ctx.lineTo(X,Y):sc.ctx.moveTo(X,Y); });
+    for(let i=b.length-1;i>=0;i--){ const X=sc.X(b[i][0]),Y=sc.Y(clamp(b[i][1],-1.5,1.5)); sc.ctx.lineTo(X,Y); }
+    sc.ctx.closePath(); sc.ctx.fill();
+    sc.path(a, st.mode==='on'?COL.lrc:COL.ltc, 2.6);                  // sauber (Referenz)
+    sc.path(b, st.mode==='on'?COL.cfc:'#ef6f5a', 1.6, {dash:[4,3]});  // verrauscht
+    sc.label('Sonne', 0.5, a[3][1]+0.2, st.mode==='on'?COL.lrc:COL.ltc, 'left');
+    sc.label('Regen', T-0.3, b[b.length-1][1]-0.2, st.mode==='on'?COL.cfc:'#ef6f5a', 'right');
+    let dev=0; for(let i=0;i<a.length;i++) dev+=Math.abs(a[i][1]-b[i][1]); dev/=a.length;
+    $('#lip-spread').textContent=dev.toFixed(2);
+    const vd=$('#lip-verdict');
+    if(dev<0.08){ vd.textContent='glättet ✓'; vd.className='ok'; }
+    else if(dev<0.22){ vd.textContent='leichte Drift'; vd.className='warn-c'; }
+    else { vd.textContent='überträgt Rauschen →'; vd.className='bad'; }
+    $('#lip-status').textContent='Output-Drift '+dev.toFixed(2);
+  }
+  bind('lip-noise','lip-noise-v',x=>{st.noise=x; draw();});
+  bind('lip-drive','lip-drive-v',x=>{st.drive=x; draw();},1);
+  seg('lip-mode', v=>{st.mode=v; draw();});
+  sc.onresize=draw;
+  whenVisible($('#lab-lip'), draw);
+}
+
+/* ============================================================
+   LAB 6 · CfC — Exponential-Decay vs. Sigmoid-Gate
+   ============================================================ */
+function initCfC(){
+  const sc=new Scope('cv-cfc');
+  const T=6; const st={a:1.4, b:-2.0, show:'both'};
+  function draw(){
+    sc.clear(); sc.range(0,T,-0.1,1.1); sc.grid(6,5,{yl:true,yd:1,xl:true,xd:0});
+    const a=st.a, b=st.b;
+    const exp=[], sigc=[], gexp=[], gsig=[];
+    for(let t=0;t<=T;t+=0.03){
+      const e=Math.exp(-a*t);                 // exp-Decay (naive closed-form LTC)
+      const g=sig(a*t + b);                    // CfC Sigmoid-Gate
+      exp.push([t,e]); sigc.push([t,g]);
+      // |Ableitung nach t| = "lokaler Gradient"
+      gexp.push([t, a*e]);
+      gsig.push([t, a*g*(1-g)]);
+    }
+    if(st.show==='both'){
+      sc.path(exp, COL.ltc, 2.6);
+      sc.path(sigc, COL.cfc, 2.6);
+      sc.label('e^(−f·t)', 1.2, Math.exp(-a*1.2)+0.06, COL.ltc,'left');
+      sc.label('σ(t_a·t + t_b)', T-0.3, sig(a*T+b)-0.07, COL.cfc,'right');
+    } else {
+      sc.path(gexp, COL.ltc, 2.6);
+      sc.path(gsig, COL.cfc, 2.6);
+      sc.label('|d/dt| exp', 0.6, a*Math.exp(-a*0.6)+0.05, COL.ltc,'left');
+      sc.label('|d/dt| σ', T-0.3, 0.06, COL.cfc,'right');
+    }
+    // Restgradient am Horizont (t=T)
+    const ge=a*Math.exp(-a*T), gs=a*sig(a*T+b)*(1-sig(a*T+b));
+    $('#cfc-g-exp').textContent=ge.toFixed(3);
+    $('#cfc-g-sig').textContent=gs.toFixed(3);
+    $('#cfc-status').textContent='t_a = '+a.toFixed(1);
+  }
+  bind('cfc-a','cfc-a-v',x=>{st.a=x; draw();},1);
+  bind('cfc-b','cfc-b-v',x=>{st.b=x; draw();},1);
+  seg('cfc-show', v=>{st.show=v; draw();});
+  sc.onresize=draw;
+  whenVisible($('#lab-cfc'), draw);
+}
+
+/* ---------- los ---------- */
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', boot);
+else boot();
+
+})();
+</script>
+</body>
+</html>

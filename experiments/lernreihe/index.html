@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Liquid Neural Networks — interaktive Lernreihe</title>
+<meta name="description" content="Eine interaktive Vorlesungsreihe zur Masterarbeit: LTC, LRC, CfC, NCP, Mixed Memory, LSTM/GRU, die Benchmarks und ihr Code — quellenbasiert, narrensicher, von Grund auf erklärt.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<!-- ============================ HERO ============================ -->
+<header class="hero" style="min-height:78vh">
+  <canvas class="hero-canvas" data-c1="#c2710c" data-c2="#2563eb" data-c3="#0f9d6b"></canvas>
+  <div class="hero-inner">
+    <div class="hero-kicker reveal">Masterthesis · Begleitende Lernreihe · Interaktiv</div>
+    <h1 class="hero-title reveal">Die <span class="liquid">liquide</span><br>Vorlesungsreihe</h1>
+    <p class="hero-sub reveal">Elf Kapitel, ein Ziel: jeden Baustein verstehen, den die Masterarbeit
+    braucht — von der ersten Membran-ODE bis zum Wilcoxon-Test. Jede Seite erklärt von Grund auf,
+    interaktiv und <em>quellenbasiert</em>: jeder Regler rechnet die echte Gleichung aus dem Code.</p>
+    <div class="hero-meta reveal">
+      <span class="hero-pill"><span class="dot" style="background:var(--ltc)"></span>11 Vorlesungen</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--lrc)"></span>echte Code-Gleichungen</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--cfc)"></span>Quellen-Belege</span>
+    </div>
+  </div>
+  <div class="scroll-hint"><span>Curriculum</span><span class="line"></span></div>
+</header>
+
+<!-- ============================ ANLEITUNG ============================ -->
+<section>
+  <div class="wrap">
+    <div class="eyebrow reveal">Wie diese Reihe funktioniert</div>
+    <h2 class="reveal">Eine Vorlesung pro Konzept — in der richtigen Reihenfolge</h2>
+    <p class="lead reveal">Die Kapitel bauen aufeinander auf. Wer bei <strong>00</strong> beginnt und sich
+    nach unten arbeitet, kann am Ende jeden Satz der Thesis selbst schreiben und begründen.</p>
+    <p class="reveal">Jede Seite folgt demselben Aufbau: ein anschauliches Fallbeispiel, die Idee in
+    Worten, die <em>echte</em> Formel daneben, ein interaktives Lab zum Selber-Drehen und ein
+    Quellen-Abschnitt. Wichtig war die Vorgabe, <strong>nichts zu halluzinieren</strong> — deshalb trägt
+    jede Aussage ein Herkunfts-Badge:</p>
+    <div class="legend reveal">
+      <div class="li"><span class="src src-paper">Paper</span> direkt aus Originalarbeit / Paper-Notiz belegt</div>
+      <div class="li"><span class="src src-code">Code</span> exakt aus deiner Implementierung</div>
+      <div class="li"><span class="src src-dr">Deep-Research</span> aus LLM-Recherche, gegen Original noch zu prüfen</div>
+      <div class="li"><span class="src src-classic">klassisch</span> Lehrbuchwissen / nicht im Thesis-bib</div>
+    </div>
+    <div class="callout reveal">
+      <div class="ctag">Tipp</div>
+      <p style="margin-bottom:0">Du musst nicht alles am Stück lesen. Springe über die Kachel direkt zum Thema,
+      das du gerade für ein Kapitel der Arbeit brauchst. Die Kopfleiste oben bringt dich jederzeit
+      zur nächsten oder vorigen Vorlesung.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ CURRICULUM ============================ -->
+<section>
+  <div class="wide">
+    <div class="eyebrow reveal">Das Curriculum</div>
+    <h2 class="reveal">Elf Vorlesungen, vier Strecken</h2>
+    <div id="curriculum-root"></div>
+  </div>
+</section>
+
+<footer>
+  <div class="f-title">Liquid Neural Networks — Lernreihe</div>
+  <p>Begleitmaterial zur Masterarbeit „Neue Neuron-Typen im ML“. Interaktiv, quellenbasiert,
+  zum Selber-Verstehen gebaut. Per Doppelklick offline lauffähig.</p>
+  <p class="mono">Three.js · GSAP · KaTeX · Canvas 2D — keine Build-Tools nötig</p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script src="assets/engine.js"></script>
+<script>
+/* Curriculum-Kacheln aus der SERIES-Quelle bauen, nach Strecke gruppiert */
+(function(){
+  const root = document.getElementById('curriculum-root');
+  const tracks = [];
+  LR.SERIES.forEach(s=>{ if(!tracks.includes(s.track)) tracks.push(s.track); });
+  tracks.forEach(track=>{
+    const h = document.createElement('div'); h.className='track reveal'; h.textContent=track;
+    root.appendChild(h);
+    const grid = document.createElement('div'); grid.className='curriculum';
+    LR.SERIES.filter(s=>s.track===track).forEach(s=>{
+      const a = document.createElement('a');
+      a.className='lec reveal'; a.href=s.file; a.style.setProperty('--ac', `var(${s.ac})`);
+      a.innerHTML =
+        `<div class="row"><span class="num">${s.n}</span>`+
+        `<span class="badge">${s.n==='00'?'Auftakt':'Vorlesung'}</span></div>`+
+        `<h3>${s.title}</h3>`+
+        `<p>${s.sub}</p>`+
+        `<div class="tags">${s.tags.map(t=>`<span>${t}</span>`).join('')}</div>`;
+      grid.appendChild(a);
+    });
+    root.appendChild(grid);
+  });
+})();
+LR.boot([]);
+</script>
+</body>
+</html>

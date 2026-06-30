@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>09 · Ergebnisse lesen &amp; animieren</title>
+<meta name="description" content="Vorlesung 09: Wie der Ergebnis-Graph entsteht. Das Phasenporträt eines Lotka-Volterra-Systems Schritt für Schritt aufgebaut, die Lernkurve in Log-Skala, der Gradient-Flow — exakt nach plot_results.py und run_benchmark.py, ehrlich gekennzeichnet.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lecture="09">
+
+<!-- ============================ HERO ============================ -->
+<header class="hero">
+  <canvas class="hero-canvas" data-c1="#2563eb" data-c2="#0f9d6b" data-c3="#c2710c"></canvas>
+  <div class="hero-inner">
+    <div class="hero-kicker reveal"><span class="lecnum">Vorlesung 09</span> Das Experiment · Ergebnisse</div>
+    <h1 class="hero-title reveal">Wie der Graph<br><span class="liquid">entsteht</span></h1>
+    <p class="hero-sub reveal">Eine Vorhersage ist kein Bild, das fertig aus dem Modell fällt — sie ist ein
+    Rollout, Punkt für Punkt aus der gelernten Dynamik. Hier siehst du, wie sich die Lotka-Volterra-Schleife
+    im Phasenraum aufzieht, wie die Lernkurve in Log-Skala fällt und woher der NRMSE-Wert im Titel kommt.</p>
+    <div class="hero-meta reveal">
+      <span class="hero-pill"><span class="dot" style="background:var(--lrc)"></span>Phasenporträt · Rollout</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--cfc)"></span>Lernkurve · log-Skala</span>
+      <span class="hero-pill"><span class="dot" style="background:var(--ltc)"></span>Gradient-Flow</span>
+    </div>
+  </div>
+  <div class="scroll-hint"><span>Scrollen</span><span class="line"></span></div>
+</header>
+
+<!-- ============================ 0 · EINSTIEG ============================ -->
+<section id="intro" data-toc="Einstieg">
+  <div class="wrap">
+    <div class="eyebrow reveal">Worum es geht</div>
+    <h2 class="reveal">Drei Figuren erzählen das ganze Experiment</h2>
+    <p class="lead reveal">Vorlesung 07 hat die sechs ODE-Systeme gezeigt, Vorlesung 08 den Trainings-Code.
+    Jetzt kommt das, was am Ende auf der Festplatte landet: drei Bildtypen, die deine
+    <code>plot_results.py</code> aus jeder Lauf-JSON erzeugt. Wer sie lesen kann, liest das Ergebnis.</p>
+
+    <p class="reveal">Der wichtigste Typ ist das <strong>Phasenporträt</strong>: keine Zeitachse, sondern der
+    Zustand <span class="mono">(y₀, y₁)</span> gegen sich selbst aufgetragen. Bei Lotka-Volterra zeichnet das
+    eine geschlossene Schleife — Beute und Räuber jagen sich im Kreis. Die graue Bahn ist die Wahrheit, die
+    orange die Vorhersage des Modells. Je dichter beide liegen, desto kleiner der Fehler. Das Versprechen
+    dieser Seite: du siehst die orange Bahn <em>entstehen</em>.</p>
+
+    <div class="callout warn reveal">
+      <div class="ctag">Ehrlichkeit zuerst — bitte vor den Labs lesen</div>
+      <p style="margin-bottom:.6em">Im Browser wird <strong>nichts trainiert</strong>. Die echten Ergebnisse
+      stammen aus einem auf dem Cluster trainierten RNN (<code>run_benchmark.py</code>, 2000 Iterationen Adam).
+      Diese Seite kann das nicht nachrechnen — sie hat keine gelernten Gewichte.</p>
+      <p style="margin-bottom:0">Stattdessen wird die <strong>wahre</strong> Trajektorie faithful integriert
+      (dieselbe Mathematik wie im Code) und die <strong>Vorhersage</strong> <em>illustrativ</em> erzeugt: als
+      zweiter Euler-Rollout mit einer leicht <em>gestörten</em> Dynamik, die ein unvollkommen gelerntes Modell
+      vertritt. Der Slider „Trainingsfortschritt“ morpht diese gestörte Dynamik zur wahren — die Vorhersage
+      wandert sichtbar auf die Wahrheit zu und der NRMSE fällt. <strong>Das ist eine Nachstellung des
+      Lernens</strong>, kein echtes Training.</p>
+    </div>
+
+    <div class="legend reveal">
+      <div class="li"><span class="src src-paper">Paper</span> Originalarbeit / Paper-Notiz</div>
+      <div class="li"><span class="src src-code">Code</span> exakt aus deiner Implementierung</div>
+      <div class="li"><span class="src src-dr">Deep-Research</span> LLM-Recherche, zu prüfen</div>
+      <div class="li"><span class="src src-classic">klassisch</span> Lehrbuchwissen</div>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 1 · DER ROLLOUT ============================ -->
+<section id="rollout" data-toc="Der Rollout">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--lrc);color:var(--lrc)"><span class="section-num">01</span> &nbsp;Woher die orange Bahn kommt</div>
+    <h2 class="reveal">Die Vorhersage ist ein Euler-Rollout ab y[0]</h2>
+    <p class="reveal">Im Code heißt der entscheidende Schritt <code>evaluate_full_trajectory</code>. Er nimmt das
+    trainierte Modell, setzt es auf den <strong>ersten</strong> wahren Zustand <span class="mono">y[0]</span>
+    und lässt es über das ganze Zeitgitter laufen — Schritt für Schritt, jeder neue Punkt aus dem vorigen
+    <span class="src src-code" title="run_benchmark.py:118-128 evaluate_full_trajectory">Code · run_benchmark.py:118</span>:</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">run_benchmark.py · evaluate_full_trajectory</span><span class="ref">Zeilen 118–128</span></div>
+<pre><span class="k">def</span> <span class="f">evaluate_full_trajectory</span>(model, t, y):
+    <span class="s">"""Roll out the trained model from y[0] over the full time grid."""</span>
+<span class="hl">    y0 = tf.constant(y[<span class="s">0</span>][np.newaxis, np.newaxis, :], dtype=tf.float32)</span>
+    t_tf = tf.constant(t, dtype=tf.float32)
+<span class="hl">    pred = <span class="f">euler_odeint</span>(model, y0, t_tf)          <span class="c"># (T, 1, 1, 2)</span></span>
+    pred_traj = pred.numpy().reshape(<span class="f">len</span>(t), -<span class="s">1</span>)  <span class="c"># (T, 2)</span>
+    <span class="k">return</span> {
+        <span class="s">'mse'</span>:   <span class="f">mse</span>(y, pred_traj),
+        <span class="s">'nrmse'</span>: <span class="f">nrmse</span>(y, pred_traj),
+        <span class="s">'trajectory_pred'</span>: pred_traj.astype(<span class="f">float</span>).tolist(),
+    }</pre>
+    </div>
+    <p class="code-cap reveal">Nur der erste Punkt ist „geschenkt“. Alles danach erzeugt das Modell aus sich
+    selbst — ein Fehler im Schritt <span class="mono">i</span> pflanzt sich in <span class="mono">i+1</span>
+    fort. Deshalb ist der Rollout der ehrliche Test. <span class="src src-code">Code · run_benchmark.py</span></p>
+
+    <p class="reveal">Der Integrator dahinter ist ein nackter Euler-Schritt — derselbe, der im Browser unter dem
+    Namen <code>eulerOdeint</code> läuft <span class="src src-code" title="src/tasks/neural_ode/solver.py euler_odeint">Code · solver.py</span>:</p>
+
+    <div class="eq accent-lrc reveal">
+      <div class="eq-label"><span>euler_odeint · ein Schritt</span><span class="src src-code">Code</span></div>
+      <div data-eq="y_{i+1} \;=\; y_i \;+\; \Delta t\,\cdot\, f(t_i, y_i)\,,\qquad \Delta t = t_{i+1}-t_i"></div>
+    </div>
+
+    <p class="reveal">Bei der <strong>wahren</strong> Bahn ist <span class="mono">f</span> die echte Systemdynamik
+    (im Browser RK4-fein als Referenz). Bei der <strong>Vorhersage</strong> ist <span class="mono">f</span> die
+    <em>gelernte</em> Dynamik des RNN. Lernt das Modell perfekt, fallen beide Bahnen zusammen. Genau diesen
+    Annäherungsprozess stellt das nächste Lab nach.</p>
+
+    <div class="callout reveal">
+      <div class="ctag">Der NRMSE im Titel — woher die Zahl stammt</div>
+      <p style="margin-bottom:.6em">Über die orange Bahn schreibt <code>plot_phase_portraits</code> den Titel
+      <span class="mono">"cell/wiring NRMSE=…"</span> <span class="src src-code" title="plot_results.py:111 set_title NRMSE">Code · plot_results.py:111</span>.
+      Der Wert ist die normierte Wurzel des mittleren quadratischen Fehlers über beide Komponenten, geteilt
+      durch die Wertespanne der wahren Bahn <span class="src src-code" title="src/evaluation/metrics.py:11-21 nrmse">Code · metrics.py:11</span>:</p>
+      <div class="eq accent-lrc" style="margin:.4em 0">
+        <div data-eq="\mathrm{NRMSE} = \frac{\sqrt{\tfrac{1}{N}\sum_i \lVert y_i - \hat y_i\rVert^2}}{\max(y_{\text{true}})-\min(y_{\text{true}})+\epsilon}"></div>
+      </div>
+      <p style="margin-bottom:0">Die Normierung durch die Spanne macht Werte über Systeme mit ganz
+      verschiedenen Zustandsgrößen vergleichbar — Spiral und Lotka-Volterra lassen sich so nebeneinander lesen.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 2 · PHASENPORTRÄT-LAB ============================ -->
+<section id="phase" data-toc="Phasenporträt">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--lrc);color:var(--lrc)"><span class="section-num">02</span> &nbsp;Das Herzstück</div>
+    <h2 class="reveal">Das Phasenporträt zieht sich auf</h2>
+    <p class="reveal">Jetzt der Aufbau in Zeitlupe. Wähl ein System — voreingestellt ist Lotka-Volterra. Die
+    <strong>graue</strong> Schleife ist die wahre Bahn, sie wächst Punkt für Punkt im
+    <span class="mono">(y₀,y₁)</span>-Raum. Die <strong>orange</strong> Bahn ist die illustrative Vorhersage,
+    ein zweiter Rollout. Mit <em>Trainingsfortschritt = 0</em> startet sie auf einer verzerrten Dynamik und
+    zieht eine völlig andere Schleife; schiebst du auf <em>1</em>, morpht ihre Dynamik zur wahren — die orange
+    Bahn legt sich auf die graue und der NRMSE fällt mit.</p>
+
+    <p class="reveal">So zeichnet <code>plot_phase_portraits</code> es im Code: grau in <span class="mono">'0.6'</span>
+    für die wahre Bahn, <span class="mono">'C3'</span> (rot-orange) für die Vorhersage, der NRMSE im Titel
+    <span class="src src-code" title="plot_results.py:103-112 ax.plot true / predicted">Code · plot_results.py:103</span>.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-phase">
+      <div class="lab-head"><span class="led"></span><span class="title">Phasenporträt entsteht · wahr vs. Vorhersage</span><span class="sub" id="ph-status">Lotka-Volterra</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-phase"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>ODE-System</label>
+            <div class="seg" id="ph-sys">
+              <button data-s="periodic_predator_prey" class="on">Lotka-Volterra</button>
+              <button data-s="spiral">Spiral</button>
+              <button data-s="limited_predator_prey">Limited PP</button>
+            </div>
+          </div>
+          <div class="ctrl">
+            <button class="lab-btn primary" id="ph-play">Pause</button>
+          </div>
+          <div class="ctrl"><label>Trainingsfortschritt (nachgestellt) <span class="val" id="ph-prog-v">0.30</span></label><input type="range" id="ph-prog" class="acc-lrc" min="0" max="1" step="0.01" value="0.3"></div>
+          <div class="lab-readout">
+            NRMSE (illustrativ) <span class="big k" id="ph-nrmse">—</span><br>
+            Punkte gezeichnet <span class="k" id="ph-step">—</span><br>
+            <span class="dim">grau = wahr · orange = Vorhersage</span>
+          </div>
+          <div class="lab-task">Schieb den <b>Trainingsfortschritt</b> von 0 auf 1: die <b style="color:var(--accent)">orange</b>
+          Vorhersagebahn legt sich auf die <b style="color:var(--ct)">graue</b> Wahrheit, der NRMSE fällt. Im echten
+          Experiment kommt diese Annäherung aus 2000 Adam-Schritten eines RNN — hier wird sie durch Annähern der
+          Dynamik <b>nachgestellt</b>.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Wahre Bahn: RK4-fein (im Code scipy-Solver). Vorhersage: <code>eulerOdeint</code> mit gestörter, zum Wahren morphender Dynamik. NRMSE faithful zu <code>metrics.py</code>. <span class="src src-code">Code · plot_results.py / run_benchmark.py</span></p></div>
+
+  <div class="wrap">
+    <div class="callout insight reveal">
+      <div class="ctag">Lies die Zeitreihe darunter mit</div>
+      <p style="margin-bottom:0">Das kleine Band unter dem Phasenraum zeigt dieselben zwei Komponenten gegen die
+      <em>Zeit</em>. Beim periodischen Räuber-Beute-System sieht man dort die phasenverschobenen Wellen — Beute
+      steigt, Räuber folgt verzögert. Phasenporträt und Zeitreihe sind zwei Sichten auf <em>dasselbe</em>
+      Rollout; der Code speichert nur die Trajektorie, beide Plots fallen daraus.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 3 · LERNKURVE ============================ -->
+<section id="loss" data-toc="Lernkurve">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--cfc);color:var(--cfc)"><span class="section-num">03</span> &nbsp;Warum die y-Achse logarithmisch ist</div>
+    <h2 class="reveal">Die Lernkurve fällt — in Log-Skala</h2>
+    <p class="reveal">Die zweite Figur ist die Lernkurve: der Trainings-MSE über die Iteration, gemittelt über
+    die Seeds. Der eine Befehl, der sie lesbar macht, ist <span class="mono">ax.set_yscale('log')</span>
+    <span class="src src-code" title="plot_results.py:57-85 plot_loss_curves, set_yscale('log')">Code · plot_results.py:57</span>.
+    Ohne Log-Achse drückt der riesige Anfangsfehler die ganze spätere Feinarbeit in eine flache Linie am Boden.</p>
+
+    <div class="code reveal">
+      <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span class="fn">plot_results.py · plot_loss_curves</span><span class="ref">Zeilen 71–80</span></div>
+<pre>histories = [r[<span class="s">'training'</span>][<span class="s">'loss_history'</span>] <span class="k">for</span> r <span class="k">in</span> group]
+n = <span class="f">min</span>(<span class="f">len</span>(h) <span class="k">for</span> h <span class="k">in</span> histories)
+<span class="hl">mean = np.mean([h[:n] <span class="k">for</span> h <span class="k">in</span> histories], axis=<span class="s">0</span>)  <span class="c"># Mittel über Seeds</span></span>
+ax.plot(mean, STYLES[wiring], color=colors[cell],
+        label=<span class="s">f'{cell} / {wiring}'</span>, linewidth=<span class="s">1.2</span>)
+<span class="hl">ax.set_yscale(<span class="s">'log'</span>)                          <span class="c"># der entscheidende Befehl</span></span>
+ax.set_xlabel(<span class="s">'Iteration'</span>); ax.set_ylabel(<span class="s">'Training loss (MSE)'</span>)</pre>
+    </div>
+    <p class="code-cap reveal">Linienstil aus <span class="mono">STYLES = {'dense':'-', 'ncp':'--'}</span> — <strong>durchgezogen</strong>
+    für dense, <strong>gestrichelt</strong> für NCP <span class="src src-code" title="plot_results.py:27 STYLES = {'dense':'-','ncp':'--'}">Code · plot_results.py:27</span>.</p>
+
+    <p class="reveal">Im Lab siehst du die Kurve in beiden Skalen. Schalte zwischen linear und log um: in linear
+    verschwindet die spätere Verbesserung; in log wird jede Größenordnung sichtbar — ein Abfall von
+    <span class="mono">10⁻¹</span> auf <span class="mono">10⁻³</span> ist genauso hoch wie der von
+    <span class="mono">10⁰</span> auf <span class="mono">10⁻²</span>.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-loss">
+      <div class="lab-head"><span class="led"></span><span class="title">Lernkurve · linear vs. log (illustrativ)</span><span class="sub" id="ls-status">log-Skala</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-loss"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>y-Achse</label>
+            <div class="seg" id="ls-scale"><button data-v="log" class="on">log</button><button data-v="lin">linear</button></div>
+          </div>
+          <div class="ctrl"><label>Verlauf zeigen bis Iteration <span class="val" id="ls-iter-v">2000</span></label><input type="range" id="ls-iter" class="acc-cfc" min="50" max="2000" step="50" value="2000"></div>
+          <div class="lab-readout">
+            MSE bei dieser Iteration <span class="k" id="ls-now">—</span><br>
+            <span class="big" id="ls-now-exp">—</span><br>
+            <span class="dim">durchgezogen = dense · gestrichelt = ncp</span>
+          </div>
+          <div class="lab-task">Stell die Achse auf <b>linear</b>: nach den ersten paar hundert Iterationen sieht alles
+          gleich „fertig“ aus. Zurück auf <b>log</b> — und der lange, langsame Abstieg über drei Größenordnungen
+          wird sichtbar. Genau deshalb steht im Code <code>set_yscale('log')</code>.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Illustrative MSE-Verläufe (kein echtes Training): exponentieller Abfall mit Rauschen, dense durchgezogen, ncp gestrichelt. Die Log-Achse ist 1:1 das Verhalten des Codes. <span class="src src-code">Code · plot_results.py:57</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 4 · GRADIENT-FLOW ============================ -->
+<section id="gradflow" data-toc="Gradient-Flow">
+  <div class="wrap">
+    <div class="eyebrow reveal" style="--accent:var(--ltc);color:var(--ltc)"><span class="section-num">04</span> &nbsp;Der dritte Figurentyp</div>
+    <h2 class="reveal">Gradient-Flow: pro Schicht eine Norm</h2>
+    <p class="reveal">Die dritte Figur gehört zu RQ4 — dem Vanishing-Gradient aus Vorlesung 01. Der
+    <code>GradientFlowTracker</code> notiert alle 25 Iterationen pro Schicht die globale Gradienten-Norm
+    <span class="src src-code" title="src/evaluation/gradient_flow.py:39-58 record, tf.linalg.global_norm">Code · gradient_flow.py:39</span>;
+    <code>plot_gradient_flow</code> trägt diese Normen über die Iteration auf — wieder in Log-Skala, eine Linie
+    pro Schicht <span class="src src-code" title="plot_results.py:125-163 plot_gradient_flow, set_yscale('log')">Code · plot_results.py:125</span>.</p>
+
+    <p class="reveal">Schichtnamen sind <span class="mono">&lt;index&gt;_&lt;Klassenname&gt;</span>, etwa
+    <span class="mono">0_RNN</span> oder <span class="mono">1_SparseLinear</span> — so lassen sich bei einem NCP
+    die inter-, command- und motor-Schichten auseinanderhalten <span class="src src-code" title="gradient_flow.py:57 name = f'{idx}_{type(layer).__name__}'">Code · gradient_flow.py:57</span>.
+    Liegt eine Schicht-Norm um Größenordnungen unter den anderen, erreichen die Gradienten sie kaum — das ist
+    das Vanishing-Signal, das die liquiden Zellen entschärfen sollen.</p>
+
+    <p class="reveal">Die Skizze unten zeigt das Muster schematisch: pro Schicht eine fallende Norm, log-y. Dreh
+    den Vanishing-Faktor hoch und sieh, wie sich die tiefe Schicht von den oberen ablöst.</p>
+  </div>
+
+  <div class="wide">
+    <div class="lab reveal" id="lab-grad">
+      <div class="lab-head"><span class="led"></span><span class="title">Gradient-Flow-Skizze · Norm pro Schicht (log-y)</span><span class="sub" id="gf-status">schematisch</span></div>
+      <div class="lab-body">
+        <div class="lab-canvas-wrap"><canvas id="cv-grad"></canvas></div>
+        <div class="lab-controls">
+          <div class="ctrl"><label>Verschaltung</label>
+            <div class="seg" id="gf-wiring"><button data-v="dense" class="on">dense</button><button data-v="ncp">ncp</button></div>
+          </div>
+          <div class="ctrl"><label>Vanishing-Faktor (pro Schicht) <span class="val" id="gf-van-v">0.45</span></label><input type="range" id="gf-van" class="acc-ltc" min="0.1" max="0.95" step="0.01" value="0.45"></div>
+          <div class="lab-readout">
+            Norm-Spanne unten ↔ oben <span class="k" id="gf-spread">—</span> Dekaden<br>
+            <span class="dim">log-Skala · alle 25 Iter. ein Punkt</span>
+          </div>
+          <div class="lab-task">Mit kleinem <b>Vanishing-Faktor</b> liegen alle Schicht-Normen dicht beieinander —
+          gesunder Fluss. Dreh ihn hoch: die <b>tiefste</b> Schicht sackt um mehrere Dekaden ab und löst sich von
+          den oberen. Genau das macht der echte Plot mit den gemessenen Normen sichtbar.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap"><p class="lab-caption">Schematische Schicht-Normen (keine gemessenen Werte): geometrischer Abfall je Schicht, log-y, NCP mit mehr Schichten als dense. Form 1:1 wie <code>plot_gradient_flow</code>. <span class="src src-code">Code · plot_results.py:125 / gradient_flow.py</span></p></div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ 5 · SYNTHESE ============================ -->
+<section id="synthesis" data-toc="Zusammenschau">
+  <div class="wrap">
+    <div class="eyebrow reveal"><span class="section-num">05</span> &nbsp;Was jede Figur beantwortet</div>
+    <h2 class="reveal">Drei Figuren, drei Fragen</h2>
+    <p class="reveal">Jede der drei Figuren ist auf genau eine Frage zugeschnitten. Zusammen ergeben sie das,
+    was Vorlesung 10 dann über alle Läufe statistisch verdichtet.</p>
+
+    <div class="cmp-wrap reveal">
+    <table class="cmp-table">
+      <thead><tr><th>Figur</th><th>Code-Funktion</th><th>Achsen</th><th>beantwortet</th></tr></thead>
+      <tbody>
+        <tr><th>Phasenporträt</th><td class="mono">plot_phase_portraits</td><td>(y₀, y₁), log-frei</td><td>Trifft der Rollout die Form? (NRMSE im Titel)</td></tr>
+        <tr><th>Lernkurve</th><td class="mono">plot_loss_curves</td><td>MSE (log) über Iteration</td><td>Konvergiert das Training, und wie schnell?</td></tr>
+        <tr><th>Gradient-Flow</th><td class="mono">plot_gradient_flow</td><td>Norm (log) über Iteration</td><td>Erreicht der Gradient jede Schicht? (RQ4)</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="lab-caption reveal">Alle drei aus derselben Lauf-JSON: <span class="mono">evaluation</span>, <span class="mono">training.loss_history</span>, <span class="mono">gradient_flow</span>. <span class="src src-code">Code · run_benchmark.py:150-176 (Result-Schema)</span></p>
+
+    <div class="callout good reveal">
+      <div class="ctag" style="color:var(--accent)">Wohin als Nächstes</div>
+      <p style="margin-bottom:0">Ein NRMSE pro Lauf ist eine Zahl unter vielen — fünf Seeds, vier Zellen, zwei
+      Verschaltungen, sechs Systeme. <strong>Vorlesung 10</strong> macht aus diesem Schwarm eine belastbare
+      Aussage: Wilcoxon, Bonferroni, Cohen's d.</p>
+    </div>
+  </div>
+</section>
+
+<div class="spacer"></div>
+
+<!-- ============================ QUELLEN ============================ -->
+<section id="sources" data-toc="Quellen">
+  <div class="wrap">
+    <div class="eyebrow reveal">Belege</div>
+    <h2 class="reveal">Quellen dieser Vorlesung</h2>
+    <div class="bib reveal">
+      <div class="bib-item"><div class="bib-key">plot_results.py</div><div class="bib-cite">
+        <div class="t">Figuren-Generator</div>
+        <div class="meta">code/experiments/plot_results.py</div>
+        <div class="where">plot_phase_portraits (Z. 88–122, grau/orange + NRMSE-Titel), plot_loss_curves (Z. 57–85, set_yscale('log')), plot_gradient_flow (Z. 125–163), STYLES (Z. 27)</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">run_benchmark.py</div><div class="bib-cite">
+        <div class="t">Benchmark-Runner</div>
+        <div class="meta">code/experiments/run_benchmark.py</div>
+        <div class="where">evaluate_full_trajectory (Z. 118–128, Rollout ab y[0] via euler_odeint), Result-Schema (Z. 150–176)</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">solver.py</div><div class="bib-cite">
+        <div class="t">Euler-Integrator</div>
+        <div class="meta">code/src/tasks/neural_ode/solver.py</div>
+        <div class="where">euler_odeint: y_{i+1} = y_i + dt·f(t_i, y_i) — im Browser als eulerOdeint nachgebildet</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">metrics.py</div><div class="bib-cite">
+        <div class="t">Fehlermaße</div>
+        <div class="meta">code/src/evaluation/metrics.py</div>
+        <div class="where">nrmse (Z. 11–21): RMSE / (max−min + ε); mse (Z. 4–8)</div>
+      </div></div>
+      <div class="bib-item"><div class="bib-key">gradient_flow.py</div><div class="bib-cite">
+        <div class="t">Gradient-Tracker (RQ4)</div>
+        <div class="meta">code/src/evaluation/gradient_flow.py</div>
+        <div class="where">GradientFlowTracker.record (Z. 39–58): tf.linalg.global_norm pro Schicht, Name '&lt;idx&gt;_&lt;Klasse&gt;'</div>
+      </div></div>
+    </div>
+    <p class="note reveal"><strong>Didaktische Vereinfachungen — explizit:</strong> Im Browser wird nicht trainiert
+    und es liegen keine gelernten Gewichte vor. Die <em>wahre</em> Bahn wird faithful integriert
+    (<code>trueTrajectory</code>, RK4-fein; im Code scipy-Solver). Die <em>Vorhersage</em> im Phasen-Lab ist
+    <em>illustrativ</em>: ein zweiter <code>eulerOdeint</code>-Rollout mit künstlich gestörter Dynamik, die der
+    Slider zur wahren morpht — eine Nachstellung des Lernfortschritts, kein RNN-Output. Lern- und
+    Gradient-Flow-Kurven sind ebenfalls synthetisch erzeugte Verläufe; ihre <em>Achsen und Formen</em> (log-Skala,
+    Linienstile, Norm-pro-Schicht) entsprechen 1:1 dem Code, die Zahlenwerte nicht. Echte Figuren entstehen aus
+    den Lauf-JSONs auf dem Cluster.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="f-title">Vorlesung 09 · Ergebnisse lesen &amp; animieren</div>
+  <p>Teil der interaktiven Lernreihe zur Masterarbeit. Die Achsen und Formen stammen aus dem echten Plot-Code; die animierten Werte sind ehrlich als Nachstellung gekennzeichnet.</p>
+  <p class="mono">plot_results.py · run_benchmark.py · solver.py · metrics.py</p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
+<script src="assets/engine.js"></script>
+<script>
+/* ============================================================
+   LAB 1 · Phasenporträt entsteht — wahr vs. illustrative Vorhersage
+   ------------------------------------------------------------
+   Wahr:       trueTrajectory(system) — faithful (RK4-fein).
+   Vorhersage: eulerOdeint mit GESTÖRTER Dynamik fPred, die der
+               Slider 'prog' zur wahren f morpht. Bei prog=1 sind
+               beide identisch -> NRMSE -> 0. Reine Nachstellung.
+   ============================================================ */
+function initPhase(){
+  const sc=new Scope('cv-phase',{l:42,r:14,t:16,b:40});
+  const P={sys:'periodic_predator_prey', prog:0.30, playing:true};
+  const N=600;                 // Auflösung der Bahnen
+  let truth=null, t=null;      // {t,y} der wahren Bahn + Zeitgitter
+  let drawn=0;                 // wie viele Punkte schon gezeichnet (Animation)
+
+  /* gestörte Dynamik: morpht mit prog von verzerrt (0) zu echt (1).
+     Die Störung ist ein einfacher zustandsabhängiger Bias auf f —
+     vertritt ein unvollkommen gelerntes Modell. */
+  function fPred(y){
+    const f = LR.SYSTEMS[P.sys].f(y);
+    const k = (1 - P.prog);                    // Störstärke
+    // verdrehte/abgeschwächte Dynamik: Skalierung + Kreuzkopplung + Bias
+    const d0 = f[0]*(1 - 0.55*k) + k*( 0.6*y[1] - 0.35*y[0] + 0.25);
+    const d1 = f[1]*(1 - 0.55*k) + k*(-0.6*y[0] + 0.30*y[1] - 0.20);
+    return [d0, d1];
+  }
+
+  let box=null;                // Achsbereich, fix aus der wahren Bahn
+  function rebuild(){
+    truth = LR.trueTrajectory(P.sys, N);
+    t = truth.t;
+    drawn = 0;
+    // Achsbox NUR aus der wahren (stabilen) Bahn -> Ansicht bleibt ruhig
+    let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
+    truth.y.forEach(p=>{ if(p[0]<x0)x0=p[0]; if(p[0]>x1)x1=p[0]; if(p[1]<y0)y0=p[1]; if(p[1]>y1)y1=p[1]; });
+    const mx=(x1-x0)*0.16+0.05, my=(y1-y0)*0.16+0.05;
+    box={x0:x0-mx, x1:x1+mx, y0:y0-my, y1:y1+my};
+    $('#ph-status').textContent = LR.SYSTEMS[P.sys].label;
+  }
+
+  /* Vorhersage-Bahn: Euler-Rollout ab dem ersten wahren Zustand,
+     auf das doppelte Sichtfeld geclamped — ein unvollkommen gelerntes
+     Modell driftet sichtbar, divergiert aber nicht ins Unendliche. */
+  function predTraj(){
+    const wx=box.x1-box.x0, wy=box.y1-box.y0;
+    const cx0=box.x0-wx, cx1=box.x1+wx, cy0=box.y0-wy, cy1=box.y1+wy;
+    const ys=[truth.y[0].slice()];
+    for(let i=0;i<t.length-1;i++){
+      const dt=t[i+1]-t[i], y=ys[ys.length-1], d=fPred(y);
+      let a=y[0]+dt*d[0], b=y[1]+dt*d[1];
+      if(!isFinite(a)) a=y[0]; if(!isFinite(b)) b=y[1];
+      ys.push([clamp(a,cx0,cx1), clamp(b,cy0,cy1)]);
+    }
+    return ys;
+  }
+
+  function draw(){
+    const pred=predTraj();
+    sc.clear(); sc.range(box.x0,box.x1,box.y0,box.y1); sc.grid(4,4,{yd:1,xl:true,xd:1});
+    sc.text('y₀', sc.w-18, sc.h-6, COL.faint, 'right', '600 11px JetBrains Mono');
+    sc.text('y₁', 8, 14, COL.faint, 'left', '600 11px JetBrains Mono');
+
+    const upto=Math.max(2, Math.min(drawn, truth.y.length));
+    sc.path(truth.y.slice(0,upto).map(p=>[p[0],p[1]]), COL.ct, 1.8);
+    sc.path(pred.slice(0,upto).map(p=>[p[0],p[1]]), COL.accent, 2.0);
+    sc.ring(truth.y[0][0], truth.y[0][1], COL.line, 5, 2);
+    const i=Math.min(upto-1, truth.y.length-1);
+    sc.dot(truth.y[i][0], truth.y[i][1], COL.ct, 3.4);
+    sc.dot(pred[i][0], pred[i][1], COL.accent, 3.8);
+    sc.label('wahr', truth.y[i][0], truth.y[i][1], COL.ct, 'left');
+    sc.label('Vorhersage', pred[i][0], pred[i][1], COL.accent, 'left');
+
+    // NRMSE über die bisher gezeichneten Punkte (faithful zu metrics.py)
+    const e=LR.nrmse(truth.y.slice(0,upto), pred.slice(0,upto));
+    $('#ph-nrmse').textContent=isFinite(e)?e.toFixed(3):'—';
+    $('#ph-step').textContent=upto+' / '+truth.y.length;
+  }
+
+  function frame(){
+    if(P.playing){
+      drawn += Math.max(2, Math.round(truth.y.length/140)); // ~140 Frames für eine Runde
+      if(drawn>=truth.y.length){ drawn=truth.y.length; }
+    }
+    draw();
+    if(P.playing && drawn>=truth.y.length){
+      // kurze Pause am Ende, dann neu aufziehen
+      setTimeout(()=>{ if(P.playing) drawn=0; }, 900);
+    }
+    raf=requestAnimationFrame(frame);
+  }
+
+  let raf;
+  rebuild();
+  seg('ph-sys', s=>{ P.sys=s; rebuild(); });
+  bind('ph-prog','ph-prog-v', v=>{ P.prog=v; if(!P.playing) draw(); }, 2);
+  const btn=$('#ph-play');
+  btn.addEventListener('click', ()=>{
+    P.playing=!P.playing;
+    btn.textContent = P.playing ? 'Pause' : 'Abspielen';
+    if(P.playing) btn.classList.add('primary'); else btn.classList.remove('primary');
+  });
+  whenVisible('lab-phase', ()=>{ if(!raf) frame(); });
+}
+
+/* ============================================================
+   LAB 2 · Lernkurve — linear vs. log (illustrativ)
+   ------------------------------------------------------------
+   Synthetischer MSE-Verlauf (exponentieller Abfall + Rauschen).
+   log-Plot: y-Achse selbst gerechnet als log10(mse). dense=solid,
+   ncp=dashed (STYLES aus plot_results.py:27). Werte synthetisch,
+   Achsen-Verhalten 1:1 wie set_yscale('log').
+   ============================================================ */
+function initLoss(){
+  const sc=new Scope('cv-loss',{l:54,r:16,t:18,b:30});
+  const P={scale:'log', upto:2000};
+  const ITERS=2000;
+  // zwei feste Verläufe (deterministisch) — dense + ncp
+  const rnd=rng(7);
+  function makeCurve(start, rate, floor, jit){
+    const c=[];
+    for(let i=0;i<=ITERS;i++){
+      const base=floor + (start-floor)*Math.exp(-rate*i/ITERS);
+      const noise=1 + jit*(rnd()-0.5)*Math.exp(-2*i/ITERS); // Rauschen klingt ab
+      c.push(Math.max(1e-4, base*noise));
+    }
+    return c;
+  }
+  const dense=makeCurve(0.9, 6.5, 0.0012, 0.5);   // dense: tiefer, glatter
+  const ncp  =makeCurve(1.1, 4.8, 0.0040, 0.7);   // ncp: höheres Plateau
+
+  function pts(curve, n){
+    const out=[];
+    for(let i=0;i<=n;i++){
+      const y = P.scale==='log' ? Math.log10(curve[i]) : curve[i];
+      out.push([i, y]);
+    }
+    return out;
+  }
+  function draw(){
+    const n=P.upto;
+    let lo, hi, yd;
+    if(P.scale==='log'){ lo=-4; hi=0.2; yd=0; }
+    else { lo=0; hi=1.2; yd=2; }
+    sc.clear(); sc.range(0, ITERS, lo, hi); sc.grid(4, 4, {yd:yd, xl:true, xd:0});
+    // y-Achsen-Titel
+    sc.text(P.scale==='log'?'log₁₀ MSE':'MSE', 8, 12, COL.faint, 'left', '600 11px JetBrains Mono');
+    sc.text('Iteration', sc.w-16, sc.h-6, COL.faint, 'right', '600 11px JetBrains Mono');
+    // dense durchgezogen, ncp gestrichelt
+    sc.path(pts(ncp, n),   COL.cfc, 2.0, {dash:[6,5], alpha:.9});
+    sc.path(pts(dense, n), COL.lrc, 2.4);
+    sc.label('dense', n*0.96, P.scale==='log'?Math.log10(dense[n]):dense[n], COL.lrc, 'right');
+    sc.label('ncp',   n*0.96, (P.scale==='log'?Math.log10(ncp[n]):ncp[n]) + (P.scale==='log'?0.18:0.05), COL.cfc, 'right');
+    // Marker bei der gewählten Iteration
+    sc.vline(n, COL.line, 1, [3,4]);
+    const mse=dense[n];
+    $('#ls-now').textContent=mse.toExponential(2);
+    $('#ls-now-exp').textContent='log₁₀ = '+Math.log10(mse).toFixed(2);
+    $('#ls-status').textContent=P.scale==='log'?'log-Skala':'linear';
+  }
+  seg('ls-scale', v=>{ P.scale=v; draw(); });
+  bind('ls-iter','ls-iter-v', v=>{ P.upto=Math.round(v); draw(); }, 0);
+  whenVisible('lab-loss', draw);
+}
+
+/* ============================================================
+   LAB 3 · Gradient-Flow-Skizze — Norm pro Schicht (log-y)
+   ------------------------------------------------------------
+   Schematisch: pro Schicht ein geometrisch abfallender Norm-Verlauf
+   über Iterationen, log-y. dense = 2 Schichten, ncp = 4 Schichten
+   (inter/command/motor + Eingang). Tiefere Schicht * Vanishing-Faktor.
+   Form 1:1 wie plot_gradient_flow; Werte schematisch.
+   ============================================================ */
+function initGrad(){
+  const sc=new Scope('cv-grad',{l:54,r:16,t:18,b:30});
+  const P={wiring:'dense', van:0.45};
+  const ITERS=2000, STEP=25; // alle 25 Iter ein Punkt (log_every=25)
+  const rnd=rng(11);
+  function layers(){
+    return P.wiring==='dense'
+      ? ['0_RNN','1_Dense']
+      : ['0_RNN','1_SparseLinear','2_RNN','3_RNN']; // inter/command/motor-Skizze
+  }
+  function curveFor(depth){
+    // Startnorm fällt geometrisch mit der Tiefe (Vanishing pro Schicht)
+    const start = 0.8 * Math.pow(P.van, depth);
+    const out=[];
+    for(let i=0;i<=ITERS;i+=STEP){
+      const decay = Math.exp(-1.3*i/ITERS);          // Training: Normen sinken
+      const noise = 1 + 0.25*(rnd()-0.5);
+      out.push([i, Math.log10(Math.max(1e-6, start*decay*noise))]);
+    }
+    return out;
+  }
+  const palette=[COL.lrc, COL.cfc, COL.ltc, COL.ncp];
+  function draw(){
+    const L=layers();
+    sc.clear(); sc.range(0, ITERS, -6, 0); sc.grid(4,3,{yd:0,xl:true,xd:0});
+    sc.text('log₁₀ |grad|', 8, 12, COL.faint, 'left', '600 11px JetBrains Mono');
+    sc.text('Iteration', sc.w-16, sc.h-6, COL.faint, 'right', '600 11px JetBrains Mono');
+    let topEnd=-9, botEnd=9;
+    L.forEach((name, d)=>{
+      const c=curveFor(d);
+      sc.path(c, palette[d%palette.length], 2.0);
+      const last=c[c.length-1][1];
+      sc.label(name, ITERS*0.99, last, palette[d%palette.length], 'right');
+      if(last>topEnd) topEnd=last; if(last<botEnd) botEnd=last;
+    });
+    const spread=(topEnd-botEnd);
+    $('#gf-spread').textContent=spread.toFixed(1);
+    $('#gf-status').textContent=P.wiring+' · '+L.length+' Schichten';
+  }
+  seg('gf-wiring', v=>{ P.wiring=v; draw(); });
+  bind('gf-van','gf-van-v', v=>{ P.van=v; draw(); }, 2);
+  whenVisible('lab-grad', draw);
+}
+
+LR.boot([initPhase, initLoss, initGrad]);
+</script>
+</body>
+</html>

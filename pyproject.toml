@@ -12,12 +12,21 @@ dependencies = [
     "tqdm",
     "pandas",
     "ncps",
+    "pingouin>=0.6.1",
+    "rliable>=1.2.0",
 ]
 
 [project.optional-dependencies]
 metal = ["tensorflow-metal"]
 # GPU cluster (Linux/CUDA 12): uv sync --extra cuda
 cuda = ["tensorflow[and-cuda]>=2.15,<2.16"]
+# MuJoCo RL control benchmark (PPO with the thesis cells as recurrent policies).
+# Local: uv sync --extra rl ; Cluster: uv sync --extra cuda --extra rl
+rl = [
+    "gymnasium[mujoco]>=1.0",
+    "imageio>=2.34",
+    "imageio-ffmpeg>=0.5",
+]
 
 [build-system]
 requires = ["hatchling"]
