@@ -1,0 +1,68 @@
+# Campaign eps_pilot -- the eps §3.0 SD pilot, the go/no-go gate run BEFORE the
+# full eps matrix. It measures paired-diff SD per (task, level) on the final
+# jittered data path, so it needs ALL 8 conditions on EVERY pilot task (NO
+# sym/hybrid pruning -- every condition's SD must be estimable).
+# Equivalent to build_specs_eps_pilot() (run_benchmark.py:481).
+# EXPLICIT mode: ordered per-task blocks; within a block the nesting is
+#   ode_unfolds -> cell -> wiring -> seed (system fixed per block).
+# Unlike eps there is NO drop filter: the pilot keeps every condition on every
+# task. Subset: multitimescale @ uf {1,2,4} + the two flat anchors (spiral,
+# stiff_linear_k1) @ uf=1; the exploratory stiff_linear_k{10,100,1000} sweep is
+# NOT in the pilot.
+#   multitimescale: 3 uf x 8 x 2 x 8 = 384
+#   spiral:                8 x 2 x 8 = 128
+#   stiff_linear_k1:       8 x 2 x 8 = 128
+#   total = 640 -> results/runs_eps_pilot.
+name: eps_pilot
+mode: explicit
+outdir: results/runs_eps_pilot
+
+# Cluster resources for submit_campaign.sh (env override > this > config.sh).
+# Same heavy LRC path as eps -> 6 runs/GPU @ 64G, 10h
+# (mirrors retired submit_benchmark_eps_pilot.sh).
+cluster:
+  partition: GPU-a40
+  gpu: a40:1
+  cpus: 12
+  mem: 64G
+  walltime: "10:00:00"
+  runs_per_gpu: 6
+  requeue: true
+description: >
+  All 8 LRC conditions x 2 wirings on the pilot task subset (multitimescale
+  headline + the two flat anchors). No sym/hybrid pruning -- the SD pilot needs
+  every condition on every task to estimate all paired-diff SDs that feed
+  Delta_min and the power precompute. Seeds 0..7 (8 seeds), jitter ON, at the
+  real n_iters=2000 so the SD reflects converged runs.
+
+# Canonical CELLS_EPS order -- the stable array contract. No drop filter here:
+# the pilot keeps all 8 conditions on every task.
+cells:
+  - lrc_interp        # A
+  - lrc_asym          # B
+  - lrc_sym           # C
+  - lrc_frozen        # D
+  - lrc_pmctrl        # E
+  - lrc_pmctrl_c      # E_C
+  - lrc_asym_hybrid   # F
+  - lrc_interp_hybrid # G
+wirings: [dense, ncp]
+seeds: {range: [0, 8]}   # SEEDS_EPS_PILOT = list(range(8))
+clip_norm: 0.0
+
+# Constants stamped onto every eps_pilot spec.
+constants:
+  eps_jitter: true
+
+# Task blocks in array order. Only multitimescale sweeps ode_unfolds {1,2,4};
+# the two flat anchors run at uf=1.
+blocks:
+  - {system: multitimescale,  ode_unfolds: [1, 2, 4]}
+  - {system: spiral,          ode_unfolds: [1]}
+  - {system: stiff_linear_k1, ode_unfolds: [1]}
+
+# Analysis spec consumed by experiments/analyze_campaign.py (ignored by the runner).
+analysis:
+  metric: nrmse
+  tests: [wilcoxon, cohen_d]
+  plots: [loss, gradflow]

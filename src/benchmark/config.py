@@ -2,11 +2,20 @@
 
 A campaign config describes ONE benchmark matrix declaratively. It replaces a
 legacy ``build_specs_<profile>()`` function; ``expand.expand`` turns it into the
-byte-identical spec list. Two expansion modes:
+byte-identical spec list. Three expansion modes:
 
   * ``axes``     -- cross product of cells x wirings x systems x seeds, with
                     optional OUTER ``extra_axes`` (e.g. v5 stress, v6a wiring
                     seed) and constant keys.
+  * ``concat``   -- an ORDERED list of ``blocks`` that concatenate; each block is
+                    a full axes cross-product (cell x wiring x system x seed,
+                    extra_axes outer) with its OWN cells / wirings / systems /
+                    seeds / clip_norm / constants / extra_axes, inheriting the
+                    campaign-level value for anything it omits. ``axes`` is the
+                    one-block special case. Matches v2 (per-block clip_norm),
+                    v3 (per-block seeds + per-block constant ode_unfolds /
+                    batch_time over a cell/system subset), v4 (base vs tail
+                    seeds) and v6b (per-block heterogeneous stress-level key).
   * ``explicit`` -- an ordered list of per-task ``blocks`` (e.g. eps), each with
                     its own systems / ode_unfolds and (optionally) cell subset,
                     plus ``drop`` filters for pruning.
@@ -50,6 +59,26 @@ class Block:
 
 
 @dataclass
+class ConcatBlock:
+    """One concat-mode block: a full axes cross-product with its own axes.
+
+    Every field defaults to ``None`` meaning "inherit the campaign-level value".
+    A block thus overrides only what differs from the campaign default, so the
+    YAML reads as a short diff per block (e.g. v2 block 2 sets only
+    ``clip_norm``; v6b blocks set only ``constants``). Nesting within a block is
+    identical to ``axes`` mode: ``extra_axes`` outermost, then the
+    cell -> wiring -> system -> seed product.
+    """
+    cells: list | None = None
+    wirings: list | None = None
+    systems: list | None = None
+    seeds: list | None = None
+    clip_norm: float | None = None
+    constants: dict | None = None
+    extra_axes: list | None = None    # list[ExtraAxis]; None -> inherit campaign
+
+
+@dataclass
 class DropRule:
     """Post-expansion filter. A spec is dropped iff, for EVERY field in
     ``conditions``, ``spec.get(field)`` is in that field's value list (AND over
@@ -72,7 +101,8 @@ class CampaignConfig:
     # shared
     constants: dict = field(default_factory=dict)
     extra_axes: list = field(default_factory=list)   # list[ExtraAxis]
-    blocks: list = field(default_factory=list)        # list[Block]
+    blocks: list = field(default_factory=list)        # list[Block] (explicit mode)
+    concat_blocks: list = field(default_factory=list)  # list[ConcatBlock] (concat mode)
     filters: list = field(default_factory=list)       # list[DropRule]
     per_cell: dict = field(default_factory=dict)      # informational overrides
     raw: dict = field(default_factory=dict)           # original YAML (manifest snapshot)
@@ -116,29 +146,61 @@ def load_config(path) -> CampaignConfig:
     return cfg
 
 
+def _parse_extra_axes(raw_list, where: str, ctx: str) -> list:
+    """Parse an ``extra_axes`` list (campaign-level or per concat block)."""
+    axes = []
+    for i, ax in enumerate(raw_list or []):
+        if not isinstance(ax, dict) or 'key' not in ax or 'values' not in ax:
+            raise ConfigError(f'{where}: {ctx}[{i}] needs a key and values')
+        axes.append(ExtraAxis(
+            key=ax['key'],
+            values=_as_list(ax['values'], f'{where} {ctx}[{i}].values'),
+        ))
+    return axes
+
+
+def _build_concat_block(blk, where: str, i: int) -> ConcatBlock:
+    """Parse one concat-mode block. Every axis is optional (None -> inherit)."""
+    if not isinstance(blk, dict):
+        raise ConfigError(f'{where}: blocks[{i}] must be a mapping')
+    raw_extra = blk.get('extra_axes')
+    return ConcatBlock(
+        cells=_as_list(blk.get('cells'), f'{where} blocks[{i}].cells'),
+        wirings=_as_list(blk.get('wirings'), f'{where} blocks[{i}].wirings'),
+        systems=_as_list(blk.get('systems'), f'{where} blocks[{i}].systems'),
+        seeds=_as_list(blk.get('seeds'), f'{where} blocks[{i}].seeds'),
+        clip_norm=blk.get('clip_norm', None),
+        constants=dict(blk['constants']) if blk.get('constants') is not None else None,
+        extra_axes=(_parse_extra_axes(raw_extra, where, f'blocks[{i}].extra_axes')
+                    if raw_extra is not None else None),
+    )
+
+
 def _build(raw: dict, path: Path) -> CampaignConfig:
     name = raw.get('name')
+    mode = raw.get('mode')
     where = f'{path.name} ({name})'
 
-    extra_axes = []
-    for i, ax in enumerate(raw.get('extra_axes') or []):
-        if not isinstance(ax, dict) or 'key' not in ax or 'values' not in ax:
-            raise ConfigError(f'{where}: extra_axes[{i}] needs a key and values')
-        extra_axes.append(ExtraAxis(
-            key=ax['key'],
-            values=_as_list(ax['values'], f'{where} extra_axes[{i}].values'),
-        ))
+    extra_axes = _parse_extra_axes(raw.get('extra_axes'), where, 'extra_axes')
 
-    blocks = []
-    for i, blk in enumerate(raw.get('blocks') or []):
-        if not isinstance(blk, dict) or 'system' not in blk:
-            raise ConfigError(f'{where}: blocks[{i}] needs a system')
-        blocks.append(Block(
-            system=blk['system'],
-            ode_unfolds=_as_list(blk.get('ode_unfolds'),
-                                 f'{where} blocks[{i}].ode_unfolds'),
-            cells=_as_list(blk.get('cells'), f'{where} blocks[{i}].cells'),
-        ))
+    # ``blocks`` means different things per mode: explicit blocks fix ONE system
+    # per block, concat blocks are full axes cross-products. Parse accordingly so
+    # a concat block (no ``system`` scalar) is not rejected by the explicit guard.
+    blocks: list = []
+    concat_blocks: list = []
+    if mode == 'concat':
+        for i, blk in enumerate(raw.get('blocks') or []):
+            concat_blocks.append(_build_concat_block(blk, where, i))
+    else:
+        for i, blk in enumerate(raw.get('blocks') or []):
+            if not isinstance(blk, dict) or 'system' not in blk:
+                raise ConfigError(f'{where}: blocks[{i}] needs a system')
+            blocks.append(Block(
+                system=blk['system'],
+                ode_unfolds=_as_list(blk.get('ode_unfolds'),
+                                     f'{where} blocks[{i}].ode_unfolds'),
+                cells=_as_list(blk.get('cells'), f'{where} blocks[{i}].cells'),
+            ))
 
     filters = []
     for i, flt in enumerate(raw.get('filters') or []):
@@ -158,7 +220,7 @@ def _build(raw: dict, path: Path) -> CampaignConfig:
 
     return CampaignConfig(
         name=name,
-        mode=raw.get('mode'),
+        mode=mode,
         outdir=raw.get('outdir'),
         description=raw.get('description', ''),
         cells=_as_list(raw.get('cells'), f'{where} cells') or [],
@@ -169,6 +231,7 @@ def _build(raw: dict, path: Path) -> CampaignConfig:
         constants=dict(raw.get('constants') or {}),
         extra_axes=extra_axes,
         blocks=blocks,
+        concat_blocks=concat_blocks,
         filters=filters,
         per_cell=dict(raw.get('per_cell') or {}),
         raw=raw,
@@ -193,9 +256,10 @@ def validate(cfg: CampaignConfig) -> None:
     where = f'config {cfg.name!r}'
     if not cfg.name:
         raise ConfigError('config is missing a `name`')
-    if cfg.mode not in ('axes', 'explicit'):
+    if cfg.mode not in ('axes', 'explicit', 'concat'):
         raise ConfigError(
-            f'{where}: mode must be one of {{axes, explicit}}, got {cfg.mode!r}')
+            f'{where}: mode must be one of {{axes, concat, explicit}}, '
+            f'got {cfg.mode!r}')
     if not cfg.outdir:
         raise ConfigError(f'{where}: missing `outdir`')
     if not isinstance(cfg.clip_norm, (int, float)):
@@ -204,6 +268,8 @@ def validate(cfg: CampaignConfig) -> None:
 
     if cfg.mode == 'axes':
         _validate_axes(cfg, where)
+    elif cfg.mode == 'concat':
+        _validate_concat(cfg, where)
     else:
         _validate_explicit(cfg, where)
 
@@ -224,6 +290,37 @@ def _validate_axes(cfg: CampaignConfig, where: str) -> None:
     _check_members(cfg.cells, registry.KNOWN_CELLS, 'cell', where)
     _check_members(cfg.wirings, registry.WIRINGS, 'wiring', where)
     _check_members(cfg.systems, registry.KNOWN_SYSTEMS, 'system', where)
+
+
+def _validate_concat(cfg: CampaignConfig, where: str) -> None:
+    if not cfg.concat_blocks:
+        raise ConfigError(f'{where}: concat mode requires at least one block')
+    for i, blk in enumerate(cfg.concat_blocks):
+        bwhere = f'{where} blocks[{i}]'
+        # Resolve each axis against the campaign-level default (block wins).
+        cells = blk.cells if blk.cells is not None else cfg.cells
+        wirings = blk.wirings if blk.wirings is not None else cfg.wirings
+        systems = blk.systems if blk.systems is not None else cfg.systems
+        seeds = blk.seeds if blk.seeds is not None else cfg.seeds
+        for axis_name, values in (('cells', cells), ('wirings', wirings),
+                                  ('systems', systems), ('seeds', seeds)):
+            if not values:
+                raise ConfigError(
+                    f'{bwhere}: resolves to an empty `{axis_name}` axis '
+                    '(no block value and no campaign-level default)')
+        _check_members(cells, registry.KNOWN_CELLS, 'cell', bwhere)
+        _check_members(wirings, registry.WIRINGS, 'wiring', bwhere)
+        _check_members(systems, registry.KNOWN_SYSTEMS, 'system', bwhere)
+        clip = blk.clip_norm if blk.clip_norm is not None else cfg.clip_norm
+        if not isinstance(clip, (int, float)):
+            raise ConfigError(f'{bwhere}: clip_norm must be numeric, '
+                              f'got {type(clip).__name__}')
+        for ax in (blk.extra_axes or []):
+            if not ax.key:
+                raise ConfigError(f'{bwhere}: an extra_axis is missing its key')
+            if not ax.values:
+                raise ConfigError(
+                    f'{bwhere}: extra_axis {ax.key!r} has no values')
 
 
 def _validate_explicit(cfg: CampaignConfig, where: str) -> None:

@@ -1,0 +1,41 @@
+# Campaign v3.1 -- closed-form LRC ablation.
+# Equivalent to build_specs_v3_1() (run_benchmark.py:298).
+# Pure cross product, CELLS_V3_1 x WIRINGS x SYSTEMS x SEEDS = 4 x 2 x 6 x 5
+# = 240 specs -> results/runs_v3_1. Baseline arm: clip off, default solver/horizon.
+name: v3.1
+mode: axes
+outdir: results/runs_v3_1
+
+# Cluster resources for submit_campaign.sh (env override > this > config.sh).
+cluster:
+  partition: GPU-a40
+  gpu: a40:1
+  cpus: 12
+  mem: 32G
+  walltime: "04:00:00"
+  runs_per_gpu: 12
+  requeue: true
+description: >
+  Closed-form LRC ablation: {cfc, cfc_lrc, cfc_pm, lrc} x {dense, ncp} x 6 ODE
+  systems x 5 seeds. cfc (LTC-derived baseline) / cfc_lrc (new closed-form LRC) /
+  cfc_pm (parameter-matched plain CfC, capacity control) / lrc (numerical
+  reference). Pure cross product on the baseline arm; clip off, default
+  solver/horizon.
+
+cells: [cfc, cfc_lrc, cfc_pm, lrc]
+wirings: [dense, ncp]
+systems:
+  - spiral
+  - duffing
+  - periodic_sinusoidal
+  - periodic_predator_prey
+  - limited_predator_prey
+  - nonlinear_predator_prey
+seeds: [0, 1, 2, 3, 4]
+clip_norm: 0.0
+
+# Analysis spec consumed by experiments/analyze_campaign.py (ignored by the runner).
+analysis:
+  metric: nrmse
+  tests: [wilcoxon, cohen_d]
+  plots: [loss, phase, gradflow]

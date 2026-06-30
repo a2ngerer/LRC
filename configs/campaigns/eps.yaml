@@ -12,6 +12,18 @@
 name: eps
 mode: explicit
 outdir: results/runs_eps
+
+# Cluster resources for submit_campaign.sh (env override > this > config.sh).
+# Per-step Dense elastance LRC cells -> 6 runs/GPU @ 64G, 10h
+# (mirrors retired submit_benchmark_eps.sh).
+cluster:
+  partition: GPU-a40
+  gpu: a40:1
+  cpus: 12
+  mem: 64G
+  walltime: "10:00:00"
+  runs_per_gpu: 6
+  requeue: true
 description: >
   8 LRC conditions x 2 wirings on a two-tier task suite (multitimescale
   headline + flat anchors + stiff_linear sweep). The sym (C, E_C) and hybrid
@@ -53,3 +65,9 @@ filters:
   - drop:
       system: [spiral]
       cell: [lrc_sym, lrc_pmctrl_c, lrc_asym_hybrid, lrc_interp_hybrid]
+
+# Analysis spec consumed by experiments/analyze_campaign.py (ignored by the runner).
+analysis:
+  metric: nrmse
+  tests: [wilcoxon, cohen_d]
+  plots: [loss, gradflow]

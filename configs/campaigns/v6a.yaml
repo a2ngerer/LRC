@@ -6,6 +6,16 @@
 name: v6a
 mode: axes
 outdir: results/runs_v6a
+
+# Cluster resources for submit_campaign.sh (env override > this > config.sh).
+cluster:
+  partition: GPU-a40
+  gpu: a40:1
+  cpus: 12
+  mem: 32G
+  walltime: "04:00:00"
+  runs_per_gpu: 12
+  requeue: true
 description: >
   Does the ncp bio>classical ordering survive other NCP wiring graphs, or was
   seed 42 lucky? Reruns the noise regime on ncp for 4 NEW wiring graphs; the
@@ -35,3 +45,10 @@ constants:
 extra_axes:
   - key: ncp_wiring_seed
     values: [7, 13, 21, 99]
+
+# Analysis spec consumed by experiments/analyze_campaign.py (ignored by the runner).
+analysis:
+  metric: nrmse
+  tests: [wilcoxon, cohen_d]
+  plots: [loss, phase, gradflow]
+  compare_dirs: [results/runs_v5]

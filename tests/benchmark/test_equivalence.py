@@ -7,11 +7,15 @@ replaces, element-by-element. The spec list (order + content) is the SLURM array
 contract, so this is the equivalence proof that the migration is a no-op for
 already-completed result dirs.
 
-Two structural checks beyond plain ``==``:
+Three structural checks beyond plain ``==``:
   * a TYPE-strict comparison (``_typed``), because Python dict ``==`` treats
     ``0 == 0.0`` / ``1 == True`` as equal -- a seed emitted as ``0.0`` instead of
     ``0`` would pass ``==`` yet break ``result_filename`` (``seed0`` vs
     ``seed0.0``) and downstream model construction.
+  * a KEY-ORDER comparison (``list(spec.keys())``), because dict ``==`` ignores
+    insertion order -- the serialized spec dict (e.g. the manifest snapshot) must
+    match legacy byte-for-byte, so ``..., clip_norm, ode_unfolds, eps_jitter``
+    may not silently reorder to ``..., clip_norm, eps_jitter, ode_unfolds``.
   * ``result_filename`` identity per element, the on-disk addressing contract.
 """
 from pathlib import Path
@@ -73,15 +77,24 @@ def test_expand_matches_legacy(config_path):
     assert len(expanded) == len(golden), (
         f'{cfg.name}: count {len(expanded)} != legacy {len(golden)}')
 
-    # 2. element-by-element: value-equal, type-strict, and same on-disk filename
+    # 2. element-by-element: value-equal, key-order-equal, type-strict, same file
     for i, (got, want) in enumerate(zip(expanded, golden)):
         assert got == want, f'{cfg.name}: spec[{i}] differs\n got={got}\nwant={want}'
+        # dict == ignores insertion order; the serialized spec must match legacy
+        # key order exactly, so compare list(keys()) explicitly.
+        assert list(got.keys()) == list(want.keys()), (
+            f'{cfg.name}: spec[{i}] key ORDER differs\n'
+            f' got={list(got.keys())}\nwant={list(want.keys())}')
         assert _typed(got) == _typed(want), (
             f'{cfg.name}: spec[{i}] type/value differs\n'
             f' got={_typed(got)}\nwant={_typed(want)}')
         assert legacy.result_filename(got) == legacy.result_filename(want), (
             f'{cfg.name}: result_filename[{i}] differs '
             f'({legacy.result_filename(got)} != {legacy.result_filename(want)})')
+
+    # 3. whole-list key-order proof (closes the dict-== blind spot in aggregate)
+    assert [list(s.keys()) for s in expanded] == [list(s.keys()) for s in golden], (
+        f'{cfg.name}: spec key order differs from legacy')
 
 
 def test_registry_matches_legacy():

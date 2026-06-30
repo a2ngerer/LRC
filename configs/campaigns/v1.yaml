@@ -5,6 +5,16 @@
 name: v1
 mode: axes
 outdir: results/runs
+
+# Cluster resources for submit_campaign.sh (env override > this > config.sh).
+cluster:
+  partition: GPU-a40
+  gpu: a40:1
+  cpus: 12
+  mem: 32G
+  walltime: "04:00:00"
+  runs_per_gpu: 12
+  requeue: true
 description: >
   Thesis baseline matrix: {ltc, lrc, gru, lstm} x {dense, ncp} x 6 ODE systems
   x 5 seeds. Pure cross product; clip off, default solver/horizon.
@@ -20,3 +30,9 @@ systems:
   - nonlinear_predator_prey
 seeds: [0, 1, 2, 3, 4]
 clip_norm: 0.0
+
+# Analysis spec consumed by experiments/analyze_campaign.py (ignored by the runner).
+analysis:
+  metric: nrmse
+  tests: [wilcoxon, cohen_d]
+  plots: [loss, phase, gradflow]
