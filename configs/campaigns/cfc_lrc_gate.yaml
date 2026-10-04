@@ -1,0 +1,35 @@
+name: cfc_lrc_gate
+mode: axes
+outdir: results/runs_cfc_lrc_gate
+description: >
+  Head-to-head of the two liquid-elastance gate placements in the closed-form
+  LRC cell, following M. Farsang's 2026-07-08 code review.
+    inner (cfc_lrc)       g = sigmoid(eps*(t_a*dt) + t_b)   -- derived closed form,
+                                                               eps modulates the gate time-rate
+    outer (cfc_lrc_outer) g = eps*sigmoid(t_a*dt + t_b)     -- Farsang variant,
+                                                               eps caps the gate amplitude
+  Both recover CfC as eps -> 1 and have IDENTICAL parameter counts (eps only
+  changes position, not head size) -- so this is a confound-free, perfectly
+  parameter-matched comparison. Systems span the dynamical regimes where the two
+  should diverge; wirings span dense/NCP/cNCP (the Farsang matrix).
+
+# The two variants only -- the comparison IS the campaign.
+cells: [cfc_lrc, cfc_lrc_outer]
+
+# Full wiring matrix (dense / NCP / cortical-NCP).
+wirings: [dense, ncp, cncp]
+
+# One system per dynamical regime the gate difference should be sensitive to:
+#   spiral                  smooth linear-ish     -> null anchor (expect a tie)
+#   nonlinear_predator_prey nonlinear oscillator  -> mild nonlinearity
+#   duffing                 bistable double-well  -> retention-ceiling stress (outer)
+#   multitimescale          two-timescale forcing -> time-rate modulation stress (inner)
+#   stiff_linear_k100       stiff linear system   -> timescale separation stress
+systems: [spiral, nonlinear_predator_prey, duffing, multitimescale, stiff_linear_k100]
+
+# 5 seeds -> 2 x 3 x 5 x 5 = 150 runs. Bump to {range: [0, 10]} for tighter CIs.
+seeds: {range: [0, 5]}
+clip_norm: 0.0
+
+cluster:  { partition: GPU-a40, mem: 32G, runs_per_gpu: 6, array_throttle: 8, walltime: "04:00:00" }
+analysis: { metric: nrmse, tests: [wilcoxon, cohen_d], plots: [loss, phase] }
