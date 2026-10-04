@@ -8,6 +8,7 @@ from src.tasks.committee.views import (partition_masks, masked_views,
                                        make_views)
 from src.tasks.committee.model import (build_committee_model, ChannelDropout,
                                        NoiseAugment, COMMITTEE_WIRINGS)
+from src.wirings import effective_param_count, match_param_budget
 from src.wirings.committee import CommitteeVotingCell
 
 
@@ -107,13 +108,159 @@ def test_params_independent_of_K_weight_sharing():
     assert P(1) == P(2) == P(4)
 
 
-def test_cncp_dense_parameter_matched():
-    def P(w, s):
-        return build_committee_model(
+def test_arms_budget_matched_on_effective_params():
+    """Each arm is sized on its own knob to the same EFFECTIVE budget (masked-off
+    ncp synapses excluded); the matched counts agree within the fair band."""
+    def count(w):
+        return lambda s: effective_param_count(build_committee_model(
             w, 2, cell="cfc_lrc", size=s, feature_size=7, seq_len=6,
-            num_classes=7, elastance_type="asymmetric", seed=0).count_params()
-    ratio = P("cncp", 48) / P("dense", 64)
-    assert 1 / 1.5 < ratio < 1.5
+            num_classes=7, elastance_type="asymmetric", seed=0))
+    counts = {w: match_param_budget(count(w), 4000, range(2, 129))[1]
+              for w in COMMITTEE_WIRINGS}
+    lo, hi = min(counts.values()), max(counts.values())
+    assert hi / lo < 1.5, f"budget-matched effective counts {counts}"
+
+
+# --- consensus controls (2026-10-04) ---
+
+def _cell_states(cell, K, F=5, B=4, seed=0):
+    tf.keras.utils.set_random_seed(seed)
+    cell.build((tf.TensorShape([None, K, F]), tf.TensorShape([None, 1])))
+    feats = tf.random.normal([B, K, F], seed=seed)
+    return cell((feats, tf.ones([B, 1])), cell.get_initial_state(batch_size=B))
+
+
+def test_fixed_lambda_zero_has_no_variable_and_leaves_columns_independent():
+    cell = CommitteeVotingCell(n_columns=3, cell_cls="gru", units=6,
+                               vote_lambda=0.0)
+    out, ns = _cell_states(cell, 3)
+    assert not hasattr(cell, "vote_raw")
+    assert float(cell.vote_strength) == 0.0
+    # independent columns: each new state is the shared cell's own update
+    tf.keras.utils.set_random_seed(0)
+    feats = tf.random.normal([4, 3, 5], seed=0)
+    for k in range(3):
+        _, ref = cell.col((feats[:, k, :], tf.ones([4, 1])), [tf.zeros([4, 6])])
+        assert np.allclose(ns[k].numpy(), ref[0].numpy(), atol=1e-6)
+    assert np.allclose(out.numpy(), np.mean([s.numpy() for s in ns], axis=0),
+                       atol=1e-6)
+
+
+def test_mean_readout_is_independent_of_lambda():
+    """mean_k((1-lam) h_k + lam hbar) == hbar: the current output does not see
+    the voting strength; only the stored states do."""
+    outs = []
+    for lam in (0.0, 0.5, 1.0):
+        cell = CommitteeVotingCell(n_columns=3, cell_cls="gru", units=6,
+                                   vote_lambda=lam)
+        out, ns = _cell_states(cell, 3)
+        outs.append(out.numpy())
+        spread = np.std([s.numpy() for s in ns], axis=0).max()
+        assert (spread < 1e-6) == (lam == 1.0)      # lam=1 collapses the states
+    assert np.allclose(outs[0], outs[1], atol=1e-6)
+    assert np.allclose(outs[0], outs[2], atol=1e-6)
+
+
+@pytest.mark.parametrize("K", [3, 4])
+def test_median_consensus_matches_numpy_lower_median(K):
+    from src.wirings.committee import consensus_target
+    cols = [tf.constant(np.random.default_rng(k).normal(size=(2, 5)),
+                        dtype=tf.float32) for k in range(K)]
+    med = consensus_target(cols, "median").numpy()
+    expect = np.sort(np.stack([c.numpy() for c in cols]), axis=0)[(K - 1) // 2]
+    assert np.allclose(med, expect)
+    cell = CommitteeVotingCell(n_columns=K, cell_cls="gru", units=6,
+                               consensus="median", vote_lambda=0.0)
+    out, ns = _cell_states(cell, K)
+    expect = np.sort(np.stack([s.numpy() for s in ns]), axis=0)[(K - 1) // 2]
+    assert np.allclose(out.numpy(), expect, atol=1e-6)
+
+
+def test_invalid_consensus_and_lambda_raise():
+    with pytest.raises(ValueError):
+        CommitteeVotingCell(n_columns=2, cell_cls="gru", units=4, consensus="max")
+    with pytest.raises(ValueError):
+        CommitteeVotingCell(n_columns=2, cell_cls="gru", units=4, vote_lambda=1.5)
+
+
+def test_vote_and_readout_slices_shape_the_output():
+    cell = CommitteeVotingCell(n_columns=2, cell_cls="gru", units=8,
+                               vote_slice=slice(2, 6), readout_slice=slice(0, 2),
+                               vote_lambda=1.0)
+    out, ns = _cell_states(cell, 2)
+    assert cell.output_size == 2 and out.shape == (4, 2)
+    a, b = ns[0].numpy(), ns[1].numpy()
+    assert np.allclose(a[:, 2:6], b[:, 2:6])              # voted slice shared
+    assert not np.allclose(a[:, :2], b[:, :2])            # the rest stays per column
+
+
+# --- NCP committee (2026-10-04) ---
+
+def _ncp_committee(K, vote_lambda, vote_slice, readout_slice, seed=0):
+    from src.wirings import NCPWiring
+    tf.keras.utils.set_random_seed(seed)
+    ncp = NCPWiring(_resolve("gru"), 8, 4, 4, seed=1)
+    cell = CommitteeVotingCell(n_columns=K, cell=ncp.make_cell(),
+                               vote_slice=vote_slice, readout_slice=readout_slice,
+                               vote_lambda=vote_lambda)
+    cell.build((tf.TensorShape([None, K, 5]), tf.TensorShape([None, 1])))
+    return cell
+
+
+def _resolve(key):
+    from src.models.rnn_model import _CELL_REGISTRY
+    return _CELL_REGISTRY[key]
+
+
+def _two_steps(cell, K, seed=0):
+    tf.keras.utils.set_random_seed(seed)
+    feats = tf.random.normal([3, 2, K, 5], seed=seed)
+    states = cell.get_initial_state(batch_size=3)
+    for t in range(2):
+        out, states = cell((feats[:, t], tf.ones([3, 1])), states)
+    return out.numpy(), [s.numpy() for s in states]
+
+
+def test_ncp_committee_couples_command_not_motor():
+    """ncps state order is [motor | command | inter]. Motor neurons have no
+    outgoing synapses: a mixed motor state only feeds the motor neurons' own
+    leak term, it never reaches the command or inter neurons, so the committee
+    would share no internal representation (the non-motor states are identical
+    for lambda 0 and 1). Mixing the command slice changes the later readout."""
+    motor, command = slice(0, 4), slice(4, 8)
+    _, s0 = _two_steps(_ncp_committee(3, 0.0, motor, motor), 3)
+    _, s1 = _two_steps(_ncp_committee(3, 1.0, motor, motor), 3)
+    for a, b in zip(s0, s1):
+        assert np.allclose(a[:, 4:], b[:, 4:], atol=1e-6)     # command + inter
+    out0, _ = _two_steps(_ncp_committee(3, 0.0, command, motor), 3)
+    out1, _ = _two_steps(_ncp_committee(3, 1.0, command, motor), 3)
+    assert not np.allclose(out0, out1, atol=1e-6)
+
+
+def test_ncp_committee_model_builds_fits_and_is_k_independent():
+    F, C, T = 7, 7, 6
+    def P(K):
+        return build_committee_model(
+            "ncp", K, cell="cfc_lrc", size=16, feature_size=F, seq_len=T,
+            num_classes=C, elastance_type="asymmetric", seed=0)
+    m = P(3)
+    X = np.random.default_rng(0).standard_normal((10, T, 3, F)).astype("float32")
+    t = np.ones((10, T, 1), "float32")
+    y = np.random.default_rng(1).integers(0, C, (10, T)).astype("int32")
+    assert m.predict([X, t], verbose=0).shape == (10, T, C)
+    m.fit([X, t], y, epochs=1, batch_size=5, verbose=0)
+    assert effective_param_count(P(1)) == effective_param_count(P(2)) \
+        == effective_param_count(m)
+    assert m.layers[-1].input_shape[-1] == 8     # readout = motor slice (size//2)
+
+
+def test_dense_vote_units_restricts_vote_and_readout():
+    m = build_committee_model("dense", 2, cell="gru", size=12, feature_size=7,
+                              seq_len=4, num_classes=7, dense_vote_units=5,
+                              seed=0)
+    assert m.layers[-1].input_shape[-1] == 5
+    with pytest.raises(ValueError):
+        build_committee_model("ncp", 2, cell="gru", size=12, dense_vote_units=5)
 
 
 def test_regression_head_shape():

@@ -27,6 +27,7 @@
 import tensorflow as tf
 
 from .cncp import CorticalColumnCell, NODE_ORDER, DEFAULT_LAMINA_UNITS
+from .committee import VotingMixin
 
 _L23_IDX = NODE_ORDER.index("L23")   # object layer, voted across columns
 
@@ -128,15 +129,18 @@ class TbtCorticalColumnCell(CorticalColumnCell):
         return tf.concat([h_l23, h_l5et], axis=-1)
 
 
-class MultiColumnVotingCell(tf.keras.layers.AbstractRNNCell):
+class MultiColumnVotingCell(VotingMixin, tf.keras.layers.AbstractRNNCell):
     """K weight-shared tbt_cNCP columns that VOTE each timestep (TBT ing. 3).
 
     Every column runs the identical algorithm (shared weights, as in TBT) on its
     OWN glimpse stream. After each step the columns reach consensus through their
-    L2/3 (object) states: a learnable convex mix pulls each column's L2/3 toward
-    the mean L2/3 across columns -- the differentiable stand-in for the long-range
-    lateral L2/3 excitation that implements voting in Numenta 2017. The cell
-    output is the voted (mean) L2/3, read out by a Dense object head.
+    L2/3 (object) states: a convex mix (learnable or fixed strength) pulls each
+    column's L2/3 toward the consensus L2/3 across columns (mean, or lower
+    median) -- the differentiable stand-in for the long-range lateral L2/3
+    excitation that implements voting in Numenta 2017. The cell output is the
+    consensus of the mixed L2/3 states, read out by a Dense object head. The
+    consensus step is VotingMixin (src/wirings/committee.py), shared with the
+    generic CommitteeVotingCell.
 
     Per-step input is a 3-tuple (features (B,K,F), time (B,1), location (B,K,L)),
     i.e. one feature/location vector per column. State = K copies of the 8-node
@@ -147,11 +151,14 @@ class MultiColumnVotingCell(tf.keras.layers.AbstractRNNCell):
         use_location: forwarded to the shared TbtCorticalColumnCell gate (set
                       False when location is concatenated into features).
         vote_init:   initial voting strength (pre-sigmoid); 0.0 -> lambda 0.5.
+        vote_lambda: None (learnable) or a fixed strength in [0, 1].
+        consensus:   'mean' (default) or 'median'.
         (rest)       forwarded to the shared TbtCorticalColumnCell.
     """
 
     def __init__(self, n_columns=3, cell_cls="cfc_lrc", lamina_units=None,
-                 seed=42, use_location=False, vote_init=0.0, **cell_kwargs):
+                 seed=42, use_location=False, vote_init=0.0, vote_lambda=None,
+                 consensus="mean", **cell_kwargs):
         super().__init__()
         self.K = int(n_columns)
         units = dict(DEFAULT_LAMINA_UNITS)
@@ -159,7 +166,7 @@ class MultiColumnVotingCell(tf.keras.layers.AbstractRNNCell):
             units.update(lamina_units)
         self._l23 = units["L23"]
         self._n_node = len(NODE_ORDER)
-        self._vote_init = vote_init
+        self._init_vote(vote_lambda, vote_init, consensus)
         self.col = TbtCorticalColumnCell(
             cell_cls=cell_cls, lamina_units=lamina_units, seed=seed,
             use_location=use_location, **cell_kwargs)
@@ -178,9 +185,7 @@ class MultiColumnVotingCell(tf.keras.layers.AbstractRNNCell):
         self.col.build((tf.TensorShape([None, feat_dim]),
                         tf.TensorShape([None, 1]),
                         tf.TensorShape([None, loc_dim])))
-        self.vote_raw = self.add_weight(
-            name="vote_raw", shape=(), dtype=tf.float32,
-            initializer=tf.keras.initializers.Constant(self._vote_init))
+        self._build_vote()
         self.built = True
 
     def get_initial_state(self, inputs=None, batch_size=None, dtype=None):
@@ -199,14 +204,10 @@ class MultiColumnVotingCell(tf.keras.layers.AbstractRNNCell):
             l23_list.append(ns_k[_L23_IDX])
             per_col.append(ns_k)
 
-        consensus = tf.add_n(l23_list) / float(self.K)
-        lam = tf.nn.sigmoid(self.vote_raw)             # voting strength in (0,1)
+        mixed, output = self._consensus(l23_list)      # voted object rep
         new_states = []
-        voted_l23 = []
         for k in range(self.K):
             ns = list(per_col[k])
-            ns[_L23_IDX] = (1.0 - lam) * ns[_L23_IDX] + lam * consensus
-            voted_l23.append(ns[_L23_IDX])
+            ns[_L23_IDX] = mixed[k]
             new_states.extend(ns)
-        output = tf.add_n(voted_l23) / float(self.K)   # voted object rep
         return output, new_states
