@@ -197,3 +197,14 @@ interaction of elastance and wiring is tested in the final suite via `cfc_lrc` v
 `cfc_pm`. Neither campaign had been run, so this changes the planned matrix only.
 `_build_eps_model` still accepts any wiring and keeps the RuntimeWarning for
 `ncp` with `ode_unfolds < 3`.
+
+### cNCP follow-up (2026-10-04)
+
+The cNCP sub-cells are now built through `ncp_cell_kwargs` as well
+(`src/wirings/cncp.py::CorticalColumnCell.build`), so CfC-family nodes run
+without a backbone exactly like the `NCPLayeredCell` layers; an explicit
+`backbone_layers` still wins. Together with the per-arm effective-budget
+matching this removes the remaining difference in sub-cell computation between
+the two sparse wirings. The relay nodes integrate `elapsed_time` and the TRN
+relay is non-negative; details and rationale in
+`docs/superpowers/specs/2026-07-02-cncp-design.md`, section 13.

@@ -369,3 +369,56 @@ zero-grad there), so it does not invalidate `cncp.py`, but it means:
 > regime-shift / occlusion task. Alternatively, carry the ODE-func state across
 > Euler steps. This sharpens §10: on generic ODE tasks the structure is not merely
 > "extra capacity" — its recurrent half is literally untrained.
+
+---
+
+## 13. Revision 2026-10-04 (design review)
+
+An external design review of the implementation against this spec (model
+`gpt-6-astra`, 2026-10-04; every code claim re-verified) led to the following
+changes. The graph (§3), the gain combiner (§5) and the ablation controls (§7,
+§9) are unchanged; a given seed still yields the same masks.
+
+1. **Sub-cell computation shared with the NCP layers (§2, §0 orthogonality).**
+   `CorticalColumnCell.build` constructs its sub-cells through
+   `src/wirings/ncp.py::ncp_cell_kwargs`, i.e. CfC-family cells (`cfc`,
+   `cfc_lrc`, `cfc_lrc_outer`, mixed-memory CfC) run with `backbone_layers=0`
+   exactly as the `NCPLayeredCell` layers do (ncps `WiredCfCCell` semantics).
+   An explicit `backbone_layers` in the cell kwargs wins. Before, cNCP nodes
+   carried a dense backbone layer the NCP layers lack, so NCP-vs-cNCP differed
+   in sub-cell depth, not only in the graph. Per node the parameter count
+   changes from `6u^2 + 5u` to `8u^2 + 4u` (the node input width equals the
+   node width); the benchmarks size every arm to the same effective budget,
+   so this only shifts the matched lamina widths.
+2. **Relays integrate the elapsed time (§4).** The relay update is now
+   `h = (1 - alpha) * prev + alpha * act(drive + b)` with
+   `alpha = 1 - exp(-dt * softplus(rate_raw))`, a learnable per-unit rate
+   initialised to 0 (`alpha(dt = 1) = 0.5`, the previous leak value). The
+   relays therefore follow irregular sampling, and the optional per-lamina
+   timescale prior (`timescale_prior`) scales their `dt` like every other
+   node's. Before, `alpha` was a plain learnable constant and `dt` never
+   reached the relays.
+3. **TRN activity is non-negative (§4, §6).** The TRN relay uses `sigmoid`
+   instead of `tanh`. The sign lock of §6 constrains the *weights* of
+   `M_TRN_Thal`; with a `tanh` relay the TRN state could be negative, so the
+   "inhibitory" edge could excite. With `sigmoid` the contribution of the
+   edge to the Thal drive is `<= 0` for every input. The Thal relay keeps
+   `tanh`. The `sign_constraint=False` ablation keeps the free-sign edge.
+4. **Optional sensory route through the relay (`sensory_route`).**
+   `'direct'` (default) is the graph of §3: the input drives L4 and the relay
+   loop carries the delayed L6CT feedback. `'thalamic'` adds the dense edge
+   `M_in_Thal` (input -> Thal) in place of `M_in_L4`; the loop
+   L6CT -> TRN -> Thal is evaluated at the start of the step from the
+   PREVIOUS L6CT/TRN state, TRN gates the sensory drive and L4 reads the
+   CURRENT Thal state. The one-step delay moves from `Thal -> L4` to the
+   `L6CT -> {Thal, TRN}` edges. This makes the TRN gate act on the sensory
+   stream, which the review asked for as a prototype; it is an ablation arm,
+   not the default, and is incompatible with `feedforward_only`.
+5. **One step implementation.** `TbtCorticalColumnCell` no longer copies
+   `call()`; it overrides the hooks `_unpack`, `_modulate_l4` and `_readout`.
+   The copy had already drifted (it dropped the timescale factor).
+
+Corrected wording: the combiner of §5 is the identity only for `g = 0`; at a
+zero apical drive (first step) it is the constant factor `1 + g/2`. The
+sentence "every existing connection is strictly negative" in §6 refers to the
+weights; the contribution is non-positive only together with item 3.
