@@ -1,3 +1,4 @@
+import tensorflow as tf
 # tests/experiments/test_run_benchmark.py
 import json
 
@@ -8,10 +9,12 @@ from experiments.run_benchmark import (
     SYSTEMS, SEEDS, SEEDS_V4_BASE, SEEDS_V4_TAIL, SYSTEMS_V4_TAIL,
     SEEDS_V5, STRESS_REGIMES_V5, WIRING_SEEDS_V6A, STRESS_LEVELS_V6B, NCP_WIRING_SEED,
     V2_CLIP_NORM, CELL_UNITS, CELL_KWARGS,
-    build_specs, build_specs_v2, build_specs_v3, build_specs_v3_1, build_specs_v3_2,
-    build_specs_v3_3, build_specs_v4, build_specs_v5, build_specs_v6a, build_specs_v6b,
+    build_model, build_specs, build_specs_v2, build_specs_v3, build_specs_v3_1,
+    build_specs_v3_2, build_specs_v3_3, build_specs_v4, build_specs_v5,
+    build_specs_v6a, build_specs_v6b,
     result_filename, run_one, save_result,
 )
+from src.wirings import CorticalColumnCell
 
 _TINY_CFG = dict(n_iters=3, batch_size=4, batch_time=8, lr=1e-3, loss='mse',
                  grad_log_every=2, data_size=60, deterministic=False)
@@ -67,12 +70,13 @@ def test_run_one_is_seed_reproducible():
 
 
 def test_ncp_run_smoke(tmp_path):
-    """One tiny NCP run end-to-end (covers SparseLinear + gradient tracker)."""
+    """One tiny NCP run end-to-end (covers the masked cell + gradient tracker)."""
     spec = {'cell': 'ltc', 'wiring': 'ncp', 'system': 'duffing', 'seed': 1}
     result = run_one(spec, _TINY_CFG)
     assert len(result['training']['loss_history']) == _TINY_CFG['n_iters']
-    # NCP model has 5 leaf layers (RNN, SparseLinear, RNN, SparseLinear, RNN)
-    assert len(result['gradient_flow']['layer_norms']) == 5
+    # Since 2026-09-17 the NCP model is ONE masked cell plus the motor slice
+    # (docs/ncp-wiring-fix-2026-09-17.md), so there is a single weighted layer.
+    assert len(result['gradient_flow']['layer_norms']) == 1
 
 
 def test_v2_matrix_counts():
@@ -570,7 +574,11 @@ def test_run_one_v6a_threads_wiring_seed():
 def test_v6a_wiring_seed_changes_behavior():
     """Same everything, different wiring graph -> different loss (proves the seed
     reaches the NCP wiring, not just the config record)."""
-    base = {'cell': 'gru', 'wiring': 'ncp', 'system': 'spiral', 'seed': 0,
+    # cfc: the neural-ODE task calls the net one timestep at a time, and in a
+    # single synchronous NCP step nothing reaches the motor neurons through the
+    # gated cells (docs/ncp-wiring-fix-2026-09-17.md), so a cell whose readout
+    # heads see the whole state is needed to observe the graph here.
+    base = {'cell': 'cfc', 'wiring': 'ncp', 'system': 'spiral', 'seed': 0,
             'clip_norm': 0.0, 'stress': 'noise'}
     cfg = dict(_TINY_CFG, grad_log_every=0)
     r7 = run_one({**base, 'ncp_wiring_seed': 7}, cfg)
@@ -631,3 +639,77 @@ def test_v6_does_not_perturb_earlier_contracts():
     assert result_filename({'cell': 'cfc', 'wiring': 'ncp', 'system': 'spiral',
                             'seed': 0, 'stress': 'noise'}) == \
         'cfc_ncp_spiral_seed0_stress-noise.json'
+
+
+# --- cncp wiring dispatch (guard against the silent ncp fallback) ---
+
+def test_build_model_cncp_builds_cortical_column_cell():
+    """wiring='cncp' must yield the composite CorticalColumnCell model. The
+    pre-fix bare else in build_model silently built the standard 3-layer NCP
+    stack, so a cncp campaign would have written results labeled 'cncp' that
+    were actually the ncp model (silent wrong data)."""
+    model = build_model('gru', 'cncp')
+    # cncp model = [RNN(CorticalColumnCell), Dense(2)] -- structurally distinct
+    # from the 5-layer NCP stack [RNN, SparseLinear, RNN, SparseLinear, RNN].
+    assert len(model.net.layers) == 2
+    assert isinstance(model.net.layers[0].cell, CorticalColumnCell)
+
+
+def test_build_model_ncp_unchanged_by_cncp_dispatch():
+    """wiring='ncp' builds the single-cell NCP model (regression guard)."""
+    model = build_model('gru', 'ncp')
+    assert len(model.net.layers) == 2          # RNN(NCP cell) + motor slice
+    model(0.0, tf.zeros([1, 1, 2]))
+    # gru runs the sequential layer pass: three masked per-layer sub-cells
+    assert all(c.is_masked for c in model.net.layers[0].cell._cells)
+    assert not any(isinstance(getattr(layer, 'cell', None), CorticalColumnCell)
+                   for layer in model.net.layers)
+
+
+def test_build_model_cncp_threads_wiring_seed():
+    """The ncp_wiring_seed parameter reaches the cncp mask-generation seed
+    (default NCP_WIRING_SEED), so multi-graph campaigns work for cncp too."""
+    assert build_model('gru', 'cncp').net.layers[0].cell._seed == NCP_WIRING_SEED
+    m7 = build_model('gru', 'cncp', ncp_wiring_seed=7)
+    assert m7.net.layers[0].cell._seed == 7
+
+
+def test_build_model_cncp_forwards_cell_kwargs():
+    """Per-cell kwargs (lrc -> elastance_type='asymmetric') reach the cncp
+    sub-cell constructors, matching the dense/ncp branches."""
+    cell = build_model('lrc', 'cncp').net.layers[0].cell
+    assert cell._cell_kwargs == {'elastance_type': 'asymmetric'}
+
+
+def test_build_model_rejects_unknown_wiring():
+    """A typo'd wiring must raise, never silently fall back to the ncp model."""
+    with pytest.raises(ValueError, match='unhandled wiring'):
+        build_model('gru', 'npc')
+
+
+def test_run_one_cncp_smoke(tmp_path):
+    """One tiny cncp run end-to-end through the shared campaign/legacy run
+    path (run_one -> build_model -> train -> full-trajectory eval)."""
+    spec = {'cell': 'gru', 'wiring': 'cncp', 'system': 'spiral', 'seed': 0,
+            'clip_norm': 0.0}
+    result = run_one(spec, _TINY_CFG)
+    assert result['schema_version'] == 2
+    assert result['run'] == spec
+    assert len(result['training']['loss_history']) == _TINY_CFG['n_iters']
+    assert result['evaluation']['nrmse'] >= 0
+    assert result_filename(spec) == 'gru_cncp_spiral_seed0.json'
+    save_result(result, str(tmp_path))
+    assert (tmp_path / 'gru_cncp_spiral_seed0.json').exists()
+
+
+def test_effective_config_records_injected_ncp_defaults():
+    """Provenance: values injected at build time land in effective_config,
+    which run_one writes into the result config."""
+    from experiments.run_benchmark import build_model
+    lrc = build_model('lrc', 'ncp')
+    assert lrc.effective_config['cell_kwargs']['ode_unfolds'] == 6
+    assert lrc.effective_config['ncp']['inter_neurons'] > 0
+    cfc = build_model('cfc', 'ncp', param_budget=1000)
+    cfg = cfc.effective_config
+    assert cfg['cell_kwargs']['backbone_layers'] == 0
+    assert cfg['size'] is not None and cfg['ncp']['inter_neurons'] == cfg['size']

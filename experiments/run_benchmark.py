@@ -23,24 +23,31 @@ onto a SLURM array job (see cluster/benchmark_array.sbatch):
     uv run python experiments/run_benchmark.py --all
 """
 import argparse
+import functools
 import json
 import os
 import socket
 import sys
 import time
+import warnings
 from datetime import datetime, timezone
 from itertools import product
 
 import numpy as np
 import tensorflow as tf
 
-from src.models import make_dense_model, make_ncp_model
+from src.models.rnn_model import _CELL_REGISTRY
+from src.models import (make_cncp_model, make_dense_model, make_ncp_model,
+                        make_ncp_stacked_model)
+from src.wirings import (effective_param_count, match_param_budget,
+                          ncp_cell_kwargs, param_counts)
 from src.tasks.neural_ode.datasets import (
     generate_dataset, generate_stress_dataset, STRESS_REGIMES,
 )
 from src.tasks.neural_ode.ode_model import SequentialODEFunc
 from src.tasks.neural_ode.solver import euler_odeint
 from src.tasks.neural_ode.trainer import train
+from src.benchmark.tracking import step_logger, track
 from src.evaluation import GradientFlowTracker, mse, nrmse
 from src.utils import set_global_seed
 
@@ -199,6 +206,10 @@ CELL_KWARGS = {
     'mm_lrc': dict(elastance_type='asymmetric'),
     # cfc_lrc: liquid-elastance gate, asymmetric to match lrc/mm_lrc.
     'cfc_lrc': dict(elastance_type='asymmetric'),
+    # cfc_lrc_outer: same cell, eps scales the gate output instead of its
+    # time-rate (M. Farsang review variant). Identical param count -> a clean
+    # parameter-matched head-to-head against cfc_lrc.
+    'cfc_lrc_outer': dict(elastance_type='asymmetric', elastance_gate='outer'),
     # cfc_mm_lrc: inner CfC_LRC gets the same asymmetric elastance (v3.2 2x2).
     'cfc_mm_lrc': dict(elastance_type='asymmetric'),
     # cfc_pm: parameter-matched plain CfC. backbone_units=20 makes its dense
@@ -224,8 +235,8 @@ CELL_KWARGS = {
 }
 
 # Benchmark eps: liquid-elastance over-parameterization ablation (see
-# scratchpad/eps-ablation/finalSpec.md). 8 LRC conditions x 2 wirings on a
-# two-tier task suite. The headline equivalence test (B~A) lives on
+# scratchpad/eps-ablation/finalSpec.md). 8 LRC conditions x dense wiring ONLY
+# (decision 2026-10-04, docs/ncp-wiring-fix-2026-09-17.md) on a two-tier task suite. The headline equivalence test (B~A) lives on
 # multitimescale @ uf=1; spiral / stiff_linear_k1 are flat falsification anchors;
 # stiff_linear_k{10,100,1000} are exploratory. n=30 seeds for the confirmatory
 # power scheme (Delta_min=1.0*SD, alpha=0.05/15).
@@ -431,8 +442,9 @@ def _eps_cells_for_task(system: str):
     return [c for c in CELLS_EPS if c in set(cells)]
 
 
-def build_specs_eps(seeds=SEEDS_EPS, wirings=WIRINGS):
-    """eps matrix: liquid-elastance over-parameterization ablation.
+def build_specs_eps(seeds=SEEDS_EPS, wirings=('dense',)):
+    """eps matrix: liquid-elastance over-parameterization ablation (dense only,
+    1800 specs at the default 30 seeds; pass wirings to override).
 
     Order (= SLURM array contract for eps), task-block major then the canonical
     CELLS_EPS x wirings x seeds order within each block:
@@ -478,8 +490,9 @@ SEEDS_EPS_PILOT = list(range(8))     # 8 seeds (>=8-seed pilot, spec §3.0.1)
 EPS_PILOT_ANCHORS = ['spiral', 'stiff_linear_k1']
 
 
-def build_specs_eps_pilot(seeds=SEEDS_EPS_PILOT, wirings=WIRINGS):
-    """eps §3.0 pilot subset: ALL 8 conditions (no pruning) on the pilot tasks.
+def build_specs_eps_pilot(seeds=SEEDS_EPS_PILOT, wirings=('dense',)):
+    """eps §3.0 pilot subset: ALL 8 conditions (no pruning) on the pilot tasks
+    (dense only, 320 specs at the default 8 seeds).
 
     Unlike build_specs_eps, the pilot does NOT prune sym/hybrid off the anchors:
     the SD pilot needs every condition on every task to estimate all paired-diff
@@ -507,18 +520,125 @@ def build_specs_eps_pilot(seeds=SEEDS_EPS_PILOT, wirings=WIRINGS):
     return specs
 
 
+# NCP on the single-step ODE task: the synchronous ODE cells (ncps wired
+# LTCCell semantics) move a signal one synapse per ode_unfolds sub-step, so the
+# motor neurons see the input only with >= 3 sub-steps (sensory -> inter ->
+# command -> motor). Cells whose default is a single step get the ncps default
+# of 6 under 'ncp' unless the spec sets ode_unfolds explicitly. Closed-form and
+# discrete cells run a sequential layer pass instead (src/wirings/ncp.py
+# NCPLayeredCell), see docs/ncp-wiring-fix-2026-09-17.md.
+NCP_ODE_UNFOLDS = 6
+NCP_MIN_ODE_UNFOLDS = 3
+_SINGLE_STEP_ODE_CELLS = ('lrc', 'ctrnn', 'mm_lrc', 'lrc_pm') + tuple(CELLS_EPS)
+
+
+def _make_net(cell, wiring, cell_kwargs, units, ncp_cfg, lamina_units,
+              ncp_wiring_seed):
+    if wiring == 'dense':
+        return make_dense_model(cell, units=units, output_neurons=2, **cell_kwargs)
+    if wiring == 'ncp':
+        return make_ncp_model(cell, seed=ncp_wiring_seed, **ncp_cfg, **cell_kwargs)
+    if wiring == 'ncp_stacked':
+        # DEPRECATED legacy stacked approximation (what 'ncp' meant before
+        # 2026-09-17); kept to reproduce old runs, see
+        # docs/ncp-wiring-fix-2026-09-17.md.
+        return make_ncp_stacked_model(cell, seed=ncp_wiring_seed, **ncp_cfg,
+                                      **cell_kwargs)
+    if wiring == 'cncp':
+        # cNCP: composite CorticalColumnCell wiring (src/wirings/cncp.py).
+        # Legacy runs use its lamina defaults (sized to be comparable to the
+        # standard NCP, cncp design spec section 2); budget-matched runs scale
+        # them. The wiring seed threads through as the mask-generation seed, so
+        # v6a-style multi-graph campaigns work for cncp unchanged.
+        # output_neurons=2 matches the ODE output dimension, like dense.
+        return make_cncp_model(cell, output_neurons=2, seed=ncp_wiring_seed,
+                               lamina_units=lamina_units, **cell_kwargs)
+    # No bare else: a fallback would silently mislabel unknown wirings as
+    # ncp (results written under the wrong wiring name -- the exact
+    # failure a 'cncp' campaign hit before this branch existed).
+    raise ValueError(
+        f"unhandled wiring {wiring!r}; known wirings: dense, ncp, "
+        "ncp_stacked, cncp")
+
+
+def _arm_sizes(wiring, size):
+    """(units, ncp_cfg, lamina_units) for one width knob of a budget-matched arm.
+
+    ncp / ncp_stacked: inter=size, command=size//2, motor=2 (the ODE output is
+    the motor slice). cncp: lamina widths scaled by size/16.
+    """
+    from src.tasks.person_activity.model import scaled_lamina_units
+    ncp_cfg = dict(inter_neurons=size, command_neurons=max(1, size // 2),
+                   motor_neurons=2)
+    lamina = scaled_lamina_units(size) if wiring == 'cncp' else None
+    return size, ncp_cfg, lamina
+
+
+@functools.lru_cache(maxsize=None)
+def budget_size(cell, wiring, param_budget, ode_unfolds=None,
+                ncp_wiring_seed=NCP_WIRING_SEED):
+    """Width knob whose EFFECTIVE parameter count is closest to ``param_budget``.
+
+    Every arm (dense / ncp / ncp_stacked / cncp) is sized on its own, so the
+    arms of a new campaign are compared at matched effective capacity
+    (masked-off weights excluded, ``effective_param_count``). Returns
+    ``(size, effective_params)``.
+    """
+    def count(size):
+        model = build_model(cell, wiring, ode_unfolds=ode_unfolds,
+                            ncp_wiring_seed=ncp_wiring_seed, _size=size)
+        model(tf.constant(0.0), tf.zeros([1, 1, 2]))
+        n = effective_param_count(model)
+        tf.keras.backend.clear_session()
+        return n
+    return match_param_budget(count, param_budget, range(2, 257))
+
+
 def build_model(cell: str, wiring: str, ode_unfolds=None,
-                ncp_wiring_seed=NCP_WIRING_SEED) -> SequentialODEFunc:
+                ncp_wiring_seed=NCP_WIRING_SEED, param_budget=None,
+                _size=None) -> SequentialODEFunc:
+    """Build the ODE-function model for one (cell, wiring).
+
+    Without ``param_budget`` the frozen legacy sizes apply (CELL_UNITS /
+    DENSE_UNITS, CELL_NCP / NCP_CONFIG, cncp lamina defaults) -- every legacy
+    campaign takes this path. With ``param_budget`` each arm is sized by
+    ``budget_size``.
+    """
     cell_kwargs = dict(CELL_KWARGS.get(cell, {}))
     if ode_unfolds is not None:
         cell_kwargs['ode_unfolds'] = ode_unfolds
-    units = CELL_UNITS.get(cell, DENSE_UNITS)
-    ncp_cfg = CELL_NCP.get(cell, NCP_CONFIG)
-    if wiring == 'dense':
-        net = make_dense_model(cell, units=units, output_neurons=2, **cell_kwargs)
+    if wiring == 'ncp' and cell in _SINGLE_STEP_ODE_CELLS:
+        if ode_unfolds is None:
+            cell_kwargs['ode_unfolds'] = NCP_ODE_UNFOLDS
+        elif ode_unfolds < NCP_MIN_ODE_UNFOLDS:
+            warnings.warn(
+                f"wiring='ncp' with ode_unfolds={ode_unfolds} < "
+                f"{NCP_MIN_ODE_UNFOLDS}: the input cannot reach the motor "
+                "neurons within one step of the single-step neural-ODE task; "
+                "see docs/ncp-wiring-fix-2026-09-17.md.",
+                RuntimeWarning, stacklevel=2)
+    if param_budget is not None:
+        _size, _ = budget_size(cell, wiring, int(param_budget), ode_unfolds,
+                               ncp_wiring_seed)
+    if _size is not None:
+        units, ncp_cfg, lamina = _arm_sizes(wiring, _size)
     else:
-        net = make_ncp_model(cell, seed=ncp_wiring_seed, **ncp_cfg, **cell_kwargs)
-    return SequentialODEFunc(net)
+        units = CELL_UNITS.get(cell, DENSE_UNITS)
+        ncp_cfg = CELL_NCP.get(cell, NCP_CONFIG)
+        lamina = None
+    model = SequentialODEFunc(_make_net(cell, wiring, cell_kwargs, units,
+                                        ncp_cfg, lamina, ncp_wiring_seed))
+    # Provenance: the values the model was ACTUALLY built with, including the
+    # defaults injected above / in NCPLayeredCell (ode_unfolds, backbone_layers)
+    # and the budget-matched size. run_one writes this into the result config.
+    if wiring == 'ncp':
+        cell_kwargs = ncp_cell_kwargs(_CELL_REGISTRY[cell], cell_kwargs)
+    # object.__setattr__ bypasses Keras attribute tracking, which would wrap
+    # the dict in a non-JSON-serialisable trackable.
+    object.__setattr__(model, 'effective_config', {
+        'cell_kwargs': cell_kwargs, 'size': _size, 'units': units,
+        'ncp': dict(ncp_cfg), 'lamina_units': lamina})
+    return model
 
 
 def evaluate_full_trajectory(model, t, y):
@@ -612,19 +732,34 @@ def run_one(spec: dict, cfg: dict) -> dict:
     ode_unfolds = spec.get('ode_unfolds')                  # None unless solver-fidelity arm
     batch_time = int(spec.get('batch_time', cfg['batch_time']))
 
+    param_budget = spec.get('param_budget')     # None for every legacy campaign
     model = build_model(spec['cell'], spec['wiring'], ode_unfolds=ode_unfolds,
-                        ncp_wiring_seed=int(spec.get('ncp_wiring_seed', NCP_WIRING_SEED)))
+                        ncp_wiring_seed=int(spec.get('ncp_wiring_seed', NCP_WIRING_SEED)),
+                        param_budget=param_budget)
     tracker = GradientFlowTracker(log_every=cfg['grad_log_every'])
 
     clip_norm = float(spec.get('clip_norm', 0.0))
+    wandb_config = {
+        'task': 'neural_ode', 'system': spec['system'],
+        'cell': spec['cell'], 'wiring': spec['wiring'], 'seed': spec['seed'],
+        'n_iters': cfg['n_iters'], 'lr': cfg['lr'],
+        'batch_size': cfg['batch_size'],
+    }
+    tag = f"{spec['cell']}_{spec['wiring']}_seed{spec['seed']}"
     t0 = time.time()
-    losses = train(
-        model, t, y,
-        n_iters=cfg['n_iters'], batch_size=cfg['batch_size'],
-        batch_time=batch_time, lr=cfg['lr'], loss=cfg['loss'],
-        rng=rng, gradient_tracker=tracker,
-        clip_norm=clip_norm or None,
-    )
+    # wandb is off unless the campaign/cfg opts in (cfg['wandb']); when off,
+    # track() yields None and log_fn is None, so this path stays byte-identical
+    # to the untracked run (see tests/benchmark/test_equivalence.py).
+    with track(cfg.get('wandb', False), group=spec['cell'],
+               job_type=spec['wiring'], name=tag, config=wandb_config) as run_:
+        losses = train(
+            model, t, y,
+            n_iters=cfg['n_iters'], batch_size=cfg['batch_size'],
+            batch_time=batch_time, lr=cfg['lr'], loss=cfg['loss'],
+            rng=rng, gradient_tracker=tracker,
+            clip_norm=clip_norm or None,
+            log_fn=step_logger(run_),
+        )
     duration = time.time() - t0
 
     evaluation = evaluate_full_trajectory(model, t_eval, y_eval)
@@ -650,6 +785,17 @@ def run_one(spec: dict, cfg: dict) -> dict:
             'cell_kwargs': CELL_KWARGS.get(spec['cell'], {}),
             'clip_norm': clip_norm,
             **({'ode_unfolds': int(ode_unfolds)} if ode_unfolds is not None else {}),
+            # effective build values (override the spec-level ode_unfolds above
+            # when a default was injected under 'ncp')
+            **({'ode_unfolds': int(model.effective_config['cell_kwargs']['ode_unfolds'])}
+               if 'ode_unfolds' in model.effective_config['cell_kwargs'] else {}),
+            'effective': model.effective_config,
+            **param_counts(model),
+            **({'param_budget': int(param_budget),
+                'budget_size_and_params': list(budget_size(
+                    spec['cell'], spec['wiring'], int(param_budget), ode_unfolds,
+                    int(spec.get('ncp_wiring_seed', NCP_WIRING_SEED))))}
+               if param_budget is not None else {}),
             **({'eps_jitter': True} if spec.get('eps_jitter') else {}),
             **live_gate,
             **({'stress': stress, 'stress_y0_eval': stress_y0_eval,
@@ -703,6 +849,8 @@ def result_filename(spec: dict) -> str:
         base += f"_unfolds{spec['ode_unfolds']}"
     if spec.get('batch_time'):
         base += f"_bt{spec['batch_time']}"
+    if spec.get('param_budget'):
+        base += f"_pb{spec['param_budget']}"
     return base + '.json'
 
 
@@ -743,7 +891,11 @@ def parse_args(argv=None):
     # base SYSTEMS for the explicit --system / --cell paths.
     _EPS_SYSTEMS = ['multitimescale'] + [f'stiff_linear_k{k}' for k in (1, 10, 100, 1000)]
     sel.add_argument('--cell', choices=CELLS + CELLS_V2 + ['cfc_lrc', 'cfc_pm', 'cfc_mm_lrc', 'lrc_pm', 'cfc_mm_ltc', 'ctrnn'] + CELLS_EPS, default=None)
-    sel.add_argument('--wiring', choices=WIRINGS, default=None)
+    # 'cncp' is appended for explicit single runs only; it is NOT added to
+    # WIRINGS because the frozen v1-eps profile matrices (SLURM array
+    # contracts, equivalence-locked) enumerate WIRINGS directly.
+    sel.add_argument('--wiring', choices=WIRINGS + ['cncp', 'ncp_stacked'],
+                     default=None)
     sel.add_argument('--system', choices=SYSTEMS + _EPS_SYSTEMS, default=None)
     sel.add_argument('--seed', type=int, default=None)
     sel.add_argument('--stress', choices=STRESS_REGIMES_V5, default=None,
@@ -839,8 +991,10 @@ def _eps_smoke(args) -> int:
     expect = {
         'dense': {'lrc_interp': 0, 'lrc_asym': 304, 'lrc_sym': 320,
                   'lrc_frozen': 0, 'lrc_pmctrl': 304, 'lrc_pmctrl_c': 320},
-        'ncp':   {'lrc_interp': 0, 'lrc_asym': 450, 'lrc_sym': 476,
-                  'lrc_frozen': 0, 'lrc_pmctrl': 450, 'lrc_pmctrl_c': 476},
+        # ncp = ONE cell of 26 units since 2026-09-17 (elastance kernel
+        # (2+26)x26 + bias): docs/ncp-wiring-fix-2026-09-17.md.
+        'ncp':   {'lrc_interp': 0, 'lrc_asym': 754, 'lrc_sym': 780,
+                  'lrc_frozen': 0, 'lrc_pmctrl': 754, 'lrc_pmctrl_c': 780},
     }
     ok = True
     for wiring in wirings:

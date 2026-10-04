@@ -9,10 +9,12 @@
 # task. Subset: multitimescale @ uf {1,2,4} + the two flat anchors (spiral,
 # stiff_linear_k1) @ uf=1; the exploratory stiff_linear_k{10,100,1000} sweep is
 # NOT in the pilot.
-#   multitimescale: 3 uf x 8 x 2 x 8 = 384
-#   spiral:                8 x 2 x 8 = 128
-#   stiff_linear_k1:       8 x 2 x 8 = 128
-#   total = 640 -> results/runs_eps_pilot.
+#   multitimescale: 3 uf x 8 x 1 x 8 = 192
+#   spiral:                8 x 1 x 8 =  64
+#   stiff_linear_k1:       8 x 1 x 8 =  64
+#   total = 320 -> results/runs_eps_pilot.
+# Decision 2026-10-04: dense wiring ONLY (ncp arms dropped; one-unfold LRCU arms are blind
+# under the corrected NCP wiring, see docs/ncp-wiring-fix-2026-09-17.md).
 name: eps_pilot
 mode: explicit
 outdir: results/runs_eps_pilot
@@ -29,7 +31,7 @@ cluster:
   runs_per_gpu: 6
   requeue: true
 description: >
-  All 8 LRC conditions x 2 wirings on the pilot task subset (multitimescale
+  All 8 LRC conditions x dense wiring on the pilot task subset (multitimescale
   headline + the two flat anchors). No sym/hybrid pruning -- the SD pilot needs
   every condition on every task to estimate all paired-diff SDs that feed
   Delta_min and the power precompute. Seeds 0..7 (8 seeds), jitter ON, at the
@@ -46,7 +48,7 @@ cells:
   - lrc_pmctrl_c      # E_C
   - lrc_asym_hybrid   # F
   - lrc_interp_hybrid # G
-wirings: [dense, ncp]
+wirings: [dense]
 seeds: {range: [0, 8]}   # SEEDS_EPS_PILOT = list(range(8))
 clip_norm: 0.0
 

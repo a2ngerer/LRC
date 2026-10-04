@@ -5,10 +5,12 @@
 # Pruning (sym + hybrid arms off the flat spiral anchor) is expressed as a DROP
 # filter; because the canonical cell order is preserved both when legacy prunes
 # via _eps_cells_for_task and when we drop here, the result is byte-identical.
-#   multitimescale: 3 uf x 8 x 2 x 30 = 1440
-#   spiral (pruned): 4 x 2 x 30        =  240
-#   stiff_linear_k{1,10,100,1000}: 8 x 2 x 30 = 480 each = 1920
-#   total = 3600 -> results/runs_eps.
+#   multitimescale: 3 uf x 8 x 1 x 30 = 720
+#   spiral (pruned): 4 x 1 x 30        = 120
+#   stiff_linear_k{1,10,100,1000}: 8 x 1 x 30 = 240 each = 960
+#   total = 1800 -> results/runs_eps.
+# Decision 2026-10-04: dense wiring ONLY (ncp arms dropped; one-unfold LRCU arms are blind
+# under the corrected NCP wiring, see docs/ncp-wiring-fix-2026-09-17.md).
 name: eps
 mode: explicit
 outdir: results/runs_eps
@@ -25,7 +27,7 @@ cluster:
   runs_per_gpu: 6
   requeue: true
 description: >
-  8 LRC conditions x 2 wirings on a two-tier task suite (multitimescale
+  8 LRC conditions x dense wiring on a two-tier task suite (multitimescale
   headline + flat anchors + stiff_linear sweep). The sym (C, E_C) and hybrid
   (F, G) arms run only on the informative tasks; they are dropped off the flat
   spiral anchor. Every run is seed-jittered (eps_jitter) at n=30.
@@ -41,7 +43,7 @@ cells:
   - lrc_pmctrl_c      # E_C
   - lrc_asym_hybrid   # F
   - lrc_interp_hybrid # G
-wirings: [dense, ncp]
+wirings: [dense]
 seeds: {range: [0, 30]}   # SEEDS_EPS = list(range(30))
 clip_norm: 0.0
 

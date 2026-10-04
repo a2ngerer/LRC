@@ -26,24 +26,24 @@ from src.neurons import LRC_Cell
     ('dense', 'lrc_asym', 304),
     ('dense', 'lrc_sym', 320),
     ('ncp', 'lrc_interp', 0),
-    ('ncp', 'lrc_asym', 450),
-    ('ncp', 'lrc_sym', 476),
+    ('ncp', 'lrc_asym', 754),
+    ('ncp', 'lrc_sym', 780),
 ])
 def test_elastance_param_counts_built(wiring, cond, expected):
     m = _build_eps_model(cond, wiring)
     assert _elastance_param_count(m) == expected
 
 
-def test_ncp_elastance_is_per_cell_450():
-    """NCP has three cells with different elastance shapes summing to 450."""
+def test_ncp_elastance_is_one_cell():
+    """The NCP wiring is ONE cell (units = inter+command+motor = 26), so there
+    is exactly one elastance kernel of shape (input_dim + units, units)."""
     m = _build_eps_model('lrc_asym', 'ncp')
     per_cell = sorted(
         int(np.prod(v.shape)) for v in m.trainable_variables
         if 'elastance_mapping' in v.name and 'kernel' in v.name
     )
-    # inter (18x16=288), command (16x8=128), motor (4x2=8)
-    assert per_cell == [8, 128, 288]
-    assert _elastance_param_count(m) == 450
+    assert per_cell == [(2 + 26) * 26]
+    assert _elastance_param_count(m) == 754
 
 
 @pytest.mark.parametrize('wiring', ['dense', 'ncp'])
@@ -201,9 +201,15 @@ def test_pilot_default_seeds_are_zero_to_seven():
     assert SEEDS_EPS_PILOT == list(range(8))
 
 
-def test_pilot_count_is_640():
-    """8 conditions x 2 wirings x 8 seeds x 5 task-levels (multi@{1,2,4}+2 anchors)."""
-    assert len(build_specs_eps_pilot()) == 640
+def test_pilot_count_is_320():
+    """8 conditions x 1 wiring x 8 seeds x 5 task-levels (multi@{1,2,4}+2 anchors)."""
+    assert len(build_specs_eps_pilot()) == 320
+
+
+def test_eps_matrices_are_dense_only():
+    for specs in (build_specs_eps(), build_specs_eps_pilot()):
+        assert {s['wiring'] for s in specs} == {'dense'}
+    assert len(build_specs_eps()) == 1800
 
 
 def test_pilot_has_ALL_8_conditions_on_anchors():

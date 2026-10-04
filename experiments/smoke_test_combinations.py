@@ -23,9 +23,9 @@ DENSE_UNITS = {
 }
 
 # NCP config — same for all neurons.
-# lrc_ar + NCP fails: the inter layer receives features=2 (raw input) but
-# inter_neurons=8, so the (units,units)=(8,8) mu/sigma matrices cause a shape
-# error in _sigmoid. This is an expected, documented incompatibility.
+# lrc_ar + NCP fails: the autoregressive cell treats its input AS its state, so
+# it needs input_dim == units, which the NCP cell (units = inter+command+motor)
+# never satisfies. This is an expected, documented incompatibility.
 NCP_CONFIG = dict(inter_neurons=8, command_neurons=6, motor_neurons=2)
 
 # Known-incompatible pairs. These are expected to fail — not bugs.

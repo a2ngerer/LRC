@@ -1,5 +1,5 @@
 import tensorflow as tf
-from .base_cell import BaseCell
+from .base_cell import BaseCell, MaskedLSTMCell
 
 
 class LSTM_Cell(BaseCell):
@@ -30,8 +30,18 @@ class LSTM_Cell(BaseCell):
         ]
 
     def build(self, input_shape):
-        self._lstm = tf.keras.layers.LSTMCell(self.units)
+        if isinstance(input_shape[0], (tuple, list, tf.TensorShape)):
+            input_shape = input_shape[0]
+        self._build_masks(input_shape[-1])
+        # NCP wiring: mask the LSTM's input and recurrent kernels (4 gate blocks).
+        self._lstm = (MaskedLSTMCell(self.units) if self.is_masked
+                      else tf.keras.layers.LSTMCell(self.units))
         self._lstm.build(input_shape)
+        if self.is_masked:
+            self._lstm.set_wiring_masks(self.sensory_mask, self.sparsity_mask, 4)
+            self._record_mask(self._lstm._kernel_var, self._lstm._k_mask)
+            self._record_mask(self._lstm._recurrent_kernel_var,
+                              self._lstm._rk_mask)
         self.built = True
 
     def call(self, inputs, states):

@@ -7,7 +7,7 @@
 # is pluggable (LTC or LRC) instead of a fixed CT-RNN.
 
 import tensorflow as tf
-from .base_cell import BaseCell
+from .base_cell import BaseCell, MaskedLSTMCell
 from .ltc_cell import LTC_Cell
 from .lrc_cell import LRC_Cell
 from .cfc_cell import CfC_Cell
@@ -32,8 +32,10 @@ class MixedMemoryCell(BaseCell):
     State: [h, c], both (batch, units).
     """
 
-    def __init__(self, units, inner_cell_cls, **inner_kwargs):
-        super().__init__(units)
+    def __init__(self, units, inner_cell_cls, sparsity_mask=None,
+                 sensory_mask=None, **inner_kwargs):
+        super().__init__(units, sparsity_mask=sparsity_mask,
+                         sensory_mask=sensory_mask)
         self._inner_cell_cls = inner_cell_cls
         self._inner_kwargs = inner_kwargs
 
@@ -55,9 +57,20 @@ class MixedMemoryCell(BaseCell):
             feature_shape = input_shape[0]
         else:
             feature_shape = input_shape
-        self._lstm = tf.keras.layers.LSTMCell(self.units)
+        self._build_masks(feature_shape[-1])
+        # NCP wiring: both the LSTM gates and the inner ODE cell obey the same
+        # wiring masks (the memory path c is per-neuron, so it needs no mask).
+        self._lstm = (MaskedLSTMCell(self.units) if self.is_masked
+                      else tf.keras.layers.LSTMCell(self.units))
         self._lstm.build(feature_shape)
-        self._inner = self._inner_cell_cls(units=self.units, **self._inner_kwargs)
+        if self.is_masked:
+            self._lstm.set_wiring_masks(self.sensory_mask, self.sparsity_mask, 4)
+            self._record_mask(self._lstm._kernel_var, self._lstm._k_mask)
+            self._record_mask(self._lstm._recurrent_kernel_var,
+                              self._lstm._rk_mask)
+        self._inner = self._inner_cell_cls(
+            units=self.units, sparsity_mask=self._sparsity_mask_src,
+            sensory_mask=self._sensory_mask_src, **self._inner_kwargs)
         self._inner.build(input_shape)
         self.built = True
 

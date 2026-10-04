@@ -91,8 +91,6 @@ class LRC_Cell(BaseCell):
         self._capture_gate = False
         self._last_elastance_t = None
 
-        self._layerwise = False
-
     @property
     def sensory_size(self):
         return self.input_dim
@@ -115,6 +113,7 @@ class LRC_Cell(BaseCell):
             input_dim = input_shape[-1]
 
         self.input_dim = input_dim
+        self._build_masks(input_dim)
 
         self._params = {}
         self._params["gleak"] = self.add_weight(
@@ -191,6 +190,16 @@ class LRC_Cell(BaseCell):
             dtype=tf.float32,
             initializer=tf.keras.initializers.Orthogonal(),
         )
+
+
+        # NCP wiring: the per-synapse shape parameters at masked-off positions
+        # are dead too (they only ever multiply a masked synapse), so record
+        # them for effective_param_count. No effect on the forward pass.
+        if self.is_masked:
+            self._record_mask(self._params["mu"], self.sparsity_mask)
+            self._record_mask(self._params["sigma"], self.sparsity_mask)
+            self._record_mask(self._params["sensory_mu"], self.sensory_mask)
+            self._record_mask(self._params["sensory_sigma"], self.sensory_mask)
 
         self.elastance_mapping = tf.keras.layers.Dense(self.state_size, name="elastance_mapping")
 
@@ -281,8 +290,6 @@ class LRC_Cell(BaseCell):
             )
 
 
-        self._prev_dts = [self._dt] * self.state_size
-
         self.built = True
 
     def _sigmoid(self, v_pre, mu, sigma):
@@ -299,11 +306,16 @@ class LRC_Cell(BaseCell):
             inputs, self._params["sensory_mu"], self._params["sensory_sigma"]
         )
 
-        sensory_h_activation = self._params["sensory_h"] * sensory_syn
+        # NCP wiring: mask every synapse tensor (ncps reference semantics --
+        # sensory_* by the sensory adjacency, recurrent ones by the adjacency).
+        # Unmasked (dense) cells are unaffected.
+        sensory_h_activation = self._mask(
+            self._params["sensory_h"], self.sensory_mask) * sensory_syn
 
         # Reduce over dimension 1 (=source sensory neurons)
         if self._forget_gate:
-            sensory_w_activation = self._params["sensory_w"] * sensory_syn
+            sensory_w_activation = self._mask(
+                self._params["sensory_w"], self.sensory_mask) * sensory_syn
             sensory_w_activation_reduced = tf.reduce_sum(sensory_w_activation, axis=1)
         sensory_h_activation_reduced = tf.reduce_sum(sensory_h_activation, axis=1)
 
@@ -313,11 +325,11 @@ class LRC_Cell(BaseCell):
         for t in range(self._ode_unfolds): # 1 unfold is enough for LRC, but leaving this here to experiment with more unfolds
             if self._elastance_type == "asymmetric":
                 x = tf.concat([inputs, v_pre], axis=-1)
-                elast_dense = self.elastance_mapping(x)
+                elast_dense = self._masked_dense(self.elastance_mapping, x)
                 elastance_t = tf.nn.sigmoid(elast_dense) * dt
             elif self._elastance_type == "symmetric":
                 x = tf.concat([inputs, v_pre], axis=-1)
-                elast_dense = self.elastance_mapping(x)
+                elast_dense = self._masked_dense(self.elastance_mapping, x)
                 elastance_t = (tf.nn.sigmoid(elast_dense + self._params["distr_shift"]) - tf.nn.sigmoid(elast_dense - self._params["distr_shift"])) * dt
             else:
                 elastance_t = dt
@@ -332,12 +344,12 @@ class LRC_Cell(BaseCell):
                 v_pre, self._params["mu"], self._params["sigma"]
             )
 
-            h_activation = self._params["h"] * syn
+            h_activation = self._mask(self._params["h"], self.sparsity_mask) * syn
 
             g = self._params["gleak"] + tf.reduce_sum(h_activation, axis=1) + sensory_h_activation_reduced
 
             if self._forget_gate:
-                w_activation = self._params["w"] * syn
+                w_activation = self._mask(self._params["w"], self.sparsity_mask) * syn
                 f = self._params["gleak"] + tf.reduce_sum(w_activation, axis=1) + sensory_w_activation_reduced
                 v_prime = - v_pre * tf.nn.sigmoid(f)  + self._params["vleak"]*tf.nn.tanh(g)
             else:
@@ -349,7 +361,8 @@ class LRC_Cell(BaseCell):
             # pm_pad_extra columns still train and contribute params/gradients so
             # E_C's count matches C, without changing the residual's dimension.
             if self.pm_pad_mapping is not None:
-                pad = self.pm_pad_mapping(tf.concat([inputs, v_pre], axis=-1))
+                pad = self._masked_dense(
+                    self.pm_pad_mapping, tf.concat([inputs, v_pre], axis=-1))
                 if self.pm_pad_extra_w is not None:
                     # Fold the distr_shift-sized (state_size,) extra weight into
                     # the residual so it carries gradient (not a dead weight).

@@ -48,6 +48,13 @@ class CfC_Cell(BaseCell):
         else:
             input_dim = input_shape[-1]
         self.input_dim = input_dim
+        self._build_masks(input_dim)
+        if self.is_masked and self._backbone_units != self.units:
+            raise ValueError(
+                "Under a sparse (NCP) wiring the first backbone layer is the "
+                "[x, h] -> units map that carries the wiring mask, so its width "
+                f"must equal units ({self.units}); got backbone_units="
+                f"{self._backbone_units}.")
 
         width = input_dim + self.units
         self._backbone = []
@@ -80,13 +87,19 @@ class CfC_Cell(BaseCell):
             elapsed_time = self._dt
 
         x = tf.concat([inputs, states[0]], axis=-1)
-        for layer in self._backbone:
-            x = layer(x)
+        # NCP wiring: backbone_0 is the only [x, h] -> units map, so it carries
+        # the concat mask; the downstream heads read backbone features.
+        for i, layer in enumerate(self._backbone):
+            x = self._masked_dense(layer, x) if i == 0 else layer(x)
 
-        ff1 = self._ff1(x)
-        ff2 = self._ff2(x)
-        t_a = self._time_a(x)
-        t_b = self._time_b(x)
+        # backbone_layers=0 (ncps WiredCfCCell): the heads ARE the [x, h] ->
+        # units maps, so each carries the concat mask (no lateral mixing).
+        head = ((lambda l: self._masked_dense(l, x)) if not self._backbone
+                else (lambda l: l(x)))
+        ff1 = head(self._ff1)
+        ff2 = head(self._ff2)
+        t_a = head(self._time_a)
+        t_b = head(self._time_b)
         t_interp = tf.nn.sigmoid(t_a * elapsed_time + t_b)
         new_state = ff1 * (1.0 - t_interp) + t_interp * ff2
         return new_state, [new_state]

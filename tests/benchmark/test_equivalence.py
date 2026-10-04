@@ -68,7 +68,10 @@ def test_required_target_profiles_present():
 @pytest.mark.parametrize('config_path', CONFIG_FILES, ids=[p.stem for p in CONFIG_FILES])
 def test_expand_matches_legacy(config_path):
     cfg = load_config(config_path)
-    assert cfg.name in LEGACY_SPECS, f'no legacy mapping for profile {cfg.name!r}'
+    if cfg.name not in LEGACY_SPECS:
+        # New science campaigns have no legacy build_specs() to diff against;
+        # their structural validity is locked by test_campaign_loads_and_expands.
+        pytest.skip(f'{cfg.name!r}: new campaign, no legacy builder to compare')
 
     expanded = expand(cfg)
     golden = LEGACY_SPECS[cfg.name]()
@@ -97,6 +100,20 @@ def test_expand_matches_legacy(config_path):
         f'{cfg.name}: spec key order differs from legacy')
 
 
+@pytest.mark.parametrize('config_path', CONFIG_FILES, ids=[p.stem for p in CONFIG_FILES])
+def test_campaign_loads_and_expands(config_path):
+    """Every campaign -- migrated or new -- must load, validate, and expand to a
+    non-empty spec list carrying the mandatory keys. This is the structural lock
+    for new science campaigns that have no legacy builder to diff against."""
+    cfg = load_config(config_path)
+    specs = expand(cfg)
+    assert specs, f'{cfg.name}: expanded to an empty spec list'
+    required = {'cell', 'wiring', 'system', 'seed', 'clip_norm'}
+    for s in specs:
+        assert required <= set(s), (
+            f'{cfg.name}: spec missing required keys {required - set(s)}: {s}')
+
+
 def test_registry_matches_legacy():
     """The structured registry must reproduce the legacy scattered globals."""
     assert registry.DENSE_UNITS == legacy.DENSE_UNITS
@@ -118,3 +135,12 @@ def test_registry_matches_legacy():
     )
     missing = legacy_cells - set(registry.KNOWN_CELLS)
     assert not missing, f'registry missing cells referenced by legacy: {missing}'
+
+
+def test_cfc_lrc_gate_variants_distinct():
+    """inner-vs-outer relies on the registry KEY alone selecting the gate:
+    cfc_lrc_outer must carry elastance_gate='outer', cfc_lrc must not (it defaults
+    to inner). run_lotka_volterra_hpo resolves cell kwargs from this registry, so if
+    this collapses an inner-vs-outer sweep silently compares inner against inner."""
+    assert registry.cell_kwargs('cfc_lrc_outer').get('elastance_gate') == 'outer'
+    assert 'elastance_gate' not in registry.cell_kwargs('cfc_lrc')

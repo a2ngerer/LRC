@@ -99,6 +99,7 @@ class LTC_Cell(BaseCell):
             input_dim = input_shape[-1]
 
         self.input_dim = input_dim
+        self._build_masks(input_dim)
 
         self._params = {}
         self._params["gleak"] = self.add_weight(
@@ -172,6 +173,18 @@ class LTC_Cell(BaseCell):
             initializer=_erev_initializer,
         )
 
+
+        # NCP wiring: the per-synapse shape parameters at masked-off positions
+        # are dead too (they only ever multiply a masked synapse), so record
+        # them for effective_param_count. No effect on the forward pass.
+        if self.is_masked:
+            self._record_mask(self._params["mu"], self.sparsity_mask)
+            self._record_mask(self._params["sigma"], self.sparsity_mask)
+            self._record_mask(self._params["erev"], self.sparsity_mask)
+            self._record_mask(self._params["sensory_mu"], self.sensory_mask)
+            self._record_mask(self._params["sensory_sigma"], self.sensory_mask)
+            self._record_mask(self._params["sensory_erev"], self.sensory_mask)
+
         if self._input_mapping in ["affine", "linear"]:
             self._params["input_w"] = self.add_weight(
                 name="input_w",
@@ -214,7 +227,10 @@ class LTC_Cell(BaseCell):
         v_pre = state
 
         # Pre-compute the effects of the sensory neurons (constant per step)
-        sensory_w_activation = self._params["sensory_w"] * self._sigmoid(
+        # NCP wiring: mask the synapse weights exactly like the ncps reference
+        # (ncps/keras/ltc_cell.py). Unmasked (dense) cells are unaffected.
+        sensory_w_activation = self._mask(
+            self._params["sensory_w"], self.sensory_mask) * self._sigmoid(
             inputs, self._params["sensory_mu"], self._params["sensory_sigma"]
         )
         sensory_rev_activation = sensory_w_activation * self._params["sensory_erev"]
@@ -228,7 +244,8 @@ class LTC_Cell(BaseCell):
 
         # Unfold the multiply ODE multiple times into one RNN step
         for t in range(self._ode_unfolds):
-            w_activation = self._params["w"] * self._sigmoid(
+            w_activation = self._mask(
+                self._params["w"], self.sparsity_mask) * self._sigmoid(
                 v_pre, self._params["mu"], self._params["sigma"]
             )
             rev_activation = w_activation * self._params["erev"]

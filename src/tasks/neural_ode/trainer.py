@@ -41,7 +41,7 @@ def get_batch(t, y, batch_size, batch_time, rng=None):
 
 def train(model, t, y, n_iters, batch_size=16, batch_time=16, lr=1e-3,
           loss='mse', rng=None, gradient_tracker=None, clip_norm=None,
-          verbose=True):
+          verbose=True, log_fn=None):
     """Training loop.
 
     Args:
@@ -60,6 +60,10 @@ def train(model, t, y, n_iters, batch_size=16, batch_time=16, lr=1e-3,
                     tf.clip_by_global_norm(grads, clip_norm) before the
                     optimizer step. None (default) = v1 behavior.
         verbose:    print loss every 10 iterations
+        log_fn:     optional callable(step, loss); called once per iteration
+                    with the 1-based iteration index and the float loss. Kept
+                    generic so the trainer never imports the tracking backend
+                    (wandb wiring lives in run_benchmark.run_one).
 
     Returns:
         list of float losses, one per iteration
@@ -68,19 +72,28 @@ def train(model, t, y, n_iters, batch_size=16, batch_time=16, lr=1e-3,
     optimizer = tf.keras.optimizers.Adam(lr)
     losses = []
 
+    @tf.function
+    def _forward_and_grads(y0_tf, t_tf, y_true):
+        # The whole ODE rollout + backward compiled into one graph. euler_odeint's
+        # Python step-loop unrolls at trace time (batch_time is static), so the
+        # per-iteration cost of ~batch_time eager model calls is paid once, not
+        # every iteration. Batch shapes are constant across iterations => one
+        # trace. Gradient clipping and the RQ4 tracker stay in Python below on
+        # the returned (loss, grads), so their behaviour is byte-identical.
+        with tf.GradientTape() as tape:
+            # pred: (batch_time, batch_size, 1, 2)
+            # true: (batch_time, batch_size, 1, 2)
+            pred = euler_odeint(model, y0_tf, t_tf)
+            loss_value = loss_fn(pred, y_true)
+        return loss_value, tape.gradient(loss_value, model.trainable_variables)
+
     for itr in range(1, n_iters + 1):
         y0_batch, t_batch, y_batch = get_batch(t, y, batch_size, batch_time, rng=rng)
         t_tf = tf.constant(t_batch, dtype=tf.float32)
         y0_tf = tf.constant(y0_batch, dtype=tf.float32)
         y_true = tf.constant(y_batch, dtype=tf.float32)
 
-        with tf.GradientTape() as tape:
-            # pred: (batch_time, batch_size, 1, 2)
-            # true: (batch_time, batch_size, 1, 2)
-            pred = euler_odeint(model, y0_tf, t_tf)
-            loss_value = loss_fn(pred, y_true)
-
-        grads = tape.gradient(loss_value, model.trainable_variables)
+        loss_value, grads = _forward_and_grads(y0_tf, t_tf, y_true)
         if clip_norm:
             applied_grads, pre_clip_norm = tf.clip_by_global_norm(grads, clip_norm)
         else:
@@ -96,6 +109,8 @@ def train(model, t, y, n_iters, batch_size=16, batch_time=16, lr=1e-3,
 
         loss_val = float(loss_value.numpy())
         losses.append(loss_val)
+        if log_fn is not None:
+            log_fn(itr, loss_val)
 
         if verbose and itr % 10 == 0:
             print(f'Iter {itr:04d} | Loss {loss_val:.6f}')

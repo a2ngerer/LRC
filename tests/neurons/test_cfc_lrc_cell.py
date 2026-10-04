@@ -75,6 +75,59 @@ def test_reduces_to_cfc_when_eps_one():
     assert float(tf.reduce_max(tf.abs(o_cfc - o_clrc))) < 1e-6
 
 
+def test_outer_gate_reduces_to_cfc_when_eps_one():
+    """eps -> 1 recovers plain CfC for the 'outer' gate too (Farsang variant):
+    eps*sigmoid(.) -> 1*sigmoid(.). This is the property Farsang noted."""
+    cfc = CfC_Cell(16)
+    cfc.build((None, 2))
+    clrc = CfC_LRC_Cell(16, elastance_gate='outer')
+    clrc.build((None, 2))
+
+    clrc._backbone[0].set_weights(cfc._backbone[0].get_weights())
+    for a, b in [(clrc._ff1, cfc._ff1), (clrc._ff2, cfc._ff2),
+                 (clrc._time_a, cfc._time_a), (clrc._time_b, cfc._time_b)]:
+        a.set_weights(b.get_weights())
+    k, bvec = clrc._elastance.get_weights()
+    clrc._elastance.set_weights([k * 0.0, bvec * 0.0 + 30.0])
+
+    inp = tf.random.normal((7, 2))
+    st = [tf.random.normal((7, 16))]
+    o_cfc, _ = cfc.call(inp, st)
+    o_clrc, _ = clrc.call(inp, st)
+    assert float(tf.reduce_max(tf.abs(o_cfc - o_clrc))) < 1e-6
+
+
+def test_inner_and_outer_differ_at_mid_eps():
+    """With eps in (0,1) the two gate placements produce different states --
+    they are genuinely distinct mechanisms, not a relabelling. Shared weights
+    + eps==0.5 isolate the gate position as the only difference."""
+    tf.random.set_seed(0)
+    inner = CfC_LRC_Cell(16, elastance_gate='inner')
+    inner.build((None, 2))
+    outer = CfC_LRC_Cell(16, elastance_gate='outer')
+    outer.build((None, 2))
+
+    outer._backbone[0].set_weights(inner._backbone[0].get_weights())
+    for a, b in [(outer._ff1, inner._ff1), (outer._ff2, inner._ff2),
+                 (outer._time_a, inner._time_a), (outer._time_b, inner._time_b)]:
+        a.set_weights(b.get_weights())
+    # zero kernel + zero bias -> eps = sigmoid(0) = 0.5 for both cells
+    k, bvec = inner._elastance.get_weights()
+    for c in (inner, outer):
+        c._elastance.set_weights([k * 0.0, bvec * 0.0])
+
+    inp = tf.random.normal((7, 2))
+    st = [tf.random.normal((7, 16))]
+    o_in, _ = inner.call(inp, st)
+    o_out, _ = outer.call(inp, st)
+    assert float(tf.reduce_max(tf.abs(o_in - o_out))) > 1e-4
+
+
+def test_invalid_elastance_gate_raises():
+    with pytest.raises(ValueError):
+        CfC_LRC_Cell(16, elastance_gate='sideways')
+
+
 def test_invalid_elastance_type_raises():
     with pytest.raises(ValueError):
         CfC_LRC_Cell(16, elastance_type='interp')

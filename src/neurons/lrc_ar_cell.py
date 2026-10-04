@@ -97,6 +97,7 @@ class LRC_AR_Cell(BaseCell):
             input_dim = input_shape[-1]
 
         self.input_dim = input_dim
+        self._build_masks(input_dim)
 
         self._params = {}
         self._params["gleak"] = self.add_weight(
@@ -148,6 +149,14 @@ class LRC_AR_Cell(BaseCell):
             initializer=tf.keras.initializers.Orthogonal(),
         )
 
+
+        # NCP wiring: the per-synapse shape parameters at masked-off positions
+        # are dead too (they only ever multiply a masked synapse), so record
+        # them for effective_param_count. No effect on the forward pass.
+        if self.is_masked:
+            self._record_mask(self._params["mu"], self.sparsity_mask)
+            self._record_mask(self._params["sigma"], self.sparsity_mask)
+
         self.elastance_mapping = tf.keras.layers.Dense(self.state_size, name="elastance_mapping")
 
         if self._elastance_type in ["symmetric"]:
@@ -197,6 +206,16 @@ class LRC_AR_Cell(BaseCell):
         x = sigma * mues
         return tf.nn.sigmoid(x)
 
+    def _masked_dense_ar(self, x):
+        """elastance_mapping over the state (== the input for this cell)."""
+        if self.sparsity_mask is None:
+            return self.elastance_mapping(x)
+        layer = self.elastance_mapping
+        self._track(layer, x)
+        self._record_mask(layer.kernel, self.sparsity_mask)
+        y = tf.matmul(x, layer.kernel * self.sparsity_mask)
+        return tf.nn.bias_add(y, layer.bias) if layer.use_bias else y
+
     def _ode_solver(self, inputs, elapsed_time):
         # Modified version of the LRC
         # Make predicitions in an autoregressive manner
@@ -209,11 +228,11 @@ class LRC_AR_Cell(BaseCell):
         # Unfold the multiply ODE multiple times into one RNN step
         if self._elastance_type == "asymmetric":
             x = inputs
-            elast_dense = self.elastance_mapping(x)
+            elast_dense = self._masked_dense_ar(x)
             elastance_t = tf.nn.sigmoid(elast_dense) * dt
         elif self._elastance_type == "symmetric":
             x = inputs
-            elast_dense = self.elastance_mapping(x)
+            elast_dense = self._masked_dense_ar(x)
             elastance_t = (tf.nn.sigmoid(elast_dense + self._params["distr_shift"]) - tf.nn.sigmoid(elast_dense - self._params["distr_shift"])) * dt
         else:
             elastance_t = dt
@@ -222,12 +241,15 @@ class LRC_AR_Cell(BaseCell):
             v_pre, self._params["mu"], self._params["sigma"]
         )
 
-        h_activation = self._params["h"] * syn
+        # NCP wiring: mask the recurrent synapse tensors. This cell is
+        # autoregressive (the input IS the state), so it has no sensory
+        # synapses and requires input_dim == units under a sparse wiring.
+        h_activation = self._mask(self._params["h"], self.sparsity_mask) * syn
 
         g = self._params["gleak"] + tf.reduce_sum(h_activation, axis=1)
 
         if self._forget_gate:
-            w_activation = self._params["w"] * syn
+            w_activation = self._mask(self._params["w"], self.sparsity_mask) * syn
             f = self._params["gleak"] + tf.reduce_sum(w_activation, axis=1)
             v_prime = - v_pre * tf.nn.sigmoid(f)  + self._params["vleak"]*tf.nn.tanh(g)
         else:

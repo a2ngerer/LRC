@@ -26,7 +26,18 @@ DENSE_UNITS = 16
 NCP_CONFIG = {'inter_neurons': 16, 'command_neurons': 8, 'motor_neurons': 2}
 NCP_WIRING_SEED = 42
 
-WIRINGS = ('dense', 'ncp')
+# 'cncp' is the cortically-informed NCP wiring (src/wirings/cncp.py, spec
+# docs/superpowers/specs/2026-07-02-cncp-design.md). It is a wiring factor
+# like dense/ncp, so any registered cell can run under it: the shared run
+# path (run_benchmark.build_model, used by run_campaign via run_one)
+# dispatches it to make_cncp_model and raises on unknown wirings instead of
+# falling back to ncp. No frozen legacy profile enumerates it, so the
+# equivalence lock is untouched.
+# 'ncp_stacked' is the DEPRECATED pre-2026-09-17 three-layer approximation
+# that 'ncp' used to mean (see docs/ncp-wiring-fix-2026-09-17.md). It is kept
+# as an explicit key so old runs can be reproduced; no frozen legacy profile
+# enumerates it, so the equivalence lock is untouched.
+WIRINGS = ('dense', 'ncp', 'ncp_stacked', 'cncp')
 
 # Base ODE systems (legacy SYSTEMS) plus the eps-ablation task suite
 # (multitimescale + the stiff_linear kappa sweep). The kappa is encoded in the
@@ -76,6 +87,10 @@ CELL_REGISTRY: dict[str, CellConfig] = {
     'cfc': CellConfig(),
     # --- v3.1 / v3.2 / v4 closed-form + mixed-memory family -----------------
     'cfc_lrc': CellConfig(kwargs=dict(_ASYM)),
+    # cfc_lrc_outer: eps scales the gate output, not its time-rate (M. Farsang
+    # review variant). Same cell/param count as cfc_lrc; head-to-head benchmark.
+    'cfc_lrc_outer': CellConfig(kwargs={'elastance_type': 'asymmetric',
+                                        'elastance_gate': 'outer'}),
     'cfc_pm': CellConfig(kwargs={'backbone_units': 20}),
     'cfc_mm_lrc': CellConfig(kwargs=dict(_ASYM)),
     'cfc_mm_ltc': CellConfig(),          # CfC inner cell rejects elastance_type

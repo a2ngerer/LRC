@@ -26,7 +26,7 @@ Run a campaign with `experiments/run_campaign.py --config <name>`.
 | `outdir`      | yes      | str             | Result directory (e.g. `results/runs_v5`). |
 | `description` | no       | str             | Free-text note (ignored by the engine). |
 | `cells`       | axes / explicit\* / concat\* | list[str] | Cells (must be registered in the registry). |
-| `wirings`     | yes\*\*  | list[str]       | Subset of `{dense, ncp}`. |
+| `wirings`     | yes\*\*  | list[str]       | Subset of the registry `WIRINGS` (`dense`, `ncp`, `cncp`). |
 | `systems`     | axes / concat\* | list[str] | ODE systems (registered). |
 | `seeds`       | yes\*\*  | list[int] or `{range: [...]}` | Training seeds. |
 | `clip_norm`   | no       | float (default `0.0`) | Gradient clip; written into every spec (concat blocks may override it). |
