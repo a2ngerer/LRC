@@ -36,7 +36,7 @@ export PYTHONUNBUFFERED=1
 
 EPOCHS="${CO_EPOCHS:-40}"
 CELL="${CO_CELL:-cfc_lrc}"
-WIRINGS="${CO_WIRINGS:-cncp dense}"
+WIRINGS="${CO_WIRINGS:-cncp ncp dense}"
 KS="${CO_KS:-1 2 4}"
 SEEDS="${CO_SEEDS:-0 1 2}"
 SEQLEN="${CO_SEQLEN:-32}"
@@ -47,33 +47,28 @@ TRAINDROP="${CO_TRAINDROP:-0.0}"     # >0 -> train-time sensor-dropout baseline
 TRAINNOISE="${CO_TRAINNOISE:-0.0}"   # >0 -> train-time Gaussian-noise baseline (7d)
 TESTCORRUPT="${CO_TESTCORRUPT:-dropout}"   # dropout | noise (7d test corruption)
 NOISESIGMAS="${CO_NOISESIGMAS:-0.0,0.25,0.5,1.0}"
-# cncp size=48 ~ dense size=64 are parameter-matched (~26k); override if needed.
-CNCP_SIZE="${CO_CNCP_SIZE:-48}"
-DENSE_SIZE="${CO_DENSE_SIZE:-64}"
+# Every arm is sized on its own width knob to this EFFECTIVE parameter budget
+# (thesis protocol: 30k for the consensus study); weight sharing keeps the count
+# independent of K.
+PARAM_BUDGET="${CO_PARAM_BUDGET:-30000}"
 MAXPAR="${CO_MAXPAR:-4}"
 
 mkdir -p outputs/slurm results/committee
 
 run_one() {
     local cell="$1" wiring="$2" K="$3" seed="$4"
-    local size
-    case "$wiring" in
-        cncp)  size="$CNCP_SIZE" ;;
-        dense) size="$DENSE_SIZE" ;;
-        *)     size=48 ;;
-    esac
-    echo "[start] ${cell}_${wiring}_K${K}_s${size}_seed${seed} $(date -u +%FT%TZ)"
+    echo "[start] ${cell}_${wiring}_K${K}_pb${PARAM_BUDGET}_seed${seed} $(date -u +%FT%TZ)"
     uv run python experiments/run_committee_benchmark.py \
-        --wiring "$wiring" --n-columns "$K" --size "$size" --cell "$cell" \
-        --seed "$seed" --epochs "$EPOCHS" --seq-len "$SEQLEN" \
+        --wiring "$wiring" --n-columns "$K" --param-budget "$PARAM_BUDGET" \
+        --cell "$cell" --seed "$seed" --epochs "$EPOCHS" --seq-len "$SEQLEN" \
         --batch-size "$BATCH" \
         --view-mode "$VIEWMODE" --drop-fracs "$DROPFRACS" \
         --train-drop "$TRAINDROP" --train-noise "$TRAINNOISE" \
         --test-corruption "$TESTCORRUPT" --noise-sigmas "$NOISESIGMAS"
-    echo "[done ] ${cell}_${wiring}_K${K}_s${size}_seed${seed} (exit $?)"
+    echo "[done ] ${cell}_${wiring}_K${K}_pb${PARAM_BUDGET}_seed${seed} (exit $?)"
 }
 export -f run_one
-export EPOCHS SEQLEN BATCH VIEWMODE DROPFRACS CNCP_SIZE DENSE_SIZE TRAINDROP \
+export EPOCHS SEQLEN BATCH VIEWMODE DROPFRACS PARAM_BUDGET TRAINDROP \
        TRAINNOISE TESTCORRUPT NOISESIGMAS
 
 JOBS=""

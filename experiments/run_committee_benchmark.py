@@ -26,10 +26,14 @@ import os
 
 import numpy as np
 
-from src.wirings import param_counts
+from src.wirings import param_counts, size_for_budget
 from src.tasks.person_activity.datasets import load_person_activity
 from src.tasks.committee.views import make_views, drop_features, add_noise
 from src.tasks.committee.model import build_committee_model, COMMITTEE_WIRINGS
+
+
+DEFAULT_SIZE = 48
+BUDGET_TOLERANCE = 0.05
 
 
 def per_step_accuracy(model, views, t, y):
@@ -41,8 +45,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--wiring", default="cncp", choices=COMMITTEE_WIRINGS)
     ap.add_argument("--n-columns", type=int, default=4)
-    ap.add_argument("--size", type=int, default=48,
-                    help="cncp 48 ~ dense 64 are parameter-matched (~26k)")
+    cap = ap.add_mutually_exclusive_group()
+    cap.add_argument("--size", type=int, default=None,
+                     help="the arm's width knob (see build_committee_model); "
+                          f"default {DEFAULT_SIZE} when no budget is given")
+    cap.add_argument("--param-budget", type=int, default=None,
+                     help="size the arm to this EFFECTIVE parameter budget "
+                          "(closest size on the arm's own knob; weight sharing "
+                          "makes the count independent of K)")
     ap.add_argument("--cell", default="cfc_lrc")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--epochs", type=int, default=40)
@@ -88,6 +98,8 @@ def main():
     ap.add_argument("--elastance-type", default="asymmetric")
     ap.add_argument("--verbose", type=int, default=0)
     args = ap.parse_args()
+    if args.size is None and args.param_budget is None:
+        args.size = DEFAULT_SIZE
 
     cell_kwargs = {}
     if args.cell in ("cfc_lrc", "lrc", "lrc_ar"):
@@ -114,12 +126,25 @@ def main():
           f"train {d.train_x.shape[0]} / test {d.test_x.shape[0]}, "
           f"F={F} C={C} mode={args.view_mode}")
 
-    model = build_committee_model(
-        args.wiring, n_cols, cell=args.cell, size=args.size,
-        feature_size=F, seq_len=args.seq_len, num_classes=C, lr=args.lr,
-        seed=args.seed, vote_lambda=args.vote_lambda, consensus=args.consensus,
-        dense_vote_units=args.dense_vote_units, train_drop=args.train_drop,
-        train_noise=args.train_noise, **cell_kwargs)
+    def build(size):
+        return build_committee_model(
+            args.wiring, n_cols, cell=args.cell, size=size,
+            feature_size=F, seq_len=args.seq_len, num_classes=C, lr=args.lr,
+            seed=args.seed, vote_lambda=args.vote_lambda,
+            consensus=args.consensus, dense_vote_units=args.dense_vote_units,
+            train_drop=args.train_drop, train_noise=args.train_noise,
+            **cell_kwargs)
+
+    # Capacity: a fixed width knob, or the knob closest to the effective
+    # parameter budget for THIS arm.
+    budget_dev = None
+    if args.param_budget is not None:
+        args.size, n_eff = size_for_budget(build, args.param_budget)
+        budget_dev = abs(n_eff - args.param_budget) / args.param_budget
+        flag = "  ABOVE TOLERANCE" if budget_dev > BUDGET_TOLERANCE else ""
+        print(f"budget {args.param_budget}: size={args.size} "
+              f"params_effective={n_eff} (dev {budget_dev:.1%}){flag}")
+    model = build(args.size)
     model.fit([views(d.train_x), d.train_t], d.train_y,
               validation_data=([views(d.test_x), d.test_t], d.test_y),
               epochs=args.epochs, batch_size=args.batch_size,
@@ -148,8 +173,9 @@ def main():
     os.makedirs(args.outdir, exist_ok=True)
     record = {
         "task": "person_activity", "wiring": args.wiring,
-        "n_columns": args.n_columns, "size": args.size, "cell": args.cell,
-        "seed": args.seed, "epochs": args.epochs, **pc,
+        "n_columns": args.n_columns, "size": args.size,
+        "param_budget": args.param_budget, "budget_deviation": budget_dev,
+        "cell": args.cell, "seed": args.seed, "epochs": args.epochs, **pc,
         "feature_size": F, "num_classes": C, "view_mode": args.view_mode,
         "overlap": args.overlap, "train_drop": args.train_drop,
         "train_noise": args.train_noise, "test_corruption": args.test_corruption,

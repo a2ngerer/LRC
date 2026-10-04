@@ -13,10 +13,11 @@ import numpy as np
 import pytest
 import tensorflow as tf
 
-from src.wirings import effective_param_count, match_param_budget
+from src.wirings import size_for_budget
 from src.tasks.person_activity import (build_person_activity_model,
                                        load_person_activity,
                                        DEFAULT_DATA_PATH)
+from src.tasks.person_activity.model import WIRINGS
 
 SEQ_LEN = 32
 NUM_CLASSES = 7
@@ -33,7 +34,7 @@ def _dummy_batch(batch=2, seed=0):
 
 # --- build + forward pass ---
 
-@pytest.mark.parametrize("wiring", ["cncp", "ncp", "dense"])
+@pytest.mark.parametrize("wiring", WIRINGS)
 @pytest.mark.parametrize("cell", ["cfc_lrc", "gru"])
 def test_build_and_forward_shapes(wiring, cell):
     model = build_person_activity_model(wiring, cell, size=16, seed=0)
@@ -43,9 +44,27 @@ def test_build_and_forward_shapes(wiring, cell):
     assert bool(tf.reduce_all(tf.math.is_finite(out)))
 
 
+def test_dense3_stacks_three_layers_each_fed_time():
+    """The depth control: three recurrent layers, and every layer receives the
+    (sequence, time) tuple so dt reaches all of them, not only the first."""
+    model = build_person_activity_model("dense3", "cfc_lrc", size=8, seed=0)
+    rnns = [l for l in model.layers if isinstance(l, tf.keras.layers.RNN)]
+    assert len(rnns) == 3
+    time_in = model.inputs[1]
+    for layer in rnns:
+        inp = layer.input
+        assert isinstance(inp, (list, tuple)) and len(inp) == 2
+        assert inp[1] is time_in or inp[1].ref() == time_in.ref()
+    x, t, _ = _dummy_batch()
+    # a continuous-time cell in the upper layers reacts to dt as well
+    out_a = model([x, t]).numpy()
+    out_b = model([x, 3.0 * t]).numpy()
+    assert not np.allclose(out_a, out_b)
+
+
 # --- gradient flow ---
 
-@pytest.mark.parametrize("wiring", ["cncp", "ncp", "dense"])
+@pytest.mark.parametrize("wiring", WIRINGS)
 def test_gradients_flow(wiring):
     model = build_person_activity_model(wiring, "cfc_lrc", size=16, seed=0)
     x, t, y = _dummy_batch()
@@ -66,21 +85,45 @@ def test_budget_matched_arms_are_comparable(cell):
     """Each arm is sized on its own knob to the same EFFECTIVE budget
     (masked-off ncp synapses excluded, docs/ncp-wiring-fix-2026-09-17.md);
     the matched counts must then agree within the fair-comparison band."""
-    def count(wiring):
-        return lambda size: effective_param_count(
-            build_person_activity_model(wiring, cell, size=size, seed=0))
-    counts = {w: match_param_budget(count(w), 4000, range(2, 129))[1]
-              for w in ("dense", "ncp", "cncp")}
+    def build(wiring):
+        return lambda size: build_person_activity_model(
+            wiring, cell, size=size, seed=0)
+    counts = {w: size_for_budget(build(w), 4000, range(2, 129))[1]
+              for w in WIRINGS}
     lo, hi = min(counts.values()), max(counts.values())
     assert hi / lo < 1.5, f"budget-matched effective counts {counts}"
+
+
+def test_size_for_budget_picks_the_closest_size():
+    """A model with 4*size parameters: budget 41 -> size 10 (40), not 11 (44)."""
+    def build(size):
+        return tf.keras.Sequential([tf.keras.layers.Dense(size, input_shape=(3,))])
+    assert size_for_budget(build, 41, range(1, 50)) == (10, 40)
+    assert size_for_budget(build, 43, range(1, 50)) == (11, 44)
 
 
 # --- input validation ---
 
 @pytest.mark.parametrize("cell", ["lstm", "mm_lrc"])
-def test_multi_state_cells_rejected(cell):
+def test_multi_state_cells_rejected_for_cncp(cell):
     with pytest.raises(ValueError, match="single-state"):
-        build_person_activity_model("ncp", cell, size=16, seed=0)
+        build_person_activity_model("cncp", cell, size=16, seed=0)
+
+
+@pytest.mark.parametrize("wiring", ["dense", "dense3", "ncp"])
+def test_multi_state_cells_run_on_the_non_composite_wirings(wiring):
+    """lstm / mixed memory are planned on dense and NCP (thesis matrix); only
+    the composite cNCP state cannot host them."""
+    model = build_person_activity_model(wiring, "lstm", size=8, seed=0)
+    x, t, _ = _dummy_batch()
+    assert tuple(model([x, t]).shape) == (2, SEQ_LEN, NUM_CLASSES)
+
+
+def test_mixed_memory_cell_runs_on_dense():
+    model = build_person_activity_model("dense", "mm_lrc", size=8, seed=0,
+                                        elastance_type="asymmetric")
+    x, t, _ = _dummy_batch()
+    assert tuple(model([x, t]).shape) == (2, SEQ_LEN, NUM_CLASSES)
 
 
 def test_unknown_wiring_rejected():

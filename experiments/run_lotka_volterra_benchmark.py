@@ -14,9 +14,13 @@ Two evaluations are stored per run:
 De-normalised ground-truth / teacher-forced / closed-loop trajectories for the
 test split are written into the JSON so plot_lotka_volterra.py needs no retrain.
 
+Capacity: --param-budget sizes the arm on its own width knob to the EFFECTIVE
+parameter budget (masked-off weights excluded); --size fixes the knob. The run
+records size, both counts and the deviation from the budget (flagged above 5 %).
+
 Usage:
     uv run python experiments/run_lotka_volterra_benchmark.py \
-        --wiring cncp --cell cfc_lrc --seed 0 --epochs 300
+        --wiring cncp --cell cfc_lrc --seed 0 --epochs 300 --param-budget 4000
 """
 from __future__ import annotations
 
@@ -27,7 +31,10 @@ import os
 import numpy as np
 import tensorflow as tf
 
-from src.wirings import param_counts
+from src.wirings import param_counts, size_for_budget
+
+DEFAULT_SIZE = 64
+BUDGET_TOLERANCE = 0.05
 from src.tasks.lotka_volterra.datasets import load_lotka_volterra, reference_frame
 from src.tasks.lotka_volterra.model import build_lotka_volterra_model, LV_WIRINGS
 from src.tasks.active_sensing.model import TBT_MODES
@@ -78,7 +85,13 @@ def main():
                     help="neural_ode 2D system (e.g. periodic_predator_prey, duffing)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--epochs", type=int, default=300)
-    ap.add_argument("--size", type=int, default=64)
+    cap = ap.add_mutually_exclusive_group()
+    cap.add_argument("--size", type=int, default=None,
+                     help="the arm's width knob (see build_lotka_volterra_model); "
+                          f"default {DEFAULT_SIZE} when no budget is given")
+    cap.add_argument("--param-budget", type=int, default=None,
+                     help="size the arm to this EFFECTIVE parameter budget "
+                          "(closest size on the arm's own knob)")
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--n-trajectories", type=int, default=80)
@@ -91,6 +104,8 @@ def main():
                     help="log this run to Weights & Biases (needs the "
                          "'tracking' extra; use WANDB_MODE=offline on cluster)")
     args = ap.parse_args()
+    if args.size is None and args.param_budget is None:
+        args.size = DEFAULT_SIZE
 
     cell_kwargs = {}
     if args.cell in ("cfc_lrc", "lrc", "lrc_ar"):
@@ -103,14 +118,27 @@ def main():
           f"{data.test_x.shape[0]} trajectories, seq_len {data.seq_len}, "
           f"dt {data.dt:.4f}, loc_dim {data.loc_dim}")
 
-    model = build_lotka_volterra_model(
-        args.wiring, args.cell, size=args.size, seed=args.seed,
-        feature_size=data.feature_size, loc_dim=data.loc_dim, lr=args.lr,
-        **cell_kwargs)
+    def build(size):
+        return build_lotka_volterra_model(
+            args.wiring, args.cell, size=size, seed=args.seed,
+            feature_size=data.feature_size, loc_dim=data.loc_dim, lr=args.lr,
+            **cell_kwargs)
+
+    # Capacity: a fixed width knob, or the knob closest to the effective
+    # parameter budget for THIS arm.
+    budget_dev = None
+    if args.param_budget is not None:
+        args.size, n_eff = size_for_budget(build, args.param_budget)
+        budget_dev = abs(n_eff - args.param_budget) / args.param_budget
+        flag = "  ABOVE TOLERANCE" if budget_dev > BUDGET_TOLERANCE else ""
+        print(f"budget {args.param_budget}: size={args.size} "
+              f"params_effective={n_eff} (dev {budget_dev:.1%}){flag}")
+    model = build(args.size)
     pc = param_counts(model)
     params = pc['params_effective']
-    print(f"{args.wiring}/{args.cell} seed {args.seed}: {params} params "
-          f"(needs_loc={needs_loc})")
+    print(f"{args.wiring}/{args.cell} seed {args.seed}: size {args.size}, "
+          f"{params} effective params (raw {pc['params_raw']}, "
+          f"needs_loc={needs_loc})")
 
     # tbt_cncp* wirings take a 3rd input (the reference-frame code); the topology
     # arms (dense/ncp/cncp) take only (state, time).
@@ -122,8 +150,9 @@ def main():
     wandb_config = {
         "task": "lotka_volterra", "system": args.system,
         "cell": args.cell, "wiring": args.wiring, "seed": args.seed,
-        "size": args.size, "lr": args.lr, "batch_size": args.batch_size,
-        "epochs": args.epochs, **pc,
+        "size": args.size, "param_budget": args.param_budget,
+        "budget_deviation": budget_dev, "lr": args.lr,
+        "batch_size": args.batch_size, "epochs": args.epochs, **pc,
     }
     tag = f"{args.cell}_{args.wiring}_seed{args.seed}"
     with track(args.wandb, group=args.cell, job_type=args.wiring, name=tag,
@@ -162,7 +191,8 @@ def main():
     record = {
         "wiring": args.wiring, "cell": args.cell, "seed": args.seed,
         "system": args.system,
-        "size": args.size, "epochs": args.epochs, "lr": args.lr,
+        "size": args.size, "param_budget": args.param_budget,
+        "budget_deviation": budget_dev, "epochs": args.epochs, "lr": args.lr,
         **pc, "dt": data.dt, "seq_len": data.seq_len,
         "n_test": int(data.test_x.shape[0]),
         "teacher_forced_mse": float(tf_mse), "teacher_forced_mae": float(tf_mae),

@@ -42,7 +42,8 @@ fi
 
 # Forward any PA_* matrix overrides through the ssh environment to the sbatch.
 PA_ENV=""
-for v in PA_EPOCHS PA_CELLS PA_SEEDS PA_MAXPAR PA_WANDB; do
+for v in PA_EPOCHS PA_CELLS PA_WIRINGS PA_SEEDS PA_MAXPAR PA_WANDB \
+         PA_PARAM_BUDGET; do
     if [[ -n "${!v:-}" ]]; then PA_ENV+="${v}='${!v}' "; fi
 done
 
