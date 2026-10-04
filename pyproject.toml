@@ -27,6 +27,13 @@ rl = [
     "imageio>=2.34",
     "imageio-ffmpeg>=0.5",
 ]
+tracking = [
+    "wandb>=0.28.0",
+]
+hpo = [
+    "optuna>=3.6",
+    "optuna-integration>=4.9.0",
+]
 
 [build-system]
 requires = ["hatchling"]
