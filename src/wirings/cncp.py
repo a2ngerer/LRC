@@ -1,5 +1,6 @@
 # cNCP: cortically-informed Neural Circuit Policy wiring.
 # Design contract: docs/superpowers/specs/2026-07-02-cncp-design.md
+# (section 13 records the 2026-10-04 revision implemented here).
 #
 # The cNCP is a sparse connectivity pattern for a recurrent neural network, in
 # the exact sense that NCPWiring (src/wirings/ncp.py) is: a fixed directed
@@ -10,29 +11,43 @@
 # ordinary tensor algebra trained by backprop; nothing simulates a biological
 # process.
 #
-# Unlike the acyclic NCP Sequential stack, the cNCP graph is cyclic (top-down
-# feedback, a lateral edge and a re-entrant relay loop), so it lives in ONE
-# composite RNN cell (CorticalColumnCell) whose hidden state is the list of
-# all eight node states. Cycles are broken by reading feedback edges from the
-# PREVIOUS timestep's stored state (delayed-state approximation -- the same
-# trick MixedMemoryCell uses to compose sub-cells); feedforward edges within a
+# Unlike the acyclic NCP graph, the cNCP graph is cyclic (top-down feedback, a
+# lateral edge and a re-entrant relay loop), so it lives in ONE composite RNN
+# cell (CorticalColumnCell) whose hidden state is the list of all eight node
+# states. Cycles are broken by reading feedback edges from the PREVIOUS
+# timestep's stored state (delayed-state approximation -- the same trick
+# MixedMemoryCell uses to compose sub-cells); feedforward edges within a
 # timestep are evaluated in a fixed topological order and see the current
 # step's freshly computed values.
+#
+# Revision 2026-10-04 (design review, see the spec section 13):
+#   * sub-cells are built with the same per-family defaults as the NCP layers
+#     (ncp_cell_kwargs: CfC-family cells run without a backbone), so NCP and
+#     cNCP differ in the graph only;
+#   * the relay nodes integrate the elapsed time (leaky integrators with a
+#     learnable rate), so the per-lamina timescale prior reaches them too;
+#   * the TRN relay activity is non-negative, which makes the sign-locked
+#     TRN -> Thal edge genuinely inhibitory;
+#   * optional sensory_route='thalamic' routes the input through the relay
+#     (TRN gates the sensory drive) instead of straight into L4;
+#   * subclasses extend the step through three hooks (_unpack, _modulate_l4,
+#     _readout) instead of copying call().
 
 import numpy as np
 import tensorflow as tf
 
 from src.neurons.base_cell import BaseCell
 from .base_wiring import BaseWiring
-from .ncp import SparseLinear
+from .ncp import SparseLinear, ncp_cell_kwargs
 
 # Positional order of the composite state list (= spec section 2). The state
 # is indexed positionally everywhere; this tuple is the single source for it.
 NODE_ORDER = ('L4', 'L23', 'L5IT', 'L5ET', 'L6CC', 'L6CT', 'Thal', 'TRN')
 
 # Default per-node unit counts (design choices, not measured constants; spec
-# section 2). Chosen so the total parameter count is comparable to the
-# standard inter=16/command=8/motor=2 NCP.
+# section 2). The benchmarks scale them with a shared width knob and size every
+# arm to the same EFFECTIVE parameter budget (src/wirings/ncp.py), so the
+# absolute values only fix the proportions between the nodes.
 DEFAULT_LAMINA_UNITS = {
     'L4': 8, 'L23': 8, 'L5IT': 6, 'L5ET': 8,
     'L6CC': 4, 'L6CT': 4, 'Thal': 4, 'TRN': 2,
@@ -65,6 +80,9 @@ DEFAULT_MASK_DENSITIES = {
     # 3e. optional divisive term (only instantiated when
     # divisive_inhibition=True)
     'M_L6CT_div_L4': 1.0,
+    # 3f. sensory drive into the relay (only with sensory_route='thalamic';
+    # dense, so it consumes no RNG and the sparse masks above are unchanged)
+    'M_in_Thal': 1.0,
 }
 
 # Edges that exist only in the full (recurrent) wiring. The feedforward
@@ -124,6 +142,11 @@ class SignedSparseLinear(tf.keras.layers.Layer):
     strictly positive everywhere -- the edge stays differentiable with no
     dead point at W = 0.
 
+    A negative weight alone does not make the edge inhibitory: the sign of
+    the contribution also depends on the sign of the input. The cNCP feeds
+    this edge from the TRN relay, whose activity is non-negative (see
+    CorticalColumnCell._relay), so the product is <= 0 for every input.
+
     Args:
         units:  output dimension
         mask:   numpy bool/int array of shape (input_dim, units), 1 = connected
@@ -160,23 +183,44 @@ class CorticalColumnCell(BaseCell):
     unaffected by the NCPWiring rewrite; see docs/ncp-wiring-fix-2026-09-17.md.
 
     Eight graph nodes: six RNN sub-cells (one cell_cls instance each, own unit
-    count) plus two lightweight linear relay nodes (leaky affine maps with
-    their own state). The hidden state is the LIST of the eight node states in
-    NODE_ORDER; the cell output is the L5ET node state, so
-    output_size == lamina_units['L5ET'].
+    count) plus two relay nodes (leaky integrators with their own state). The
+    hidden state is the LIST of the eight node states in NODE_ORDER; the cell
+    output is the L5ET node state, so output_size == lamina_units['L5ET'].
 
     Orthogonality (identical to NCPWiring): recurrence and continuous-time
     dynamics live inside each sub-cell (cell_cls); this cell contributes only
     the sparse inter-node mask inventory and the gain combiner. Every sub-cell
     is invoked as subcell((basal, elapsed_time), [prev_node]) so
-    continuous-time cells receive dt; discrete cells (gru) ignore it.
+    continuous-time cells receive dt; discrete cells (gru) ignore it. The
+    sub-cells are constructed with the same per-family defaults as the NCP
+    layers (ncp_cell_kwargs: CfC-family cells default to backbone_layers=0),
+    so an NCP-vs-cNCP contrast differs in the graph, not in the sub-cell
+    computation. An explicit backbone_layers in cell_kwargs wins.
+
+    Relay nodes (spec section 4, revised 2026-10-04): leaky integrators
+        h = (1 - alpha) * prev + alpha * act(drive + b),
+        alpha = 1 - exp(-dt * softplus(rate_raw)),
+    with a learnable per-unit rate (rate_raw initialised to 0, so
+    alpha(dt = 1) = 0.5). The elapsed time enters through dt, so the relays
+    follow irregular sampling and the per-lamina timescale prior like every
+    other node. act is tanh for Thal and sigmoid for TRN: a non-negative TRN
+    activity through the sign-locked (negative) TRN -> Thal edge gives a
+    contribution that is <= 0 for every input, i.e. the edge inhibits.
 
     The single non-additive edge is the multiplicative gain combiner
     (spec section 5):  h = h_basal * (1 + g * sigmoid(apical)),
     with a learnable per-unit gain g initialised to a small value so training
     starts near the identity but g (and the apical masks behind it) still
-    receive gradient. combiner='additive' drops the apical edges and gains
-    entirely (no dead parameters), which is the combiner-ablation control.
+    receive gradient. Note that the combiner is the identity only for g = 0;
+    with a zero apical drive (e.g. at the first step, when the previous state
+    is zero) it is the constant factor 1 + g/2. combiner='additive' drops the
+    apical edges and gains entirely (no dead parameters), which is the
+    combiner-ablation control.
+
+    Subclass hooks: _unpack(inputs) -> (x, elapsed_time, extra),
+    _modulate_l4(h_l4, extra) -> h_l4 and _readout(h_l23, h_l5et) -> output.
+    TbtCorticalColumnCell overrides exactly these three (location input,
+    location-gated L4, concat readout) and shares the rest of the step.
 
     Args:
         cell_cls:            _CELL_REGISTRY key (e.g. 'lrc') or BaseCell
@@ -204,26 +248,49 @@ class CorticalColumnCell(BaseCell):
                              be unobservable sinks (dead parameters); their
                              state slots stay inert at zero so the composite
                              state layout is unchanged.
+        sensory_route:       'direct' (default): the input drives L4 and the
+                             relay loop only carries the delayed L6CT
+                             feedback (Thal->L4 reads the previous step).
+                             'thalamic': the input drives Thal (edge
+                             M_in_Thal replaces M_in_L4); the relay loop is
+                             evaluated at the start of the step from the
+                             PREVIOUS L6CT/TRN state, TRN gates the sensory
+                             drive and L4 reads the CURRENT Thal state. The
+                             delay moves from Thal->L4 to the L6CT->{Thal,
+                             TRN} edges. Requires the recurrent wiring.
         gain_init:           initial value of the per-unit multiplicative
                              gain g (default 0.01: near-identity start, spec
                              section 5).
         dt:                  default elapsed time for regularly sampled mode.
-        **cell_kwargs:       forwarded to every sub-cell constructor.
+        timescale_prior:     None (default), 'cortical' or a node->factor
+                             dict scaling each node's elapsed time.
+        **cell_kwargs:       forwarded to every sub-cell constructor (after
+                             ncp_cell_kwargs applied the family defaults).
     """
 
     def __init__(self, cell_cls='lrc', lamina_units=None, mask_densities=None,
                  seed=42, combiner='multiplicative', divisive_inhibition=False,
-                 sign_constraint=True, feedforward_only=False, gain_init=0.01,
-                 dt=1.0, timescale_prior=None, **cell_kwargs):
+                 sign_constraint=True, feedforward_only=False,
+                 sensory_route='direct', gain_init=0.01, dt=1.0,
+                 timescale_prior=None, **cell_kwargs):
         if combiner not in ('multiplicative', 'additive'):
             raise ValueError(
                 "combiner must be 'multiplicative' or 'additive', "
                 f"got {combiner!r}")
+        if sensory_route not in ('direct', 'thalamic'):
+            raise ValueError(
+                "sensory_route must be 'direct' or 'thalamic', "
+                f"got {sensory_route!r}")
         if feedforward_only and divisive_inhibition:
             raise ValueError(
                 "divisive_inhibition requires the recurrent wiring: in the "
                 "feedforward reduction the L6CT node is inert, so the "
                 "divisive edge would be dead. Disable one of the two flags.")
+        if feedforward_only and sensory_route == 'thalamic':
+            raise ValueError(
+                "sensory_route='thalamic' requires the recurrent wiring: the "
+                "feedforward reduction has no relay nodes to route the input "
+                "through. Disable one of the two options.")
         if 'units' in cell_kwargs:
             raise ValueError(
                 "Sub-cell units are set per node via lamina_units; "
@@ -263,6 +330,7 @@ class CorticalColumnCell(BaseCell):
         self._divisive_inhibition = divisive_inhibition
         self._sign_constraint = sign_constraint
         self._feedforward_only = feedforward_only
+        self._thalamic = sensory_route == 'thalamic'
         # Iteration 9: optional per-lamina timescale prior. None -> unchanged
         # (every node integrates the same elapsed_time; thesis default). A dict
         # or 'cortical' scales each node's elapsed_time so laminae run at
@@ -271,9 +339,10 @@ class CorticalColumnCell(BaseCell):
         self._ts = self._resolve_timescale(timescale_prior)
         self._gain_init = gain_init
         self._dt = dt
-        # The gain combiner only exists in the full multiplicative wiring:
-        # the feedforward reduction zeroes the apical edges (spec 7.1), which
-        # makes the combiner the identity, so it is not built there.
+        # The gain combiner only exists in the full multiplicative wiring. The
+        # feedforward reduction has no apical edges (spec 7.1); without them
+        # the combiner would be the constant factor 1 + g * sigmoid(0), a dead
+        # rescaling with dead parameters, so it is not built there.
         self._use_gain = (combiner == 'multiplicative'
                           and not feedforward_only)
 
@@ -306,12 +375,13 @@ class CorticalColumnCell(BaseCell):
             'M_TRN_Thal': (u['TRN'], u['Thal']),
             'M_Thal_L4': (u['Thal'], u['L4']),
             'M_L6CT_div_L4': (u['L6CT'], u['L4']),
+            'M_in_Thal': (input_dim, u['Thal']),
         }
 
     def _active_edges(self):
-        """Edge names instantiated under the current flags."""
-        active = ['M_in_L4', 'M_L4_L23', 'M_L23_L5ET', 'M_L23_L5IT',
-                  'M_L5IT_L5ET']
+        """Edge names instantiated under the current flags (build order)."""
+        active = ['M_in_Thal' if self._thalamic else 'M_in_L4',
+                  'M_L4_L23', 'M_L23_L5ET', 'M_L23_L5IT', 'M_L5IT_L5ET']
         if not self._feedforward_only:
             active += ['M_L5_L6CC', 'M_L5_L6CT', 'M_L5ET_L5IT', 'M_L6CC_L23',
                        'M_L6CT_Thal', 'M_L6CT_TRN', 'M_TRN_Thal', 'M_Thal_L4']
@@ -354,13 +424,15 @@ class CorticalColumnCell(BaseCell):
 
         # Six RNN sub-cells (four in the feedforward reduction: the deep
         # readout nodes would be unobservable sinks there, see class doc).
+        # The family defaults are the ones the NCP layers use (CfC family:
+        # no backbone), so the two sparse wirings share the sub-cell maths.
         subcell_nodes = ['L4', 'L23', 'L5IT', 'L5ET']
         if not self._feedforward_only:
             subcell_nodes += ['L6CC', 'L6CT']
+        subcell_kwargs = ncp_cell_kwargs(self._cell_cls, self._cell_kwargs)
         self.subcells = {}
         for node in subcell_nodes:
-            cell = self._cell_cls(units=self._units[node],
-                                  **self._cell_kwargs)
+            cell = self._cell_cls(units=self._units[node], **subcell_kwargs)
             if isinstance(cell.state_size, (list, tuple)):
                 raise ValueError(
                     "CorticalColumnCell requires sub-cells with a single "
@@ -373,22 +445,21 @@ class CorticalColumnCell(BaseCell):
             cell.build((None, self._units[node]))
             self.subcells[node] = cell
 
-        # Linear relay nodes (leaky affine, spec section 4):
-        #   h = (1 - alpha) * prev + alpha * tanh(drive + b),
-        # alpha = sigmoid(alpha_raw) in (0, 1), learnable, init 0.5.
+        # Relay nodes (leaky integrators, see class doc): a learnable per-unit
+        # rate (rate_raw = 0 -> alpha(dt=1) = 0.5) and a bias each.
         if not self._feedforward_only:
             def _relay_weights(prefix, n):
-                alpha_raw = self.add_weight(
-                    name=f'{prefix}_alpha_raw', shape=(n,), dtype=tf.float32,
+                rate_raw = self.add_weight(
+                    name=f'{prefix}_rate_raw', shape=(n,), dtype=tf.float32,
                     initializer='zeros')
                 bias = self.add_weight(
                     name=f'{prefix}_bias', shape=(n,), dtype=tf.float32,
                     initializer='zeros')
-                return alpha_raw, bias
+                return rate_raw, bias
 
-            self.thal_alpha_raw, self.thal_bias = _relay_weights(
+            self.thal_rate_raw, self.thal_bias = _relay_weights(
                 'thal', self._units['Thal'])
-            self.trn_alpha_raw, self.trn_bias = _relay_weights(
+            self.trn_rate_raw, self.trn_bias = _relay_weights(
                 'trn', self._units['TRN'])
 
         # Per-unit multiplicative gains g (spec section 5). Small non-zero
@@ -407,10 +478,15 @@ class CorticalColumnCell(BaseCell):
         self.built = True
 
     @staticmethod
-    def _relay(drive, prev, alpha_raw, bias):
-        """Leaky affine relay update (spec section 4)."""
-        alpha = tf.nn.sigmoid(alpha_raw)
-        return (1.0 - alpha) * prev + alpha * tf.nn.tanh(drive + bias)
+    def _relay(drive, prev, rate_raw, bias, dt, act):
+        """Leaky-integrator relay update over the elapsed time dt.
+
+        alpha = 1 - exp(-dt * softplus(rate_raw)) is the fraction of the gap
+        to the target act(drive + bias) closed within dt: alpha -> 0 for
+        dt -> 0 (the state is carried unchanged) and alpha -> 1 for large dt.
+        """
+        alpha = 1.0 - tf.exp(-dt * tf.nn.softplus(rate_raw))
+        return (1.0 - alpha) * prev + alpha * act(drive + bias)
 
     @staticmethod
     def _resolve_timescale(spec):
@@ -427,14 +503,54 @@ class CorticalColumnCell(BaseCell):
             return {n: float(spec.get(n, 1.0)) for n in NODE_ORDER}
         raise ValueError("timescale_prior must be None, 'cortical', or a dict")
 
-    def call(self, inputs, states):
+    # --- subclass hooks ---------------------------------------------------- #
+    def _unpack(self, inputs):
+        """Split the per-step input into (x, elapsed_time, extra).
+
+        extra is an optional additional per-step input for subclasses (the
+        tbt location signal); the base cell carries none.
+        """
         if isinstance(inputs, (tuple, list)):
             # Irregularly sampled mode
             x, elapsed_time = inputs
         else:
             # Regularly sampled mode
-            x = inputs
-            elapsed_time = self._dt
+            x, elapsed_time = inputs, self._dt
+        return x, elapsed_time, None
+
+    def _modulate_l4(self, h_l4, extra):
+        """Hook applied to the L4 state right after its update (identity)."""
+        return h_l4
+
+    def _readout(self, h_l23, h_l5et):
+        """Hook choosing the cell output (the L5ET output hub)."""
+        return h_l5et
+
+    # --- the step ----------------------------------------------------------- #
+    def _relay_loop(self, x, l6ct, p_trn, p_thal, et):
+        """One update of the relay loop L6CT -> TRN -> Thal.
+
+        l6ct is the L6CT state the loop reads (current in 'direct' mode,
+        previous in 'thalamic' mode); x is the sensory drive into Thal
+        ('thalamic' mode) or None. With sign_constraint the TRN -> Thal edge
+        has negative weights and the TRN activity is non-negative (sigmoid),
+        so its contribution is <= 0 for every input; without the constraint
+        the edge is a free-sign SparseLinear, which realises the ablation.
+        """
+        e = self.edges
+        h_trn = self._relay(e['M_L6CT_TRN'](l6ct), p_trn,
+                            self.trn_rate_raw, self.trn_bias, et('TRN'),
+                            tf.nn.sigmoid)
+        thal_in = e['M_L6CT_Thal'](l6ct) + e['M_TRN_Thal'](h_trn)
+        if x is not None:
+            thal_in = thal_in + e['M_in_Thal'](x)
+        h_thal = self._relay(thal_in, p_thal,
+                             self.thal_rate_raw, self.thal_bias, et('Thal'),
+                             tf.nn.tanh)
+        return h_trn, h_thal
+
+    def call(self, inputs, states):
+        x, elapsed_time, extra = self._unpack(inputs)
 
         # Iteration 9: optional per-lamina timescale. et(node) scales the node's
         # integration step; identity when no prior is set (thesis default).
@@ -446,15 +562,24 @@ class CorticalColumnCell(BaseCell):
         e = self.edges
         ff = self._feedforward_only
 
-        # 1. entry node: driver input plus the DELAYED re-entrant relay
-        # drive (Thal->L4 reads the previous step's Thal state).
-        basal_l4 = e['M_in_L4'](x)
-        if not ff:
-            basal_l4 = basal_l4 + e['M_Thal_L4'](p_thal)
+        # 1. entry node.
+        if self._thalamic:
+            # Sensory route through the relay: the loop is evaluated first,
+            # from the PREVIOUS L6CT/TRN state, TRN gates the sensory drive
+            # and L4 reads the CURRENT Thal state.
+            h_trn, h_thal = self._relay_loop(x, p_l6ct, p_trn, p_thal, et)
+            basal_l4 = e['M_Thal_L4'](h_thal)
+        else:
+            # Driver input plus the DELAYED re-entrant relay drive (Thal->L4
+            # reads the previous step's Thal state).
+            basal_l4 = e['M_in_L4'](x)
+            if not ff:
+                basal_l4 = basal_l4 + e['M_Thal_L4'](p_thal)
         if self._divisive_inhibition:
             basal_l4 = basal_l4 / (
                 1.0 + tf.nn.softplus(e['M_L6CT_div_L4'](p_l6ct)))
         h_l4, _ = self.subcells['L4']((basal_l4, et('L4')), [p_l4])
+        h_l4 = self._modulate_l4(h_l4, extra)
 
         # 2. integration node, with optional top-down multiplicative gain.
         basal_l23 = e['M_L4_L23'](h_l4)
@@ -495,22 +620,18 @@ class CorticalColumnCell(BaseCell):
 
             # 6. re-entrant relay loop (acyclic within the step:
             # L6CT -> TRN -> Thal; the Thal->L4 read-back happens next step).
-            # With sign_constraint the TRN->Thal edge emits a strictly
-            # negative contribution (SignedSparseLinear folds the minus sign
-            # of spec section 4 into the layer); without the constraint it is
-            # a free-sign SparseLinear, so the sum realises the ablation.
-            h_trn = self._relay(e['M_L6CT_TRN'](h_l6ct), p_trn,
-                                self.trn_alpha_raw, self.trn_bias)
-            thal_in = e['M_L6CT_Thal'](h_l6ct) + e['M_TRN_Thal'](h_trn)
-            h_thal = self._relay(thal_in, p_thal,
-                                 self.thal_alpha_raw, self.thal_bias)
+            # In 'thalamic' mode the loop already ran at the start of the
+            # step from the previous L6CT state.
+            if not self._thalamic:
+                h_trn, h_thal = self._relay_loop(None, h_l6ct, p_trn, p_thal,
+                                                 et)
 
         # Node outputs are carried as the node states (spec section 4): the
         # sub-cells' own returned states are discarded, so the gain-modulated
         # value is both the value passed downstream and the stored state.
         new_states = [h_l4, h_l23, h_l5it, h_l5et, h_l6cc, h_l6ct,
                       h_thal, h_trn]
-        return h_l5et, new_states
+        return self._readout(h_l23, h_l5et), new_states
 
 
 class CNCPWiring(BaseWiring):
@@ -525,7 +646,9 @@ class CNCPWiring(BaseWiring):
     Args:
         cell_cls:        _CELL_REGISTRY key or BaseCell subclass (sub-cell).
         output_neurons:  if given, appends a Dense(output_neurons) projection.
-        (remaining args) forwarded to CorticalColumnCell, see there.
+        (remaining args) forwarded to CorticalColumnCell, see there
+                         (sensory_route, timescale_prior, gain_init and the
+                         sub-cell kwargs travel through **cell_kwargs).
     """
 
     def __init__(self, cell_cls, output_neurons=None, lamina_units=None,

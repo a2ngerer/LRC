@@ -82,8 +82,10 @@ def test_irregular_dt_changes_state_for_continuous_cell():
     assert not bool(tf.reduce_all(tf.abs(out1 - out2) < 1e-7))
 
 
-def test_irregular_dt_ignored_for_gru():
-    """Discrete sub-cells (gru) discard dt; edges and relays are dt-free."""
+def test_dt_reaches_relays_but_not_gru_nodes():
+    """Discrete sub-cells (gru) discard dt, the relay nodes integrate it: at
+    the first step the six gru node states and the L5ET output are dt-free
+    (Thal->L4 is delayed), while the Thal/TRN states depend on dt."""
     tf.random.set_seed(0)
     cell = CorticalColumnCell('gru')
     x = tf.random.normal((2, 3))
@@ -91,8 +93,49 @@ def test_irregular_dt_ignored_for_gru():
     out1, s1 = cell((x, 1.0), states)
     out2, s2 = cell((x, 0.1), states)
     assert bool(tf.reduce_all(tf.abs(out1 - out2) < 1e-7))
-    for a, b in zip(s1, s2):
-        assert bool(tf.reduce_all(tf.abs(a - b) < 1e-7))
+    for node, a, b in zip(NODE_ORDER, s1, s2):
+        same = bool(tf.reduce_all(tf.abs(a - b) < 1e-7))
+        assert same == (node not in ('Thal', 'TRN')), node
+
+
+def test_relay_alpha_is_half_at_init_for_unit_dt():
+    """alpha = 1 - exp(-dt * softplus(rate_raw)); rate_raw starts at 0, so
+    alpha(dt = 1) = 1 - exp(-ln 2) = 0.5, the pre-revision leak value."""
+    cell = CorticalColumnCell('gru')
+    cell.build((None, 3))
+    for raw in (cell.thal_rate_raw, cell.trn_rate_raw):
+        alpha = 1.0 - tf.exp(-1.0 * tf.nn.softplus(raw))
+        assert np.allclose(alpha.numpy(), 0.5, atol=1e-6)
+
+
+def test_relays_carry_state_unchanged_for_vanishing_dt():
+    """dt -> 0 leaves the relay states at their previous value (alpha -> 0);
+    dt = 1 moves them (the TRN drive is non-zero after one gru step)."""
+    tf.random.set_seed(0)
+    cell = CorticalColumnCell('gru')
+    x = tf.random.normal((2, 3))
+    states = cell.get_initial_state(batch_size=2)
+    thal, trn = NODE_ORDER.index('Thal'), NODE_ORDER.index('TRN')
+    _, s_tiny = cell((x, 1e-6), states)
+    _, s_unit = cell((x, 1.0), states)
+    assert float(tf.reduce_max(tf.abs(s_tiny[thal]))) < 1e-4
+    assert float(tf.reduce_max(tf.abs(s_tiny[trn]))) < 1e-4
+    assert float(tf.reduce_max(tf.abs(s_unit[trn]))) > 1e-2
+
+
+def test_timescale_prior_reaches_the_relays():
+    """A per-lamina factor on Thal scales the relay's dt (previously the
+    relays ignored elapsed time, so the prior had no effect on them)."""
+    def thal_state(prior):
+        tf.keras.utils.set_random_seed(0)
+        cell = CorticalColumnCell('gru', timescale_prior=prior)
+        x = tf.ones((2, 3))
+        _, s = cell((x, 1.0), cell.get_initial_state(batch_size=2))
+        return s[NODE_ORDER.index('Thal')].numpy(), s[NODE_ORDER.index('TRN')].numpy()
+    thal_a, trn_a = thal_state(None)
+    thal_b, trn_b = thal_state({'Thal': 4.0})
+    assert not np.allclose(thal_a, thal_b)
+    assert np.allclose(trn_a, trn_b)          # TRN factor defaults to 1.0
 
 
 # --- 5. finiteness over many steps (stiffness guard) ---
@@ -146,12 +189,14 @@ def test_multi_state_subcell_rejected():
 
 # --- 7. gradient flow through EVERY trainable variable ---
 
-def test_gradient_flow_every_variable():
+@pytest.mark.parametrize('route', ['direct', 'thalamic'])
+def test_gradient_flow_every_variable(route):
     """Non-None, finite, non-zero gradient for every trainable variable --
     explicitly including the sign-locked (M_TRN_Thal) and multiplicative
-    (gains + apical masks) edges."""
+    (gains + apical masks) edges -- for both sensory routes."""
     tf.random.set_seed(0)
-    model = make_cncp_model('lrc', output_neurons=2, **_ASYM)
+    model = make_cncp_model('lrc', output_neurons=2, sensory_route=route,
+                            **_ASYM)
     x = tf.random.normal((4, 20, 2))
     y = tf.random.normal((4, 20, 2))
     model(x)
@@ -341,3 +386,143 @@ def test_dense_edges_have_all_ones_masks():
             m = cell._masks[name]
             assert m.any(), name
             assert not m.all(), name
+
+
+# --- revision 2026-10-04: sub-cell defaults shared with the NCP layers ---
+
+@pytest.mark.parametrize('neuron_type,kwargs', [('cfc_lrc', _ASYM), ('cfc', {})])
+def test_cfc_subcells_have_no_backbone_by_default(neuron_type, kwargs):
+    """CfC-family sub-cells follow the NCP rule (ncp_cell_kwargs): no backbone,
+    the heads act on [x, h] directly. An explicit backbone_layers wins."""
+    cell = CorticalColumnCell(neuron_type, **kwargs)
+    cell.build((None, 3))
+    assert all(sub._backbone == [] for sub in cell.subcells.values())
+    explicit = CorticalColumnCell(neuron_type, backbone_layers=1, **kwargs)
+    explicit.build((None, 3))
+    assert all(len(sub._backbone) == 1 for sub in explicit.subcells.values())
+
+
+def test_non_cfc_subcells_unaffected_by_the_backbone_rule():
+    cell = CorticalColumnCell('gru')
+    cell.build((None, 3))
+    assert set(cell.subcells) == {'L4', 'L23', 'L5IT', 'L5ET', 'L6CC', 'L6CT'}
+
+
+# --- revision 2026-10-04: the TRN -> Thal edge inhibits ---
+
+def test_trn_activity_nonnegative_and_contribution_to_thal_nonpositive():
+    """TRN is a sigmoid relay (state >= 0); through the sign-locked edge its
+    contribution to the Thal drive is <= 0 for every input, also after a few
+    training steps on random data (the previous tanh relay could flip the
+    sign of the 'inhibitory' edge)."""
+    tf.random.set_seed(0)
+    model = make_cncp_model('gru', output_neurons=2)
+    x = tf.random.normal((4, 12, 3))
+    y = tf.random.normal((4, 12, 2))
+    model(x)
+    for _ in range(3):
+        assert np.isfinite(_train_step(model, x, y, lr=1e-2))
+    cell = model.layers[0].cell
+    states = cell.get_initial_state(batch_size=4)
+    trn_idx = NODE_ORDER.index('TRN')
+    for t in range(12):
+        _, states = cell((x[:, t], 1.0), states)
+        h_trn = states[trn_idx]
+        assert bool(tf.reduce_all(h_trn >= 0.0))
+        assert bool(tf.reduce_all(cell.edges['M_TRN_Thal'](h_trn) <= 0.0))
+
+
+# --- revision 2026-10-04: tbt reuses the parent step through hooks ---
+
+def _build_pair(seed, **kwargs):
+    from src.wirings.tbt_cncp import TbtCorticalColumnCell
+    tf.keras.utils.set_random_seed(seed)
+    base = CorticalColumnCell('gru', seed=1, **kwargs)
+    base.build((tf.TensorShape([None, 3]), tf.TensorShape([None, 1])))
+    tf.keras.utils.set_random_seed(seed)
+    tbt = TbtCorticalColumnCell('gru', seed=1, use_location='none', **kwargs)
+    tbt.build((tf.TensorShape([None, 3]), tf.TensorShape([None, 1]),
+               tf.TensorShape([None, 2])))
+    return base, tbt
+
+
+def test_tbt_without_location_matches_cncp_step_for_step():
+    """With the location ignored, the tbt column must compute exactly the cNCP
+    step (same weights by seed): the L5ET half of its output and every node
+    state equal the parent's over several steps."""
+    base, tbt = _build_pair(0)
+    x = tf.random.normal((2, 5, 3))
+    loc = tf.random.normal((2, 2))
+    s_b = base.get_initial_state(batch_size=2)
+    s_t = tbt.get_initial_state(batch_size=2)
+    n_l23 = base._units['L23']
+    for t in range(5):
+        out_b, s_b = base((x[:, t], 0.7), s_b)
+        out_t, s_t = tbt((x[:, t], 0.7, loc), s_t)
+        assert np.allclose(out_t[:, n_l23:].numpy(), out_b.numpy(), atol=1e-6)
+        assert np.allclose(out_t[:, :n_l23].numpy(),
+                           s_b[NODE_ORDER.index('L23')].numpy(), atol=1e-6)
+        for a, b in zip(s_t, s_b):
+            assert np.allclose(a.numpy(), b.numpy(), atol=1e-6)
+
+
+def test_tbt_honours_timescale_prior():
+    """The copied call() used to drop the per-lamina factor; via the shared
+    step the prior now reaches the tbt column too."""
+    _, plain = _build_pair(0)
+    _, prior = _build_pair(0, timescale_prior={'Thal': 4.0})
+    x = tf.ones((2, 3))
+    loc = tf.zeros((2, 2))
+    _, s_plain = plain((x, 1.0, loc), plain.get_initial_state(batch_size=2))
+    _, s_prior = prior((x, 1.0, loc), prior.get_initial_state(batch_size=2))
+    thal = NODE_ORDER.index('Thal')
+    assert not np.allclose(s_plain[thal].numpy(), s_prior[thal].numpy())
+
+
+# --- revision 2026-10-04: optional sensory route through the relay ---
+
+def test_thalamic_route_replaces_the_direct_input_edge():
+    tf.random.set_seed(0)
+    model = make_cncp_model('gru', output_neurons=2, sensory_route='thalamic')
+    x = tf.random.normal((2, 6, 3))
+    y = tf.random.normal((2, 6, 2))
+    assert tuple(model(x).shape) == (2, 6, 2)
+    cell = model.layers[0].cell
+    assert 'M_in_Thal' in cell.edges
+    assert 'M_in_L4' not in cell.edges
+    assert np.isfinite(_train_step(model, x, y))
+
+
+def test_thalamic_route_input_reaches_the_output_within_one_step():
+    """Thal is evaluated before L4 in 'thalamic' mode, so the input of step t
+    reaches L5ET at step t (no extra delay from the relay)."""
+    tf.random.set_seed(0)
+    cell = CorticalColumnCell('gru', sensory_route='thalamic')
+    states = cell.get_initial_state(batch_size=2)
+    x1 = tf.random.normal((2, 3))
+    x2 = tf.random.normal((2, 3))
+    out1, _ = cell((x1, 1.0), states)
+    out2, _ = cell((x2, 1.0), states)
+    assert not np.allclose(out1.numpy(), out2.numpy())
+
+
+def test_thalamic_route_keeps_the_default_masks():
+    """M_in_Thal is dense and appended last, so a given seed yields the same
+    sparse masks with and without the thalamic route."""
+    a = CorticalColumnCell('gru', seed=7)
+    b = CorticalColumnCell('gru', seed=7, sensory_route='thalamic')
+    a.build((None, 2))
+    b.build((None, 2))
+    for name in a._masks:
+        assert np.array_equal(a._masks[name], b._masks[name]), name
+
+
+def test_thalamic_route_plus_feedforward_raises():
+    with pytest.raises(ValueError):
+        CorticalColumnCell('gru', feedforward_only=True,
+                           sensory_route='thalamic')
+
+
+def test_invalid_sensory_route_raises():
+    with pytest.raises(ValueError):
+        CorticalColumnCell('gru', sensory_route='cortical')

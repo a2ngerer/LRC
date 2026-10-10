@@ -15,6 +15,11 @@
 # False ignores the location channel (the ablation control) while keeping the
 # same graph, so tbt_cNCP and its no-location control share one implementation.
 #
+# The column step itself is the parent's: the subclass only overrides the three
+# hooks CorticalColumnCell exposes (_unpack for the 3-tuple input, _modulate_l4
+# for the location gate, _readout for the concat output), so every fix to the
+# cNCP step (relay dynamics, timescale prior, sensory route) applies here too.
+#
 # This is an RNN wiring extension, not a neuroscience claim; it is a
 # differentiable reinterpretation of the Thousand-Brains Theory, not a
 # re-implementation of Numenta's HTM/Monty (see the concept spec sec 1).
@@ -96,76 +101,31 @@ class TbtCorticalColumnCell(CorticalColumnCell):
                 initializer="zeros", dtype=tf.float32)
         self.built = True
 
-    def call(self, inputs, states):
+    # --- the three CorticalColumnCell hooks; the step itself is the parent's --- #
+    def _unpack(self, inputs):
+        """Per-step input is the 3-tuple (features, elapsed_time, location)."""
         x, elapsed_time, location = inputs
-        p_l4, p_l23, p_l5it, p_l5et, p_l6cc, p_l6ct, p_thal, p_trn = states
-        e = self.edges
-        ff = self._feedforward_only
+        return x, elapsed_time, location
 
-        # 1. entry node L4 (identical to cNCP) ...
-        basal_l4 = e["M_in_L4"](x)
-        if not ff:
-            basal_l4 = basal_l4 + e["M_Thal_L4"](p_thal)
-        if self._divisive_inhibition:
-            basal_l4 = basal_l4 / (
-                1.0 + tf.nn.softplus(e["M_L6CT_div_L4"](p_l6ct)))
-        h_l4, _ = self.subcells["L4"]((basal_l4, elapsed_time), [p_l4])
+    def _modulate_l4(self, h_l4, location):
+        """TBT: the location signal modulates L4 -> predictive state.
 
-        # NEW (TBT): the location signal modulates L4 -> predictive state.
-        #   gate: per-unit multiplicative gain (can only rescale L4);
-        #   film: affine scale+shift (adds the location prior the gate lacks).
+        gate: per-unit multiplicative gain (can only rescale L4);
+        film: affine scale+shift (adds the location prior the gate lacks);
+        none: the location is ignored (ablation control).
+        """
         if self._loc_mode == "gate":
             loc_drive = tf.matmul(location, self.W_loc_L4)
-            h_l4 = h_l4 * (1.0 + self.gain_loc_L4 * tf.nn.sigmoid(loc_drive))
-        elif self._loc_mode == "film":
+            return h_l4 * (1.0 + self.gain_loc_L4 * tf.nn.sigmoid(loc_drive))
+        if self._loc_mode == "film":
             gamma = tf.matmul(location, self.W_loc_scale)
             beta = tf.matmul(location, self.W_loc_shift)
-            h_l4 = h_l4 * (1.0 + gamma) + beta
+            return h_l4 * (1.0 + gamma) + beta
+        return h_l4
 
-        # 2. integration node L2/3, with optional top-down gain (cNCP).
-        basal_l23 = e["M_L4_L23"](h_l4)
-        if not ff:
-            basal_l23 = basal_l23 + e["M_L6CC_L23"](p_l6cc)
-        h_l23, _ = self.subcells["L23"]((basal_l23, elapsed_time), [p_l23])
-        if self._use_gain:
-            apical_l23 = e["M_ap_L23"](tf.concat([p_l5et, p_l6ct], axis=-1))
-            h_l23 = h_l23 * (1.0 + self.gain_L23 * tf.nn.sigmoid(apical_l23))
-
-        # 3. intracortical relay L5IT.
-        basal_l5it = e["M_L23_L5IT"](h_l23)
-        if not ff:
-            basal_l5it = basal_l5it + e["M_L5ET_L5IT"](p_l5et)
-        h_l5it, _ = self.subcells["L5IT"]((basal_l5it, elapsed_time), [p_l5it])
-
-        # 4. output hub L5ET, with optional top-down gain.
-        basal_l5et = e["M_L23_L5ET"](h_l23) + e["M_L5IT_L5ET"](h_l5it)
-        h_l5et, _ = self.subcells["L5ET"]((basal_l5et, elapsed_time), [p_l5et])
-        if self._use_gain:
-            apical_l5et = e["M_ap_L5ET"](tf.concat([p_l6ct, p_l6cc], axis=-1))
-            h_l5et = h_l5et * (
-                1.0 + self.gain_L5ET * tf.nn.sigmoid(apical_l5et))
-
-        if ff:
-            h_l6cc, h_l6ct, h_thal, h_trn = p_l6cc, p_l6ct, p_thal, p_trn
-        else:
-            # 5. deep readout nodes.
-            deep_in = tf.concat([h_l5it, h_l5et], axis=-1)
-            h_l6cc, _ = self.subcells["L6CC"](
-                (e["M_L5_L6CC"](deep_in), elapsed_time), [p_l6cc])
-            h_l6ct, _ = self.subcells["L6CT"](
-                (e["M_L5_L6CT"](deep_in), elapsed_time), [p_l6ct])
-            # 6. re-entrant relay loop (L6CT -> TRN -> Thal).
-            h_trn = self._relay(e["M_L6CT_TRN"](h_l6ct), p_trn,
-                                self.trn_alpha_raw, self.trn_bias)
-            thal_in = e["M_L6CT_Thal"](h_l6ct) + e["M_TRN_Thal"](h_trn)
-            h_thal = self._relay(thal_in, p_thal,
-                                 self.thal_alpha_raw, self.thal_bias)
-
-        new_states = [h_l4, h_l23, h_l5it, h_l5et, h_l6cc, h_l6ct,
-                      h_thal, h_trn]
-        # NEW: expose the object layer (L2/3) alongside the motor hub (L5ET).
-        output = tf.concat([h_l23, h_l5et], axis=-1)
-        return output, new_states
+    def _readout(self, h_l23, h_l5et):
+        """Expose the object layer (L2/3) alongside the motor hub (L5ET)."""
+        return tf.concat([h_l23, h_l5et], axis=-1)
 
 
 class MultiColumnVotingCell(tf.keras.layers.AbstractRNNCell):
