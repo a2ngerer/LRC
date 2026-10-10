@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import tensorflow as tf
 
-from src.wirings import effective_param_count, match_param_budget
+from src.wirings import size_for_budget
 from src.tasks.lotka_volterra import (build_lotka_volterra_model,
                                       load_lotka_volterra, LotkaVolterraData,
                                       reference_frame, RF_DIM, LV_WIRINGS)
@@ -64,7 +64,7 @@ def test_dataset_deterministic():
 
 # --- model build + forward pass ---
 
-@pytest.mark.parametrize("wiring", ["cncp", "ncp", "dense"])
+@pytest.mark.parametrize("wiring", ["cncp", "ncp", "dense", "dense3"])
 @pytest.mark.parametrize("cell", ["cfc_lrc", "gru"])
 def test_build_and_forward_shapes(wiring, cell):
     model = build_lotka_volterra_model(wiring, cell, size=16, seed=0)
@@ -84,7 +84,7 @@ def test_variable_length_input():
 
 # --- the scientific core: recurrence trains here ---
 
-@pytest.mark.parametrize("wiring", ["cncp", "ncp", "dense"])
+@pytest.mark.parametrize("wiring", ["cncp", "ncp", "dense", "dense3"])
 def test_all_variables_receive_gradient(wiring):
     model = build_lotka_volterra_model(wiring, "cfc_lrc", size=16, seed=0)
     x, t, y = _dummy_batch(seq_len=16)
@@ -102,22 +102,30 @@ def test_all_variables_receive_gradient(wiring):
 
 # --- fairness + guards ---
 
-def test_cncp_ncp_parameter_fairness():
+def test_arms_budget_matched_on_effective_params():
     """Each arm budget-matched on its own knob (EFFECTIVE parameters, masked-off
     weights excluded) -- see tests/tasks/person_activity and
     docs/ncp-wiring-fix-2026-09-17.md."""
-    def count(wiring):
-        return lambda size: effective_param_count(
-            build_lotka_volterra_model(wiring, "cfc_lrc", size=size, seed=0))
-    n_cncp = match_param_budget(count("cncp"), 4000, range(2, 129))[1]
-    n_ncp = match_param_budget(count("ncp"), 4000, range(2, 129))[1]
-    ratio = n_cncp / n_ncp
-    assert 1 / 1.5 <= ratio <= 1.5, f"param ratio {ratio:.3f} out of band"
+    def build(wiring):
+        return lambda size: build_lotka_volterra_model(
+            wiring, "cfc_lrc", size=size, seed=0)
+    counts = {w: size_for_budget(build(w), 4000, range(2, 129))[1]
+              for w in ("dense", "dense3", "ncp", "cncp")}
+    lo, hi = min(counts.values()), max(counts.values())
+    assert hi / lo < 1.5, f"budget-matched effective counts {counts}"
 
 
-def test_multi_state_cells_rejected():
-    with pytest.raises(ValueError):
-        build_lotka_volterra_model("cncp", "lstm", size=16, seed=0)
+def test_multi_state_cells_rejected_for_the_composite_wirings():
+    for wiring in ("cncp", "tbt_cncp_concat"):
+        with pytest.raises(ValueError, match="single-state"):
+            build_lotka_volterra_model(wiring, "lstm", size=16, seed=0)
+
+
+@pytest.mark.parametrize("wiring", ["dense", "dense3", "ncp"])
+def test_multi_state_cells_run_on_the_non_composite_wirings(wiring):
+    model = build_lotka_volterra_model(wiring, "lstm", size=8, seed=0)
+    x, t, _ = _dummy_batch()
+    assert model([x, t]).shape == (2, 16, FEATURES)
 
 
 def test_invalid_wiring_rejected():

@@ -49,8 +49,12 @@ USE_WANDB="${PA_WANDB:-0}"
 # Matrix (override via env at submit time, e.g. PA_CELLS="cfc_lrc"):
 EPOCHS="${PA_EPOCHS:-50}"
 CELLS="${PA_CELLS:-cfc_lrc gru}"
+WIRINGS="${PA_WIRINGS:-ncp cncp}"          # also: dense dense3
 SEEDS="${PA_SEEDS:-0 1 2}"
 MAXPAR="${PA_MAXPAR:-3}"
+# Every arm is sized on its own width knob to this EFFECTIVE parameter budget
+# (thesis protocol: 30k for Person Activity).
+PARAM_BUDGET="${PA_PARAM_BUDGET:-30000}"
 DATA_PATH="$PWD/data/person/ConfLongDemo_JSI.txt"
 
 mkdir -p outputs/slurm results/person_activity
@@ -67,15 +71,15 @@ run_one() {
     echo "[start] ${cell}_${wiring}_seed${seed} $(date -u +%FT%TZ)"
     uv run python experiments/run_person_activity_benchmark.py \
         --wiring "$wiring" --cell "$cell" --seed "$seed" --epochs "$EPOCHS" \
-        --data-path "$DATA_PATH" $wandb_flag
+        --param-budget "$PARAM_BUDGET" --data-path "$DATA_PATH" $wandb_flag
     echo "[done ] ${cell}_${wiring}_seed${seed} (exit $?)"
 }
 export -f run_one
-export EPOCHS DATA_PATH USE_WANDB
+export EPOCHS DATA_PATH USE_WANDB PARAM_BUDGET
 
 JOBS=""
 for cell in $CELLS; do
-    for wiring in ncp cncp; do
+    for wiring in $WIRINGS; do
         for seed in $SEEDS; do
             JOBS+="${cell} ${wiring} ${seed}"$'\n'
         done

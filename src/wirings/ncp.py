@@ -390,3 +390,22 @@ def match_param_budget(count_fn, target, sizes):
     if best is None:
         raise ValueError(f"no size in {sizes!r} builds a model")
     return best
+
+
+def size_for_budget(build_fn, target, sizes=range(2, 257)):
+    """``(size, params_effective)`` of the arm whose EFFECTIVE count is closest
+    to ``target``.
+
+    ``build_fn(size)`` builds the arm's model for one value of its width knob
+    (a functional Keras model counts as run; a Sequential must have been
+    called once). Every probe model is discarded and the Keras session cleared,
+    so the caller builds the real model afterwards. Shared by the task runners'
+    ``--param-budget`` (see ``match_param_budget`` for the scan).
+    """
+    def count(size):
+        model = build_fn(size)
+        n = effective_param_count(model)
+        del model
+        tf.keras.backend.clear_session()
+        return n
+    return match_param_budget(count, target, sizes)

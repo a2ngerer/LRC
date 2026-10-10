@@ -34,7 +34,7 @@ _rsync() {
 # Forward any LV_* matrix overrides through the ssh environment to the sbatch.
 LV_ENV=""
 for v in LV_EPOCHS LV_CELLS LV_WIRINGS LV_SEEDS LV_MAXPAR LV_PLOT_CELL \
-         LV_SYSTEM LV_SEQLEN LV_OUTDIR LV_WANDB; do
+         LV_SYSTEM LV_SEQLEN LV_OUTDIR LV_WANDB LV_PARAM_BUDGET; do
     if [[ -n "${!v:-}" ]]; then LV_ENV+="${v}='${!v}' "; fi
 done
 

@@ -50,11 +50,15 @@ USE_WANDB="${LV_WANDB:-0}"
 # Matrix (override via env at submit time, e.g. LV_CELLS="cfc_lrc"):
 EPOCHS="${LV_EPOCHS:-300}"
 CELLS="${LV_CELLS:-cfc_lrc gru}"
-# dense/ncp/cncp = pure topology (no reference frame); tbt_cncp_noloc isolates the
-# location benefit; tbt_cncp_concat is the strongest reference-frame arm.
-WIRINGS="${LV_WIRINGS:-dense ncp cncp tbt_cncp_noloc tbt_cncp_concat}"
+# dense/dense3/ncp/cncp = pure topology (no reference frame); tbt_cncp_noloc
+# isolates the location benefit; tbt_cncp_concat is the strongest reference-frame
+# arm.
+WIRINGS="${LV_WIRINGS:-dense dense3 ncp cncp tbt_cncp_noloc tbt_cncp_concat}"
 SEEDS="${LV_SEEDS:-0 1 2}"
 MAXPAR="${LV_MAXPAR:-6}"
+# Every arm is sized on its own width knob to this EFFECTIVE parameter budget
+# (thesis protocol: 4k for the rollouts).
+PARAM_BUDGET="${LV_PARAM_BUDGET:-4000}"
 PLOT_CELL="${LV_PLOT_CELL:-cfc_lrc}"
 # System / resolution / output dir (predator_prey -> results/lotka_volterra;
 # duffing -> results/lotka_volterra_duffing, submitted as a second job).
@@ -71,11 +75,12 @@ run_one() {
     echo "[start] ${cell}_${wiring}_seed${seed} $(date -u +%FT%TZ)"
     uv run python experiments/run_lotka_volterra_benchmark.py \
         --wiring "$wiring" --cell "$cell" --seed "$seed" --epochs "$EPOCHS" \
-        --system "$SYSTEM" --seq-len "$SEQLEN" --outdir "$OUTDIR" $wandb_flag
+        --system "$SYSTEM" --seq-len "$SEQLEN" --outdir "$OUTDIR" \
+        --param-budget "$PARAM_BUDGET" $wandb_flag
     echo "[done ] ${cell}_${wiring}_seed${seed} (exit $?)"
 }
 export -f run_one
-export EPOCHS SYSTEM SEQLEN OUTDIR USE_WANDB
+export EPOCHS SYSTEM SEQLEN OUTDIR USE_WANDB PARAM_BUDGET
 
 JOBS=""
 for cell in $CELLS; do
