@@ -1,16 +1,22 @@
 """Train one (wiring, K, seed) partial-view voting committee on person-activity
 and record clean accuracy + a test-time sensor-dropout curve (Iteration 7).
 
-Headline comparisons (all at matched parameters, cncp size=48 ~ dense size=64):
-  - K=1 (single monolith, full input) vs K>1 (committee, partitioned views):
-    does splitting the input across K weight-shared columns + voting help,
-    especially as test-time sensor dropout rises (graceful degradation, H1)?
-  - cncp committee (cortical columns, L2/3 vote) vs dense committee (plain cells,
-    hidden-state vote): is the cortical column a better weak learner (H3)?
+Headline comparisons (all arms at matched EFFECTIVE parameters; size the arms
+with --param-budget or pass a per-arm --size):
+  - learned consensus vs the controls at the SAME K and views: --vote-lambda 0
+    (columns independent, readout averages), --consensus median, and
+    --view-average (one cell on the mean of the K views, the input-averaging
+    monolith); K=1 is the single monolith on the full input.
+  - cncp committee (cortical columns, L2/3 vote) vs ncp committee (command-slice
+    vote, motor readout) vs dense committee (hidden-state vote, or a leading
+    subspace with --dense-vote-units): is the column type or the consensus the
+    source of a gain?
 
 Usage:
     uv run python experiments/run_committee_benchmark.py \
         --wiring cncp --n-columns 4 --size 48 --seed 0 --epochs 40
+    uv run python experiments/run_committee_benchmark.py \
+        --wiring ncp --n-columns 4 --size 48 --vote-lambda 0 --seed 0
 """
 from __future__ import annotations
 
@@ -49,6 +55,17 @@ def main():
     ap.add_argument("--noise", type=float, default=0.1)
     ap.add_argument("--view-seed", type=int, default=1,
                     help="fixes the feature partition (same masks train+test)")
+    ap.add_argument("--vote-lambda", type=float, default=None,
+                    help="fixed voting strength in [0, 1] (default: learned); "
+                         "0 = columns independent, the consensus control")
+    ap.add_argument("--consensus", default="mean", choices=("mean", "median"),
+                    help="consensus and readout statistic across columns")
+    ap.add_argument("--dense-vote-units", type=int, default=None,
+                    help="dense only: vote on / read out the leading n units "
+                         "(the subspace-voting control for the cncp L2/3 vote)")
+    ap.add_argument("--view-average", action="store_true",
+                    help="input-averaging monolith: average the K views first, "
+                         "then run a single column (K=1 model)")
     ap.add_argument("--train-drop", type=float, default=0.0,
                     help="train-time channel-dropout rate (robustness baseline); "
                          "K=1 with >0 is the augmented monolith control")
@@ -83,16 +100,25 @@ def main():
         v, _ = make_views(X, args.n_columns, mode=args.view_mode,
                           overlap=args.overlap, noise=args.noise,
                           seed=args.view_seed)
+        if args.view_average:          # (N,T,K,F) -> (N,T,1,F): one averaged view
+            v = v.mean(axis=2, keepdims=True)
         return v
 
-    print(f"committee {args.wiring} K={args.n_columns} size={args.size}: "
+    # The model's column count: K, or 1 for the input-averaging monolith.
+    n_cols = 1 if args.view_average else args.n_columns
+
+    print(f"committee {args.wiring} K={args.n_columns} size={args.size} "
+          f"lambda={'learned' if args.vote_lambda is None else args.vote_lambda} "
+          f"consensus={args.consensus}"
+          f"{' view-average' if args.view_average else ''}: "
           f"train {d.train_x.shape[0]} / test {d.test_x.shape[0]}, "
           f"F={F} C={C} mode={args.view_mode}")
 
     model = build_committee_model(
-        args.wiring, args.n_columns, cell=args.cell, size=args.size,
+        args.wiring, n_cols, cell=args.cell, size=args.size,
         feature_size=F, seq_len=args.seq_len, num_classes=C, lr=args.lr,
-        seed=args.seed, train_drop=args.train_drop,
+        seed=args.seed, vote_lambda=args.vote_lambda, consensus=args.consensus,
+        dense_vote_units=args.dense_vote_units, train_drop=args.train_drop,
         train_noise=args.train_noise, **cell_kwargs)
     model.fit([views(d.train_x), d.train_t], d.train_y,
               validation_data=([views(d.test_x), d.test_t], d.test_y),
@@ -127,6 +153,9 @@ def main():
         "feature_size": F, "num_classes": C, "view_mode": args.view_mode,
         "overlap": args.overlap, "train_drop": args.train_drop,
         "train_noise": args.train_noise, "test_corruption": args.test_corruption,
+        "vote_lambda": args.vote_lambda, "consensus": args.consensus,
+        "dense_vote_units": args.dense_vote_units,
+        "view_average": bool(args.view_average), "model_columns": n_cols,
         "clean_accuracy": clean,
         "drop_fracs": levels, "drop_accs": [round(a, 4) for a in accs],
         "drop_stds": [round(s, 4) for s in stds], "drop_seeds": drop_seeds,
@@ -134,8 +163,12 @@ def main():
     td = f"_td{args.train_drop}" if args.train_drop > 0.0 else ""
     tn = f"_tn{args.train_noise}" if args.train_noise > 0.0 else ""
     tc = "_tcnoise" if args.test_corruption == "noise" else ""
+    lam = "" if args.vote_lambda is None else f"_lam{args.vote_lambda:g}"
+    med = "_median" if args.consensus == "median" else ""
+    dvu = f"_dvu{args.dense_vote_units}" if args.dense_vote_units else ""
+    avg = "_viewavg" if args.view_average else ""
     fname = (f"{args.cell}_{args.wiring}_K{args.n_columns}_s{args.size}_"
-             f"{args.view_mode}{td}{tn}{tc}_seed{args.seed}.json")
+             f"{args.view_mode}{lam}{med}{dvu}{avg}{td}{tn}{tc}_seed{args.seed}.json")
     path = os.path.join(args.outdir, fname)
     with open(path, "w") as f:
         json.dump(record, f)
