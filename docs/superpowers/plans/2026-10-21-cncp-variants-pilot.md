@@ -310,3 +310,28 @@ semantics, backbone pass-through, ssh quoting) was confirmed.
 | 7 | R6 unit test reads the final state only, outlier is xfail | documented in section 7; the gate is the cluster probe (max over time) |
 | 8 | test gaps: GPU 128 steps, cncp2 bb1 budget, probe on/off equality, cncp2 committee | covered by the canaries (GPU, 128 steps, bb1 budget) and the #9 report (identical val-loss curve with and without the probe); cncp2 committee tests are part of #10 |
 | 9 | LV plotter omits dense3 and cncp2 | added to `WIRING_ORDER` (one launch per backbone depth, so no mixing) |
+
+## 10. Pilot outcome (2026-10-21, all 30 launches complete)
+
+Numbers are medians over 3 seeds; CL = closed-loop MSE at 200 epochs, acc = final Person Activity test accuracy at 50 epochs (majority baseline 0.371); run folders under `results/<NN>/2026-10-21_<label>/` with the per-seed values in each `LAUNCH.md`.
+
+| Arm | LV 4k | Duffing 4k | LV 1k / 16k | PA 30k | UC-B rule | Decision |
+|---|---|---|---|---|---|---|
+| dense3 bb1 (reference) | 2.84 | 2.02 | 1.05 / 1.94 | 0.817 | -- | keep, dense baseline |
+| ncp bb1 | 2.76 | 1.75 | 1.67 / 2.55 (fails at 16k) | 0.817 | fails (-0.7 pp) | candidate |
+| cncp bb1 (V2s) | 1.63 | 1.86 | 2.79 (worst) / 1.47 | 0.833 | passes (+1.1 pp) | candidate, best PA arm |
+| cncp2 bb1 (V3) | 1.84 | 2.24 (spread 1.7-3.3) | 0.85 / 1.41 (best) | 0.826 | fails narrowly (+0.9 pp, one seed 0.0) | candidate |
+| ncp bb0 | explodes 2/3 | 1.48 | 0.20 / explodes 2/3 | 0.785 | -- | dropped for rollout tasks |
+| cncp bb0 (V2) | diverges at init 2/3 | diverges 2/3 | 1.10 / diverges 2/3 | 0.290 (no learning) | -- | dropped |
+| cncp2 bb0 (V3) | 1.20, explodes 1/3 | 1.24 | 0.84 / explodes 2/3 | 0.827 | passes vs ncp bb0 (+3.4 pp) | candidate on PA; unstable rollouts at 4k and 16k |
+| V4 cncp2_multi K=2 (rollout) | 0.48, 0.89, explodes 1/3 | explodes 2/3 | -- | -- | -- | outlook |
+| V4 K=4 region none / lateral (PA) | -- | -- | -- | 0.812 / 0.818 | lateral vs none +0.7 pp (fails) | outlook, no coupling gain |
+| V1 committee cncp K=4 bb0 (UC-C) | -- | -- | -- | clean 0.37 (all rows) | -- | dropped as run; degenerate at backbone 0 |
+| V4 K=4 median (UC-C) | -- | -- | -- | clean 0.735, drop 0.3 0.459 | eligibility not met | descriptive only |
+| gru dense3 / ncp (context) | 0.53 / 0.56 | 1.47 / 1.49 | -- | -- | -- | context row, best LV arm |
+
+**Main finding.** Without the sub-cell backbone (revision 13.1 convention) the CfC-family arms are rollout-unstable on the trajectory tasks, independent of the wiring: at 4k 4 of 9 bb0 seeds explode on LV, at 16k 6 of 9, at 1k none; cncp bb0 diverges under teacher forcing and does not learn Person Activity. With backbone 1 every arm trains and rolls out finite in all 60 fits. The fixed-width pair (cncp size 18, bb0 vs bb1) shows the backbone, not the width, is the cause.
+
+**Decision needed before the final suite** (Codex plan review, finding 9): run the sub-cells with backbone 1 in all CfC arms (row bb1, the wiring comparison), or stabilise the backbone-0 package. Row bb1 is the recommended basis: it is the only row in which every hypothesis arm trains in every seed, and cncp bb1 passes the UC-B rule against dense3.
+
+**Costs realised.** LV/Duffing jobs 6 to 30 min (9 to 12 fits, 6 parallel), PA 27 to 37 min (9 to 12 fits), UC-C 13 to 54 min (3 fits); total about 9 GPU-h for 188 + 3 fits, below the 16.5 to 25 GPU-h estimate (the committee canary over-estimated K = 4 by about 2x because K = 16 shared the GPU).
