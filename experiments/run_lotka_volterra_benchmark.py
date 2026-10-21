@@ -31,7 +31,9 @@ import os
 import numpy as np
 import tensorflow as tf
 
-from src.wirings import param_counts, size_for_budget
+from src.wirings import (CorticalColumnCell, CorticalColumnV2Cell,
+                         NODE_ORDER, NODE_ORDER_V2, param_counts,
+                         size_for_budget)
 
 DEFAULT_SIZE = 64
 BUDGET_TOLERANCE = 0.05
@@ -73,6 +75,99 @@ def closed_loop_rollout(model, data, needs_loc: bool = False) -> np.ndarray:
     return np.stack(history, axis=1)                       # (N, seq_len+1, 2)
 
 
+class _StateTap(tf.keras.layers.AbstractRNNCell):
+    """Read-only wrapper: runs a built cell and emits all its new states.
+
+    Wrapped in a fresh RNN layer it returns the per-step states of the
+    original (shared-weight) cell; it creates no variables and changes no state
+    of the trained model.
+    """
+
+    def __init__(self, cell):
+        super().__init__()
+        self.cell = cell
+
+    @property
+    def state_size(self):
+        return self.cell.state_size
+
+    @property
+    def output_size(self):
+        return int(np.sum(np.atleast_1d(self.cell.state_size)))
+
+    def build(self, input_shape):
+        self.built = True
+
+    def get_initial_state(self, inputs=None, batch_size=None, dtype=None):
+        return self.cell.get_initial_state(inputs=inputs, batch_size=batch_size,
+                                           dtype=dtype)
+
+    def call(self, inputs, states):
+        _, new = self.cell(inputs, states)
+        new = list(new) if isinstance(new, (list, tuple)) else [new]
+        return tf.concat(new, axis=-1), new
+
+
+def _state_names(cell):
+    if isinstance(cell, CorticalColumnV2Cell):
+        return list(NODE_ORDER_V2)
+    if isinstance(cell, CorticalColumnCell):          # also tbt_cncp*
+        return list(NODE_ORDER)
+    return [f"state{i}" for i in range(len(np.atleast_1d(cell.state_size)))]
+
+
+class StabilityProbe(tf.keras.callbacks.Callback):
+    """--probe-stability (spec 2026-10-21 B.5, R6): per-state L2 norms of the
+    model's RNN states on one fixed training batch at init, after exactly one
+    optimiser step and after the first epoch, plus the epoch-1 train loss.
+
+    Each norm is the L2 norm over the unit axis, max over batch and time,
+    keyed "<rnn layer>/<state>" (cncp: the eight nodes, cncp2: G/S/D/R, ncp
+    and dense layers: state0..). The probe only runs forward passes with
+    training=False through read-only taps, so it does not alter the training
+    trajectory beyond the extra forward computation.
+    """
+
+    def __init__(self, model, batch_inputs):
+        super().__init__()
+        self._taps = []
+        for layer in model.layers:
+            if isinstance(layer, tf.keras.layers.RNN):
+                feed = tf.keras.Model(model.inputs, layer.input)
+                tap = tf.keras.layers.RNN(_StateTap(layer.cell),
+                                          return_sequences=True)
+                self._taps.append((layer.name, _state_names(layer.cell),
+                                   np.atleast_1d(layer.cell.state_size),
+                                   feed, tap))
+        self._batch = batch_inputs
+        self.result = {}
+
+    def _norms(self):
+        out = {}
+        for name, states, sizes, feed, tap in self._taps:
+            seq = tap(feed(self._batch, training=False), training=False)
+            for state, part in zip(states, tf.split(seq, sizes.tolist(), -1)):
+                out[f"{name}/{state}"] = float(tf.reduce_max(
+                    tf.norm(part, axis=-1)))
+        return out
+
+    def on_train_begin(self, logs=None):
+        self.result["norms_init"] = self._norms()
+
+    def on_train_batch_end(self, batch, logs=None):
+        if "norms_step1" not in self.result:
+            self.result["norms_step1"] = self._norms()
+
+    def on_epoch_end(self, epoch, logs=None):
+        if epoch == 0:
+            self.result["norms_epoch1"] = self._norms()
+            self.result["tf_loss_epoch1"] = float(logs["loss"])
+            values = [v for k in ("norms_init", "norms_step1", "norms_epoch1")
+                      for v in self.result[k].values()]
+            self.result["finite"] = bool(np.all(np.isfinite(
+                values + [self.result["tf_loss_epoch1"]])))
+
+
 def _round(a, nd=5):
     return np.round(np.asarray(a, dtype=np.float64), nd).tolist()
 
@@ -100,6 +195,10 @@ def main():
     ap.add_argument("--elastance-type", default="asymmetric",
                     help="forwarded to LRC-family cells (RQ2/RQ5 mechanism)")
     ap.add_argument("--verbose", type=int, default=0)
+    ap.add_argument("--probe-stability", action="store_true",
+                    help="record per-state norms at init, after one step and "
+                         "after epoch 1, plus the epoch-1 train loss "
+                         "(result key 'stability', spec 2026-10-21 R6)")
     ap.add_argument("--wandb", action="store_true",
                     help="log this run to Weights & Biases (needs the "
                          "'tracking' extra; use WANDB_MODE=offline on cluster)")
@@ -155,6 +254,11 @@ def main():
         "batch_size": args.batch_size, "epochs": args.epochs, **pc,
     }
     tag = f"{args.cell}_{args.wiring}_seed{args.seed}"
+    probe = None
+    if args.probe_stability:
+        # A real training batch (the first batch_size training sequences).
+        probe = StabilityProbe(model, tuple(a[:args.batch_size]
+                                            for a in train_in))
     with track(args.wandb, group=args.cell, job_type=args.wiring, name=tag,
                config=wandb_config) as run_:
         hist = model.fit(
@@ -162,7 +266,7 @@ def main():
             batch_size=args.batch_size, epochs=args.epochs,
             validation_data=(test_in, data.test_y),
             verbose=args.verbose,
-            callbacks=keras_callbacks(run_))
+            callbacks=keras_callbacks(run_) + ([probe] if probe else []))
 
     # Teacher-forced: MSE/MAE in normalised space + de-normalised prediction.
     tf_mse, tf_mae = model.evaluate(test_in, data.test_y, verbose=0)
@@ -204,6 +308,8 @@ def main():
         "teacher_forced_traj": _round(tf_traj),
         "closed_loop_traj": _round(cl_traj),
     }
+    if probe is not None:
+        record["stability"] = probe.result
     fname = f"{args.cell}_{args.wiring}_seed{args.seed}.json"
     path = os.path.join(args.outdir, fname)
     with open(path, "w") as f:
