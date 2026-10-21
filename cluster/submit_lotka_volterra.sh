@@ -19,11 +19,13 @@ run_parse_args "$@"
 # Forward any LV_* matrix overrides through the ssh environment to the sbatch.
 LV_ENV=""
 for v in LV_EPOCHS LV_CELLS LV_WIRINGS LV_SEEDS LV_MAXPAR LV_PLOT_CELL \
-         LV_SYSTEM LV_SEQLEN LV_WANDB LV_PARAM_BUDGET LV_LR LV_BACKBONE; do
+         LV_SYSTEM LV_SEQLEN LV_WANDB LV_PARAM_BUDGET LV_LR LV_BACKBONE LV_EXTRA; do
     if [[ -n "${!v:-}" ]]; then LV_ENV+="${v}='${!v}' "; fi
 done
 RUN_ENV="${LV_ENV:-<defaults>}"
 RUN_COMMAND="${LV_ENV}./cluster/submit_lotka_volterra.sh ${LABEL}"
+# ponytail: defaults mirror cluster/lotka_volterra.sbatch
+run_count "${LV_CELLS:-cfc_lrc gru}" "${LV_WIRINGS:-dense dense3 ncp cncp tbt_cncp_noloc tbt_cncp_concat}" "${LV_SEEDS:-0 1 2}"
 
 case "${LV_SYSTEM:-periodic_predator_prey}" in
     duffing) BENCH_DEFAULT="02_duffing" ;;

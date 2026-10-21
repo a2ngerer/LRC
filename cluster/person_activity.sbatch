@@ -58,7 +58,7 @@ SEEDS="${PA_SEEDS:-0 1 2}"
 MAXPAR="${PA_MAXPAR:-3}"
 # Every arm is sized on its own width knob to this EFFECTIVE parameter budget
 # (thesis protocol: 30k for Person Activity).
-PARAM_BUDGET="${PA_PARAM_BUDGET:-30000}"
+PARAM_BUDGET="${PA_PARAM_BUDGET:-30000}"   # 0 = no --param-budget (use --size via PA_EXTRA)
 DATA_PATH="$PWD/data/person/ConfLongDemo_JSI.txt"
 
 OUTDIR="$RUN_DIR/results"
@@ -66,26 +66,29 @@ LR="${PA_LR:-1e-3}"
 # CfC-family backbone depth for every arm (V2s control: PA_BACKBONE=1); empty = flag
 # not passed, per-wiring defaults unchanged; results get a _bb<N> filename suffix.
 BACKBONE="${PA_BACKBONE:-}"
+EXTRA="${PA_EXTRA:-}"   # extra runner flags, e.g. "--columns 4 --partition region --coupling lateral"
 
 if [[ ! -f "$DATA_PATH" ]]; then
     echo "FATAL: dataset not found at $DATA_PATH (rsync must include data/)." >&2
     exit 1
 fi
 
+# shellcheck disable=SC2086  # flag lists are split on purpose
 run_one() {
     local cell="$1" wiring="$2" seed="$3"
-    local wandb_flag="" bb_flag=""
+    local wandb_flag="" bb_flag="" budget_flag=""
+    [[ "${PARAM_BUDGET}" != "0" ]] && budget_flag="--param-budget ${PARAM_BUDGET}"
     [[ -n "${BACKBONE:-}" ]] && bb_flag="--backbone-layers ${BACKBONE}"
     [[ "${USE_WANDB:-0}" == "1" ]] && wandb_flag="--wandb"
     echo "[start] ${cell}_${wiring}_seed${seed} $(date -u +%FT%TZ)"
     uv run python experiments/run_person_activity_benchmark.py \
         --wiring "$wiring" --cell "$cell" --seed "$seed" --epochs "$EPOCHS" \
-        --param-budget "$PARAM_BUDGET" --data-path "$DATA_PATH" \
-        --outdir "$OUTDIR" --lr "$LR" $bb_flag $wandb_flag
+        $budget_flag --data-path "$DATA_PATH" \
+        --outdir "$OUTDIR" --lr "$LR" $bb_flag $EXTRA $wandb_flag
     echo "[done ] ${cell}_${wiring}_seed${seed} (exit $?)"
 }
 export -f run_one
-export EPOCHS DATA_PATH USE_WANDB PARAM_BUDGET OUTDIR LR BACKBONE
+export EPOCHS DATA_PATH USE_WANDB PARAM_BUDGET OUTDIR LR BACKBONE EXTRA
 
 JOBS=""
 for cell in $CELLS; do

@@ -24,6 +24,8 @@ for v in CO_EPOCHS CO_CELL CO_WIRINGS CO_KS CO_SEEDS CO_SEQLEN CO_BATCH \
 done
 RUN_ENV="${CO_ENV:-<defaults>}"
 RUN_COMMAND="${CO_ENV}./cluster/submit_committee.sh ${LABEL}"
+# ponytail: defaults mirror cluster/committee.sbatch
+run_count "${CO_WIRINGS:-cncp ncp dense}" "${CO_KS:-1 2 4}" "${CO_SEEDS:-0 1 2}"
 
 run_rsync
 run_prepare 04_column_voting
