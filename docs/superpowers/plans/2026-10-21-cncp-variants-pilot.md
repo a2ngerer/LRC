@@ -347,3 +347,15 @@ Verdict: launch-ready, no blocking findings; three minor ones, all applied in th
 | 3 (minor) | `_make_mask` repairs an empty off-diagonal block to one edge, so lateral blocks are not pure Bernoulli draws (all connected at u = 1 or d_lat = 0) | documented in the `lateral_density` docstring with the valid range; parameter counts are realised counts and stay correct |
 
 Codex reproduced the realised counts for seed 0 exactly (LV K = 2 u = 7: 3639 none / 3667 lateral; PA K = 4 u = 14: 28668 / 29275) and confirmed bit-identical weights and outputs of the single-column path against 501e51d.
+
+## 12. Decision: sub-cell backbone in the final suite (2026-10-21)
+
+**Decided (Alexander, 2026-10-21):** the final suite runs every CfC-family arm (dense, dense3, ncp, cncp, cncp2 and the V4 outlook rows) with `backbone_layers = 1`, i.e. row bb1 of this pilot. The revision-13.1 convention "sub-cells without backbone, as in the reference wired CfC" is withdrawn for the campaign; it stays available as the flag default for diagnostics.
+
+**Why:** at backbone 0 the free-running rollouts of every CfC arm are unstable at 4k and 16k (section 10), cncp diverges under teacher forcing and does not learn Person Activity, and the committee rows are degenerate. At backbone 1 all 60 bb1 fits train and roll out finite, cncp passes the UC-B rule against dense3, and the row is a wiring comparison with identical sub-cells in every arm (no sub-cell-depth confound, Codex plan review finding 9).
+
+**Consequences:**
+- Campaign configs set `LV_BACKBONE=1`, `PA_BACKBONE=1`, `CO_BACKBONE=1`; result files carry the `_bb1` suffix; budgets are re-matched per arm by `size_for_budget` with the override applied (realised counts in section 1).
+- H-c (NCP/cNCP vs dense3) is read on row bb1; the bb0 package results (cncp2 bb0 on Person Activity, 1k budget scan) are reported as a secondary stability analysis, not as the main comparison.
+- The thesis text (chapter 4, NCP and cNCP sub-cell convention) is updated to state the backbone and the reason; the note `Thesis/benchmark-decision-brief` in the vault records the decision.
+- V1 committee (H-d) and the UC-C rows are re-run with backbone 1 only if H-d stays in scope (Q1 of the advisor session).
