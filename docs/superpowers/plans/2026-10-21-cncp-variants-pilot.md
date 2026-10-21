@@ -28,11 +28,15 @@ inside a comparison.
 - **Row bb0 (architecture packages, backbone 0):** ncp, cncp (V2), cncp2 (V3).
   Read as package comparisons; a V3 result in this row says nothing about the
   graph alone.
-- **Row bb1 (wiring comparison, backbone 1):** dense3, ncp bb1, cncp bb1 (V2s),
+- **Row bb1 (wiring comparison, backbone 1):** dense3, ncp bb1, cncp bb1 (V2s), cncp2 bb1,
   all with `--backbone-layers 1`, all re-matched to the budget. This is the
   row where "graph vs graph at equal sub-cell" is read. Known deviation: ncp
   bb1 at 4k lands 5.4 % under budget (size 23, 3 784 effective); it is
   reported with its realised count.
+  Known from #9: cncp2 at 4k lands 8.6 % under budget (u = 10, 3 655 effective,
+  "≈ matched"); at 30k u = 29, 29 873. Its R6(a) init check passed 29 of 30
+  synthetic cases; the one failure (LV 4k, seed 1, input scale 10) is the S
+  sub-cell recurrence, which backbone 1 bounds, so cncp2 bb1 is in row bb1.
 - **V3 vs V2s** crosses the rows and is a package comparison; the plan says so
   wherever it is read.
 - **Fixed-width pair (canary only):** cncp bb0 vs cncp bb1 at `--size 18`
@@ -144,7 +148,7 @@ Canary (00_canary; `LV_EPOCHS=3`, `LV_SEEDS="0 1 2"`, `LV_CELLS=cfc_lrc`,
 | Label | Env | Fits |
 |---|---|---|
 | canary-bb0 | `LV_WIRINGS="dense3 ncp cncp cncp2"` | 12 |
-| canary-bb1 | `LV_WIRINGS="dense3 ncp cncp" LV_BACKBONE=1` | 9 |
+| canary-bb1 | `LV_WIRINGS="dense3 ncp cncp cncp2" LV_BACKBONE=1` | 12 |
 | canary-v4 | `LV_WIRINGS=cncp2_multi LV_EXTRA="--probe-stability --columns 2 --partition same --coupling lateral --readout mean"` | 3 |
 | canary-size18 | `LV_WIRINGS=cncp LV_PARAM_BUDGET=0 LV_EXTRA="--probe-stability --size 18"` and the same with `LV_BACKBONE=1` | 3 + 3 |
 | canary-committee | `CO_WIRINGS=cncp CO_KS="4 16" CO_SEEDS=0 CO_EPOCHS=2` (cost of K = 4 and K = 16 in the parallel setting) | 2 |
@@ -155,7 +159,7 @@ UC-A (01 and 02; `LV_EPOCHS=200`, `LV_SEEDS="0 1 2"`; Duffing adds
 | Label | Env | Fits |
 |---|---|---|
 | pilot-uca-{lv,duffing}-bb0 | `LV_CELLS=cfc_lrc LV_WIRINGS="ncp cncp cncp2"` | 9 |
-| pilot-uca-{lv,duffing}-bb1 | `LV_CELLS=cfc_lrc LV_WIRINGS="dense3 ncp cncp" LV_BACKBONE=1` | 9 |
+| pilot-uca-{lv,duffing}-bb1 | `LV_CELLS=cfc_lrc LV_WIRINGS="dense3 ncp cncp cncp2" LV_BACKBONE=1` | 12 |
 | pilot-uca-{lv,duffing}-gru | `LV_CELLS=gru LV_WIRINGS="dense3 ncp"` | 6 |
 | pilot-uca-{lv,duffing}-v4 | `LV_CELLS=cfc_lrc LV_WIRINGS=cncp2_multi LV_EXTRA="--columns 2 --partition same --coupling lateral --readout mean"` | 3 |
 
@@ -163,8 +167,8 @@ UC-D (01; as UC-A bb0/bb1 with `LV_PARAM_BUDGET=1000` and `16000`):
 
 | Label | Fits |
 |---|---|
-| pilot-ucd-1k-bb0, pilot-ucd-1k-bb1 | 9 + 9 |
-| pilot-ucd-16k-bb0, pilot-ucd-16k-bb1 | 9 + 9 |
+| pilot-ucd-1k-bb0, pilot-ucd-1k-bb1 | 9 + 12 |
+| pilot-ucd-16k-bb0, pilot-ucd-16k-bb1 | 9 + 12 |
 
 UC-B (03; `PA_EPOCHS=50`, `PA_SEEDS="0 1 2"`, `PA_CELLS=cfc_lrc`;
 `SBATCH_EXTRA="--time=03:00:00"`):
@@ -172,7 +176,7 @@ UC-B (03; `PA_EPOCHS=50`, `PA_SEEDS="0 1 2"`, `PA_CELLS=cfc_lrc`;
 | Label | Env | Fits |
 |---|---|---|
 | pilot-ucb-bb0 | `PA_WIRINGS="ncp cncp cncp2"` | 9 |
-| pilot-ucb-bb1 | `PA_WIRINGS="dense3 ncp cncp" PA_BACKBONE=1` | 9 |
+| pilot-ucb-bb1 | `PA_WIRINGS="dense3 ncp cncp cncp2" PA_BACKBONE=1` | 12 |
 | pilot-ucb-v4-none | `PA_WIRINGS=cncp2_multi PA_EXTRA="--columns 4 --partition region --coupling none --readout concat"` | 3 |
 | pilot-ucb-v4-lateral | same with `--coupling lateral` (density 0.25) | 3 |
 | pilot-ucb-v4-lateral-fixed (conditional) | as lateral with `PA_PARAM_BUDGET=0 PA_EXTRA="... --size <u of none>"` if the matched widths differ | 3 |
@@ -222,14 +226,14 @@ loop over columns).
 
 | Block | Fits | GPU-min (est.) | Jobs |
 |---|---|---|---|
-| Canaries LV (30 fits, 3 epochs) | 30 | 5 | 5 |
+| Canaries LV (33 fits, 3 epochs) | 33 | 6 | 5 |
 | Canary committee | 2 | 10 to 40 | 1 |
-| UC-A LV: bb0 9 (ncp 1.3, cncp 3.5, cncp2 1.8 per seed), bb1 9 (1.3, 1.3, 3.5), gru 6 (1.3), v4 3 (3.6) | 27 | 20 + 18 + 8 + 11 = 57 | 4 |
-| UC-A Duffing | 27 | 57 | 4 |
-| UC-D 1k (≈ 0.6 ×) and 16k (≈ 2.5 ×) of the bb0 + bb1 blocks | 36 | 23 + 95 = 118 | 4 |
-| UC-B: bb0 (7 + 16 + 10 per seed), bb1 (7 + 7 + 16), v4 none and lateral (≈ 40 each per seed) | 24 (+3) | 99 + 90 + 120 + 120 = 429 (+120) | 4 (+1) |
+| UC-A LV: bb0 9 (ncp 1.3, cncp 3.5, cncp2 1.8 per seed), bb1 12 (1.3, 1.3, 3.5, 1.8), gru 6 (1.3), v4 3 (3.6) | 30 | 20 + 24 + 8 + 11 = 63 | 4 |
+| UC-A Duffing | 30 | 63 | 4 |
+| UC-D 1k (≈ 0.6 ×) and 16k (≈ 2.5 ×) of the bb0 + bb1 blocks | 42 | 26 + 110 = 136 | 4 |
+| UC-B: bb0 (7 + 16 + 10 per seed), bb1 (7 + 7 + 16 + 10), v4 none and lateral (≈ 40 each per seed) | 27 (+3) | 99 + 120 + 120 + 120 = 459 (+120) | 4 (+1) |
 | UC-C: 24 fits, K = 4 cncp unmeasured | 24 | 240 to 720 | 8 |
-| Total | 170 (+3) | ≈ 15.5 to 24 GPU-h | 30 (+1) |
+| Total | 188 (+3) | ≈ 16.5 to 25 GPU-h | 30 (+1) |
 
 Wall-clock: the canaries finish in under 15 minutes; UC-A, UC-D and UC-B are
 16 jobs of 20 to 60 minutes each and run in two waves of eight; UC-C is one
@@ -277,5 +281,5 @@ read-only, run from the `benchmarks` checkout). Verdict: release with changes.
 | 6 | UC-C does not isolate weight sharing; rows underspecified | V1 vs V4 declared a package comparison under identical views and masks; every row spelled out with wiring, K, flags; monolith is K = 1 with `--train-drop 0.3`; λ = 0 at K = 4 protected (sections 2 and 3) |
 | 7 | decision and stop rules allow wrong conclusions | numeric rules: one-sided non-inferiority (UC-A), paired differences ≥ 1 pp with consistent sign (UC-B), absolute accuracy at 0.3/0.45 with a 2 pp clean-accuracy eligibility (UC-C), failures counted, UC-D wording; stop rules replaced by priority rules (section 2) |
 | 8 | launchers cannot express the matrix; A40 vs A100; PA walltime | matrix expressed as per-configuration launches with `LV_/PA_/CO_EXTRA`, `*_BACKBONE`, `*_PARAM_BUDGET=0` + `--size`, `SBATCH_EXTRA` for walltime; the cluster is A40 (the review prompt said A100 in error) (section 3) |
-| 9 | cost table counted an undefined matrix | matrix fixed first, 170 fits recounted per block, committee canary at K = 4 and K = 16, wall-clock by waves (section 5) |
+| 9 | cost table counted an undefined matrix | matrix fixed first, 188 fits recounted per block, committee canary at K = 4 and K = 16, wall-clock by waves (section 5) |
 | 10 (minor) | budget tolerance and "sensor" wording | realised `params_effective` everywhere, "≈ matched" above 5 %; UC-C renamed feature-channel dropout with realised 0/1/2/3 of 7 channels |
