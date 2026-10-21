@@ -15,11 +15,15 @@
 #SBATCH --gres=gpu:a40:1
 #SBATCH --mem=16G
 #SBATCH --time=03:00:00
-#SBATCH --output=outputs/slurm/%x-%j.out
-#SBATCH --error=outputs/slurm/%x-%j.err
+# --output/--error are passed on the sbatch command line by cluster/_run.sh
+# (<run folder>/logs/); RUN_DIR is exported by the launcher.
 #SBATCH --open-mode=append
 #SBATCH --requeue
 set -euo pipefail
+# Run folder (cluster/_run.sh): results, logs, figures and wandb live here,
+# never under the code tree (which is rsync --delete-d).
+RUN_DIR="${RUN_DIR:?RUN_DIR not set: submit via cluster/submit_*.sh}"
+mkdir -p "$RUN_DIR/results" "$RUN_DIR/figures" "$RUN_DIR/wandb"
 
 export TMPDIR="$HOME/tmp"; export TMP="$TMPDIR"; export TEMP="$TMPDIR"
 mkdir -p "$TMPDIR"
@@ -53,23 +57,26 @@ NOISESIGMAS="${CO_NOISESIGMAS:-0.0,0.25,0.5,1.0}"
 PARAM_BUDGET="${CO_PARAM_BUDGET:-30000}"
 MAXPAR="${CO_MAXPAR:-4}"
 
-mkdir -p outputs/slurm results/committee
+OUTDIR="$RUN_DIR/results"
+EXTRA="${CO_EXTRA:-}"   # extra runner flags, e.g. "--vote-lambda 0 --consensus median"
 
 run_one() {
     local cell="$1" wiring="$2" K="$3" seed="$4"
     echo "[start] ${cell}_${wiring}_K${K}_pb${PARAM_BUDGET}_seed${seed} $(date -u +%FT%TZ)"
+    # shellcheck disable=SC2086  # CO_EXTRA is a flag list, split on purpose
     uv run python experiments/run_committee_benchmark.py \
         --wiring "$wiring" --n-columns "$K" --param-budget "$PARAM_BUDGET" \
         --cell "$cell" --seed "$seed" --epochs "$EPOCHS" --seq-len "$SEQLEN" \
         --batch-size "$BATCH" \
         --view-mode "$VIEWMODE" --drop-fracs "$DROPFRACS" \
         --train-drop "$TRAINDROP" --train-noise "$TRAINNOISE" \
-        --test-corruption "$TESTCORRUPT" --noise-sigmas "$NOISESIGMAS"
+        --test-corruption "$TESTCORRUPT" --noise-sigmas "$NOISESIGMAS" \
+        --outdir "$OUTDIR" $EXTRA
     echo "[done ] ${cell}_${wiring}_K${K}_pb${PARAM_BUDGET}_seed${seed} (exit $?)"
 }
 export -f run_one
 export EPOCHS SEQLEN BATCH VIEWMODE DROPFRACS PARAM_BUDGET TRAINDROP \
-       TRAINNOISE TESTCORRUPT NOISESIGMAS
+       TRAINNOISE TESTCORRUPT NOISESIGMAS OUTDIR EXTRA
 
 JOBS=""
 for cell in $CELL; do
@@ -85,9 +92,10 @@ done
 echo "=== committee: $(printf '%s' "$JOBS" | grep -c .) runs, par ${MAXPAR}, ${EPOCHS} epochs, mode ${VIEWMODE}, on $(hostname) ==="
 printf '%s' "$JOBS" | grep . | xargs -P "$MAXPAR" -n 4 bash -c 'run_one "$1" "$2" "$3" "$4"' _
 echo "=== all runs done $(date -u +%FT%TZ) ==="
-ls -la results/committee/*.json
+ls -la "$OUTDIR"/*.json
 
 echo "=== rendering plot ==="
-uv run python experiments/plot_committee.py --indir results/committee || echo "plot step failed (non-fatal)"
-ls -la results/committee/*.png 2>/dev/null || true
+uv run python experiments/plot_committee.py --indir "$OUTDIR" || echo "plot step failed (non-fatal)"
+mv "$OUTDIR"/*.png "$RUN_DIR/figures/" 2>/dev/null || true
+ls -la "$RUN_DIR/figures" 2>/dev/null || true
 echo "=== done $(date -u +%FT%TZ) ==="

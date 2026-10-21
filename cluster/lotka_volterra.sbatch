@@ -15,11 +15,15 @@
 #SBATCH --gres=gpu:a40:1
 #SBATCH --mem=16G
 #SBATCH --time=06:00:00
-#SBATCH --output=outputs/slurm/%x-%j.out
-#SBATCH --error=outputs/slurm/%x-%j.err
+# --output/--error are passed on the sbatch command line by cluster/_run.sh
+# (<run folder>/logs/); RUN_DIR is exported by the launcher.
 #SBATCH --open-mode=append
 #SBATCH --requeue
 set -euo pipefail
+# Run folder (cluster/_run.sh): results, logs, figures and wandb live here,
+# never under the code tree (which is rsync --delete-d).
+RUN_DIR="${RUN_DIR:?RUN_DIR not set: submit via cluster/submit_*.sh}"
+mkdir -p "$RUN_DIR/results" "$RUN_DIR/figures" "$RUN_DIR/wandb"
 
 # Virtual nodes have a non-writable /tmp -> redirect temp into $HOME.
 export TMPDIR="$HOME/tmp"; export TMP="$TMPDIR"; export TEMP="$TMPDIR"
@@ -42,7 +46,7 @@ export PYTHONUNBUFFERED=1
 # locally via cluster/wandb_sync.sh. Opt in with LV_WANDB=1 at submit time;
 # default off keeps existing runs untouched.
 export WANDB_MODE=offline
-export WANDB_DIR="$PWD/outputs/wandb"
+export WANDB_DIR="$RUN_DIR/wandb"
 export WANDB_SILENT=true
 mkdir -p "$WANDB_DIR"
 USE_WANDB="${LV_WANDB:-0}"
@@ -64,9 +68,9 @@ PLOT_CELL="${LV_PLOT_CELL:-cfc_lrc}"
 # duffing -> results/lotka_volterra_duffing, submitted as a second job).
 SYSTEM="${LV_SYSTEM:-periodic_predator_prey}"
 SEQLEN="${LV_SEQLEN:-128}"
-OUTDIR="${LV_OUTDIR:-results/lotka_volterra}"
+OUTDIR="$RUN_DIR/results"
+LR="${LV_LR:-1e-3}"
 
-mkdir -p outputs/slurm "$OUTDIR"
 
 run_one() {
     local cell="$1" wiring="$2" seed="$3"
@@ -76,11 +80,11 @@ run_one() {
     uv run python experiments/run_lotka_volterra_benchmark.py \
         --wiring "$wiring" --cell "$cell" --seed "$seed" --epochs "$EPOCHS" \
         --system "$SYSTEM" --seq-len "$SEQLEN" --outdir "$OUTDIR" \
-        --param-budget "$PARAM_BUDGET" $wandb_flag
+        --param-budget "$PARAM_BUDGET" --lr "$LR" $wandb_flag
     echo "[done ] ${cell}_${wiring}_seed${seed} (exit $?)"
 }
 export -f run_one
-export EPOCHS SYSTEM SEQLEN OUTDIR USE_WANDB PARAM_BUDGET
+export EPOCHS SYSTEM SEQLEN OUTDIR USE_WANDB PARAM_BUDGET LR
 
 JOBS=""
 for cell in $CELLS; do
@@ -99,5 +103,6 @@ ls -la "$OUTDIR"/*.json
 echo "=== rendering plots (cell ${PLOT_CELL}, ${SYSTEM}) ==="
 uv run python experiments/plot_lotka_volterra.py \
     --indir "$OUTDIR" --cell "$PLOT_CELL" --seed 0 --n-examples 4
-ls -la "$OUTDIR"/*.png
+mv "$OUTDIR"/*.png "$RUN_DIR/figures/" 2>/dev/null || true
+ls -la "$RUN_DIR/figures"
 echo "=== plots done $(date -u +%FT%TZ) ==="

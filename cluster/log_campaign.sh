@@ -8,7 +8,8 @@
 #   cluster/log_campaign.sh <date|-> <campaign> <slurm_job_id> <run_count>
 #
 #   <date|->        ISO date for the entry; pass '-' (or empty) to use `date -u`.
-#   <campaign>      campaign/profile name (e.g. v5).
+#   <campaign>      campaign/profile name (e.g. v5) or a run folder
+#                   (<NN_benchmark>/<YYYY-MM-DD>_<label>).
 #   <slurm_job_id>  SLURM array job id returned by sbatch (or '-').
 #   <run_count>     number of run specs in the campaign (or '-').
 #
@@ -18,7 +19,7 @@
 #   - 2026-06-30  campaign `v5` submitted — SLURM job 123456, 1980 runs
 set -euo pipefail
 
-WORKLOG="${CAMPAIGN_WORKLOG:-/Users/angeral/Repositories/master_thesis_v2/obsidian_master_thesis/Thesis/work-documentation.md}"
+WORKLOG="${CAMPAIGN_WORKLOG:-/Users/angeral/Repositories/master_thesis/obsidian_master_thesis/Thesis/work-documentation.md}"
 
 log_date="${1:--}"
 campaign="${2:?usage: log_campaign.sh <date|-> <campaign> <slurm_job_id> <run_count>}"
