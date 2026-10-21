@@ -16,10 +16,13 @@
 # does NOT give comparable capacity (at size 64 with cfc_lrc the four arms
 # differ by more than a factor of four in effective parameters).
 
+import warnings
+
 import tensorflow as tf
 
 from src.neurons.base_cell import BaseCell
-from src.wirings import CorticalColumnCell, CorticalColumnV2Cell, NCPWiring
+from src.wirings import (CorticalColumnCell, CorticalColumnV2Cell, NCPWiring,
+                         PARTITIONS, COUPLINGS, READOUTS, multi_column_head)
 from src.wirings.cncp import DEFAULT_LAMINA_UNITS
 from src.wirings.ncp import CFC_NCP_CELLS, ncp_cell_kwargs
 
@@ -29,9 +32,20 @@ from src.wirings.ncp import CFC_NCP_CELLS, ncp_cell_kwargs
 # ncp:    one masked NCP cell (inter, command, motor), output = motor slice
 # cncp:   one composite cortical-column cell, output = L5ET
 # cncp2:  one four-node cNCP v2 column (width u = size), output = D
-WIRINGS = ("cncp", "ncp", "dense", "dense3", "cncp2")
+# cncp2_multi: K independent cNCP v2 columns (width u = size each), optional
+#         lateral coupling, readout over the column outputs (spec B.7, V4)
+WIRINGS = ("cncp", "ncp", "dense", "dense3", "cncp2", "cncp2_multi")
 # Wirings whose composite state holds one slot per graph node.
-COMPOSITE_WIRINGS = ("cncp", "cncp2")
+COMPOSITE_WIRINGS = ("cncp", "cncp2", "cncp2_multi")
+
+# Person Activity rows are one-hot(sensor tag, 4) ++ xyz (datasets.py), the
+# sensor structure of partition='region' (spec B.7).
+PA_SENSOR_TAGS = 4
+
+# cncp2_multi runner flags (--columns, --partition, --coupling, --readout):
+# unset flags take these defaults; readout follows the partition (concat under
+# region, mean under same, spec B.7).
+MULTI_COLUMN_DEFAULTS = dict(columns=2, partition="same", coupling="lateral")
 
 # cNCP lamina widths are scaled from DEFAULT_LAMINA_UNITS (44 units at the
 # reference size), so the proportions between the nodes are fixed and only the
@@ -125,6 +139,48 @@ def effective_backbone_layers(wiring, cell, cell_kwargs):
 def backbone_suffix(backbone_layers):
     """Result-filename suffix: '' when unset, '_bb{N}' otherwise."""
     return "" if backbone_layers is None else f"_bb{backbone_layers}"
+def add_multi_column_args(parser):
+    """The cncp2_multi flags of the LV and PA runners (default None = unset)."""
+    parser.add_argument("--columns", type=int, default=None,
+                        help="cncp2_multi: number of independent columns K "
+                             f"(default {MULTI_COLUMN_DEFAULTS['columns']})")
+    parser.add_argument("--partition", default=None, choices=PARTITIONS,
+                        help="cncp2_multi: input routing (default same)")
+    parser.add_argument("--coupling", default=None, choices=COUPLINGS,
+                        help="cncp2_multi: inter-column coupling "
+                             "(default lateral, density 0.25)")
+    parser.add_argument("--readout", default=None, choices=READOUTS,
+                        help="cncp2_multi: readout over the column outputs "
+                             "(default concat under region, mean under same)")
+
+
+def multi_column_config(args):
+    """Resolved cncp2_multi config for the builder and the result JSON, or {}
+    for any other wiring (set cncp2_multi flags are then ignored with a
+    warning)."""
+    names = ("columns", "partition", "coupling", "readout")
+    if args.wiring != "cncp2_multi":
+        given = [n for n in names if getattr(args, n) is not None]
+        if given:
+            warnings.warn(f"--{', --'.join(given)} only apply to cncp2_multi; "
+                          f"ignored for wiring {args.wiring!r}", stacklevel=2)
+        return {}
+    cfg = {n: getattr(args, n) for n in names}
+    for n, v in MULTI_COLUMN_DEFAULTS.items():
+        if cfg[n] is None:
+            cfg[n] = v
+    if cfg["readout"] is None:
+        cfg["readout"] = "concat" if cfg["partition"] == "region" else "mean"
+    return cfg
+
+
+def multi_column_suffix(cfg):
+    """Result-filename suffix: '' for other wirings,
+    '_K{K}_{partition}_{coupling}_{readout}' for cncp2_multi."""
+    if not cfg:
+        return ""
+    return (f"_K{cfg['columns']}_{cfg['partition']}_{cfg['coupling']}_"
+            f"{cfg['readout']}")
 
 
 def stacked_dense(cell_cls, size, features, time, n_layers=1, **cell_kwargs):
@@ -143,17 +199,19 @@ def stacked_dense(cell_cls, size, features, time, n_layers=1, **cell_kwargs):
 
 def build_person_activity_model(wiring, cell, size=64, seed=42,
                                 num_classes=7, feature_size=7, seq_len=32,
-                                lr=1e-3, timescale_prior=None, **cell_kwargs):
+                                lr=1e-3, timescale_prior=None, columns=2,
+                                partition="same", coupling="lateral",
+                                readout="mean", **cell_kwargs):
     """Build and compile a person-activity model for one (wiring, cell).
 
     Args:
-        wiring:       'cncp', 'ncp', 'dense', 'dense3' or 'cncp2'.
+        wiring:       'cncp', 'ncp', 'dense', 'dense3', 'cncp2' or 'cncp2_multi'.
         cell:         _CELL_REGISTRY key (e.g. 'cfc_lrc', 'gru', 'lstm') or
                       BaseCell subclass; cncp takes single-state cells only.
         size:         the arm's width knob. dense/dense3: RNN units per layer;
                       ncp: inter=size, command=motor=size//2; cncp: lamina
                       widths scaled by size/16 (see scaled_lamina_units);
-                      cncp2: column width u = size.
+                      cncp2 / cncp2_multi: column width u = size.
                       Derive it per arm from the parameter budget
                       (src.wirings.size_for_budget).
         seed:         seeds tf/numpy/python RNGs (weight init) and the
@@ -163,6 +221,8 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
         seq_len:      timesteps per sequence.
         lr:           RMSprop learning rate.
         timescale_prior: optional per-lamina timescale prior (cncp only).
+        columns, partition, coupling, readout: cncp2_multi only (spec B.7);
+                      partition='region' uses the four sensor tags.
         **cell_kwargs: forwarded to every cell constructor.
 
     Returns:
@@ -183,7 +243,14 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
     features = tf.keras.Input(shape=(seq_len, feature_size), name="features")
     time = tf.keras.Input(shape=(seq_len, 1), name="time")
 
-    if wiring == "cncp":
+    logits = None
+    if wiring == "cncp2_multi":
+        logits = multi_column_head(
+            (features, time), num_classes, "logits", columns=columns,
+            cell_cls=cell_cls, units=size, seed=seed, partition=partition,
+            coupling=coupling, readout=readout, region_tags=PA_SENSOR_TAGS,
+            **cell_kwargs)
+    elif wiring == "cncp":
         # One composite RNN cell holding the whole sparse cNCP graph; it
         # consumes (features, time) directly, so every sub-cell integrates
         # the true elapsed time at every step.
@@ -214,7 +281,8 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
     # Shared per-timestep logits head. A plain Dense on a (B, T, units)
     # tensor applies to the last axis, i.e. it is equivalent to
     # TimeDistributed(Dense(num_classes)) for a single layer.
-    logits = tf.keras.layers.Dense(num_classes, name="logits")(h)
+    if logits is None:
+        logits = tf.keras.layers.Dense(num_classes, name="logits")(h)
 
     model = tf.keras.Model(inputs=[features, time], outputs=logits)
     model.compile(
