@@ -357,5 +357,5 @@ Codex reproduced the realised counts for seed 0 exactly (LV K = 2 u = 7: 3639 no
 **Consequences:**
 - Campaign configs set `LV_BACKBONE=1`, `PA_BACKBONE=1`, `CO_BACKBONE=1`; result files carry the `_bb1` suffix; budgets are re-matched per arm by `size_for_budget` with the override applied (realised counts in section 1).
 - H-c (NCP/cNCP vs dense3) is read on row bb1; the bb0 package results (cncp2 bb0 on Person Activity, 1k budget scan) are reported as a secondary stability analysis, not as the main comparison.
-- The thesis text (chapter 4, NCP and cNCP sub-cell convention) is updated to state the backbone and the reason; the vault note `Thesis/benchmark-findings` (section 9) records the observations and the decision.
+- The thesis text (chapter 4, NCP and cNCP sub-cell convention) is updated to state the backbone and the reason; the vault note `Thesis/benchmark-findings` (section 11) records the observations and the decision.
 - V1 committee (H-d) and the UC-C rows are re-run with backbone 1 only if H-d stays in scope (Q1 of the advisor session).
