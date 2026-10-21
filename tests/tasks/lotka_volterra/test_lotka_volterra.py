@@ -64,7 +64,7 @@ def test_dataset_deterministic():
 
 # --- model build + forward pass ---
 
-@pytest.mark.parametrize("wiring", ["cncp", "ncp", "dense", "dense3"])
+@pytest.mark.parametrize("wiring", ["cncp", "ncp", "dense", "dense3", "cncp2"])
 @pytest.mark.parametrize("cell", ["cfc_lrc", "gru"])
 def test_build_and_forward_shapes(wiring, cell):
     model = build_lotka_volterra_model(wiring, cell, size=16, seed=0)
@@ -110,13 +110,13 @@ def test_arms_budget_matched_on_effective_params():
         return lambda size: build_lotka_volterra_model(
             wiring, "cfc_lrc", size=size, seed=0)
     counts = {w: size_for_budget(build(w), 4000, range(2, 129))[1]
-              for w in ("dense", "dense3", "ncp", "cncp")}
+              for w in ("dense", "dense3", "ncp", "cncp", "cncp2")}
     lo, hi = min(counts.values()), max(counts.values())
     assert hi / lo < 1.5, f"budget-matched effective counts {counts}"
 
 
 def test_multi_state_cells_rejected_for_the_composite_wirings():
-    for wiring in ("cncp", "tbt_cncp_concat"):
+    for wiring in ("cncp", "cncp2", "tbt_cncp_concat"):
         with pytest.raises(ValueError, match="single-state"):
             build_lotka_volterra_model(wiring, "lstm", size=16, seed=0)
 
@@ -172,7 +172,7 @@ def test_duffing_system_loads():
 
 
 def test_lv_wirings_membership():
-    assert {"dense", "ncp", "cncp"}.issubset(LV_WIRINGS)
+    assert {"dense", "ncp", "cncp", "cncp2"}.issubset(LV_WIRINGS)
     assert set(TBT_MODES).issubset(LV_WIRINGS)
 
 
