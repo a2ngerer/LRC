@@ -265,6 +265,14 @@ and V4 K = 4 (12 fits) and defers the median, K = 1 and view-average rows.
 - Any attribution to routing, coupling or weight sharing (UC-B, UC-C): the
   controls the spec requires for that are not built; the pilot reports package
   comparisons and feasibility.
+- The cncp2 relay is a convex mixture only for dt ≥ 0; the Person Activity
+  loader keeps negative gaps (12 in the raw file). All arms see the same dt,
+  so the comparison is fair, but the boundedness statement holds for dt ≥ 0
+  only (Codex code review, finding 6).
+- The unit-level R6 check reads the final state only; the cluster probe
+  (`--probe-stability`) takes the maximum over batch and time, which is the
+  gate quantity. The known cncp2 outlier (synthetic scale 10) is an `xfail`,
+  so a green suite is not an R6 acceptance; the canary is.
 
 ## 8. Codex review of revision 1 and the responses
 
@@ -283,3 +291,22 @@ read-only, run from the `benchmarks` checkout). Verdict: release with changes.
 | 8 | launchers cannot express the matrix; A40 vs A100; PA walltime | matrix expressed as per-configuration launches with `LV_/PA_/CO_EXTRA`, `*_BACKBONE`, `*_PARAM_BUDGET=0` + `--size`, `SBATCH_EXTRA` for walltime; the cluster is A40 (the review prompt said A100 in error) (section 3) |
 | 9 | cost table counted an undefined matrix | matrix fixed first, 188 fits recounted per block, committee canary at K = 4 and K = 16, wall-clock by waves (section 5) |
 | 10 (minor) | budget tolerance and "sensor" wording | realised `params_effective` everywhere, "≈ matched" above 5 %; UC-C renamed feature-channel dropout with realised 0/1/2/3 of 7 channels |
+
+## 9. Codex code review of the merged branches and the responses
+
+Review file: scratchpad `codex-code-review.md` (gpt-6-astra, high, read-only on
+`int/pilot-2026-10-21` at 501e51d). Verdict: fix first. Spec conformance of
+cncp2 (B.3 equations, R2 init, parameter counting, committee S slot, probe
+semantics, backbone pass-through, ssh quoting) was confirmed.
+
+| # | Finding (short) | Response |
+|---|---|---|
+| 1 | dataset symlink not copied to the cluster | rsync `--copy-links` (21 MB dataset lands as a real folder) |
+| 2 | `CO_PARAM_BUDGET=0` still passed `--param-budget` | same conditional `budget_flag` as LV/PA |
+| 3 | failed fits exit 0 through `echo` | `run_one` returns the runner's status; each job counts result files against the matrix and exits 1 if any is missing (no offline failure simulation; the count check is the regression) |
+| 4 | collision check after the code sync, not atomic | run folder reserved with a plain `mkdir` before `run_rsync` |
+| 5 | PA job lists the old result path | lists `$OUTDIR`; smoke-test regex now catches the old paths |
+| 6 | relay boundedness needs dt ≥ 0, PA has negative gaps | documented in section 7; a shared dt treatment for all arms is a separate issue |
+| 7 | R6 unit test reads the final state only, outlier is xfail | documented in section 7; the gate is the cluster probe (max over time) |
+| 8 | test gaps: GPU 128 steps, cncp2 bb1 budget, probe on/off equality, cncp2 committee | covered by the canaries (GPU, 128 steps, bb1 budget) and the #9 report (identical val-loss curve with and without the probe); cncp2 committee tests are part of #10 |
+| 9 | LV plotter omits dense3 and cncp2 | added to `WIRING_ORDER` (one launch per backbone depth, so no mixing) |
