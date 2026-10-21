@@ -70,21 +70,25 @@ SYSTEM="${LV_SYSTEM:-periodic_predator_prey}"
 SEQLEN="${LV_SEQLEN:-128}"
 OUTDIR="$RUN_DIR/results"
 LR="${LV_LR:-1e-3}"
+# CfC-family backbone depth for every arm (V2s control: LV_BACKBONE=1); empty = flag
+# not passed, per-wiring defaults unchanged; results get a _bb<N> filename suffix.
+BACKBONE="${LV_BACKBONE:-}"
 
 
 run_one() {
     local cell="$1" wiring="$2" seed="$3"
-    local wandb_flag=""
+    local wandb_flag="" bb_flag=""
+    [[ -n "${BACKBONE:-}" ]] && bb_flag="--backbone-layers ${BACKBONE}"
     [[ "${USE_WANDB:-0}" == "1" ]] && wandb_flag="--wandb"
     echo "[start] ${cell}_${wiring}_seed${seed} $(date -u +%FT%TZ)"
     uv run python experiments/run_lotka_volterra_benchmark.py \
         --wiring "$wiring" --cell "$cell" --seed "$seed" --epochs "$EPOCHS" \
         --system "$SYSTEM" --seq-len "$SEQLEN" --outdir "$OUTDIR" \
-        --param-budget "$PARAM_BUDGET" --lr "$LR" $wandb_flag
+        --param-budget "$PARAM_BUDGET" --lr "$LR" $bb_flag $wandb_flag
     echo "[done ] ${cell}_${wiring}_seed${seed} (exit $?)"
 }
 export -f run_one
-export EPOCHS SYSTEM SEQLEN OUTDIR USE_WANDB PARAM_BUDGET LR
+export EPOCHS SYSTEM SEQLEN OUTDIR USE_WANDB PARAM_BUDGET LR BACKBONE
 
 JOBS=""
 for cell in $CELLS; do

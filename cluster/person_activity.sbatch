@@ -63,6 +63,9 @@ DATA_PATH="$PWD/data/person/ConfLongDemo_JSI.txt"
 
 OUTDIR="$RUN_DIR/results"
 LR="${PA_LR:-1e-3}"
+# CfC-family backbone depth for every arm (V2s control: PA_BACKBONE=1); empty = flag
+# not passed, per-wiring defaults unchanged; results get a _bb<N> filename suffix.
+BACKBONE="${PA_BACKBONE:-}"
 
 if [[ ! -f "$DATA_PATH" ]]; then
     echo "FATAL: dataset not found at $DATA_PATH (rsync must include data/)." >&2
@@ -71,17 +74,18 @@ fi
 
 run_one() {
     local cell="$1" wiring="$2" seed="$3"
-    local wandb_flag=""
+    local wandb_flag="" bb_flag=""
+    [[ -n "${BACKBONE:-}" ]] && bb_flag="--backbone-layers ${BACKBONE}"
     [[ "${USE_WANDB:-0}" == "1" ]] && wandb_flag="--wandb"
     echo "[start] ${cell}_${wiring}_seed${seed} $(date -u +%FT%TZ)"
     uv run python experiments/run_person_activity_benchmark.py \
         --wiring "$wiring" --cell "$cell" --seed "$seed" --epochs "$EPOCHS" \
         --param-budget "$PARAM_BUDGET" --data-path "$DATA_PATH" \
-        --outdir "$OUTDIR" --lr "$LR" $wandb_flag
+        --outdir "$OUTDIR" --lr "$LR" $bb_flag $wandb_flag
     echo "[done ] ${cell}_${wiring}_seed${seed} (exit $?)"
 }
 export -f run_one
-export EPOCHS DATA_PATH USE_WANDB PARAM_BUDGET OUTDIR LR
+export EPOCHS DATA_PATH USE_WANDB PARAM_BUDGET OUTDIR LR BACKBONE
 
 JOBS=""
 for cell in $CELLS; do

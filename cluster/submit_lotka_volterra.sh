@@ -19,7 +19,7 @@ run_parse_args "$@"
 # Forward any LV_* matrix overrides through the ssh environment to the sbatch.
 LV_ENV=""
 for v in LV_EPOCHS LV_CELLS LV_WIRINGS LV_SEEDS LV_MAXPAR LV_PLOT_CELL \
-         LV_SYSTEM LV_SEQLEN LV_WANDB LV_PARAM_BUDGET LV_LR; do
+         LV_SYSTEM LV_SEQLEN LV_WANDB LV_PARAM_BUDGET LV_LR LV_BACKBONE; do
     if [[ -n "${!v:-}" ]]; then LV_ENV+="${v}='${!v}' "; fi
 done
 RUN_ENV="${LV_ENV:-<defaults>}"

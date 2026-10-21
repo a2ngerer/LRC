@@ -21,6 +21,7 @@ import tensorflow as tf
 from src.neurons.base_cell import BaseCell
 from src.wirings import CorticalColumnCell, NCPWiring
 from src.wirings.cncp import DEFAULT_LAMINA_UNITS
+from src.wirings.ncp import CFC_NCP_CELLS, ncp_cell_kwargs
 
 # dense:  one recurrent layer (reference)
 # dense3: three stacked recurrent layers, elapsed time fed to every layer -- the
@@ -84,6 +85,43 @@ def _reject_multi_state(cell_cls, cell_kwargs):
             f"(state_size == units); {cell_cls.__name__} has state_size "
             f"{probe.state_size}. Multi-state cells (lstm, mm_*) do not fit "
             "the composite state; run them on dense, dense3 or ncp.")
+
+
+def backbone_override(cell, backbone_layers):
+    """cell_kwargs entry for the runners' --backbone-layers flag.
+
+    ``{}`` when the flag is unset (every default unchanged) or when the cell has
+    no backbone (gru, lstm, ltc, lrc, ... would reject the kwarg). Otherwise
+    ``{'backbone_layers': N}``: ncp/cncp honour it through ``ncp_cell_kwargs``
+    (explicit value wins over the family default 0), dense/dense3/committee
+    cells override the CfC constructor default of 1.
+    """
+    if backbone_layers is None:
+        return {}
+    if backbone_layers < 0:
+        raise ValueError(f"backbone_layers must be >= 0, got {backbone_layers}")
+    if not issubclass(_resolve_cell_cls(cell), CFC_NCP_CELLS):
+        return {}
+    return {"backbone_layers": int(backbone_layers)}
+
+
+def effective_backbone_layers(wiring, cell, cell_kwargs):
+    """Backbone depth each sub-cell of this arm actually gets (None: no backbone).
+
+    dense/dense3 take the cell constructor default (1) unless overridden; every
+    other wiring goes through ncp_cell_kwargs (family default 0, explicit wins).
+    """
+    cell_cls = _resolve_cell_cls(cell)
+    if not issubclass(cell_cls, CFC_NCP_CELLS):
+        return None
+    if wiring in ("dense", "dense3"):
+        return cell_kwargs.get("backbone_layers", 1)
+    return ncp_cell_kwargs(cell_cls, cell_kwargs)["backbone_layers"]
+
+
+def backbone_suffix(backbone_layers):
+    """Result-filename suffix: '' when unset, '_bb{N}' otherwise."""
+    return "" if backbone_layers is None else f"_bb{backbone_layers}"
 
 
 def stacked_dense(cell_cls, size, features, time, n_layers=1, **cell_kwargs):

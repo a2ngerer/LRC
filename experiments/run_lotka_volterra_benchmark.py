@@ -37,6 +37,8 @@ DEFAULT_SIZE = 64
 BUDGET_TOLERANCE = 0.05
 from src.tasks.lotka_volterra.datasets import load_lotka_volterra, reference_frame
 from src.tasks.lotka_volterra.model import build_lotka_volterra_model, LV_WIRINGS
+from src.tasks.person_activity.model import (
+    backbone_override, backbone_suffix, effective_backbone_layers)
 from src.tasks.active_sensing.model import TBT_MODES
 from src.benchmark.tracking import keras_callbacks, track
 
@@ -73,6 +75,12 @@ def closed_loop_rollout(model, data, needs_loc: bool = False) -> np.ndarray:
     return np.stack(history, axis=1)                       # (N, seq_len+1, 2)
 
 
+def result_filename(args):
+    """Result JSON name; a set --backbone-layers adds `_bb{N}` (V2 vs V2s)."""
+    return (f"{args.cell}_{args.wiring}_seed{args.seed}"
+            f"{backbone_suffix(args.backbone_layers)}.json")
+
+
 def _round(a, nd=5):
     return np.round(np.asarray(a, dtype=np.float64), nd).tolist()
 
@@ -99,6 +107,10 @@ def main():
     ap.add_argument("--outdir", default="results/lotka_volterra")
     ap.add_argument("--elastance-type", default="asymmetric",
                     help="forwarded to LRC-family cells (RQ2/RQ5 mechanism)")
+    ap.add_argument("--backbone-layers", type=int, default=None,
+                    help="CfC-family backbone depth for EVERY wiring (overrides "
+                         "the dense default 1 and the ncp/cncp family default 0); "
+                         "default: unchanged per-wiring behaviour")
     ap.add_argument("--verbose", type=int, default=0)
     ap.add_argument("--wandb", action="store_true",
                     help="log this run to Weights & Biases (needs the "
@@ -110,6 +122,8 @@ def main():
     cell_kwargs = {}
     if args.cell in ("cfc_lrc", "lrc", "lrc_ar"):
         cell_kwargs["elastance_type"] = args.elastance_type
+    cell_kwargs.update(backbone_override(args.cell, args.backbone_layers))
+    bb_effective = effective_backbone_layers(args.wiring, args.cell, cell_kwargs)
 
     needs_loc = args.wiring in TBT_MODES
     data = load_lotka_volterra(n_trajectories=args.n_trajectories,
@@ -138,7 +152,8 @@ def main():
     params = pc['params_effective']
     print(f"{args.wiring}/{args.cell} seed {args.seed}: size {args.size}, "
           f"{params} effective params (raw {pc['params_raw']}, "
-          f"needs_loc={needs_loc})")
+          f"needs_loc={needs_loc}, backbone_layers requested "
+          f"{args.backbone_layers} effective {bb_effective})")
 
     # tbt_cncp* wirings take a 3rd input (the reference-frame code); the topology
     # arms (dense/ncp/cncp) take only (state, time).
@@ -152,9 +167,11 @@ def main():
         "cell": args.cell, "wiring": args.wiring, "seed": args.seed,
         "size": args.size, "param_budget": args.param_budget,
         "budget_deviation": budget_dev, "lr": args.lr,
-        "batch_size": args.batch_size, "epochs": args.epochs, **pc,
+        "batch_size": args.batch_size, "epochs": args.epochs,
+        "backbone_layers": args.backbone_layers, **pc,
     }
-    tag = f"{args.cell}_{args.wiring}_seed{args.seed}"
+    tag = (f"{args.cell}_{args.wiring}_seed{args.seed}"
+           f"{backbone_suffix(args.backbone_layers)}")
     with track(args.wandb, group=args.cell, job_type=args.wiring, name=tag,
                config=wandb_config) as run_:
         hist = model.fit(
@@ -193,6 +210,8 @@ def main():
         "system": args.system,
         "size": args.size, "param_budget": args.param_budget,
         "budget_deviation": budget_dev, "epochs": args.epochs, "lr": args.lr,
+        "backbone_layers": args.backbone_layers,
+        "backbone_layers_effective": bb_effective,
         **pc, "dt": data.dt, "seq_len": data.seq_len,
         "n_test": int(data.test_x.shape[0]),
         "teacher_forced_mse": float(tf_mse), "teacher_forced_mae": float(tf_mae),
@@ -204,8 +223,7 @@ def main():
         "teacher_forced_traj": _round(tf_traj),
         "closed_loop_traj": _round(cl_traj),
     }
-    fname = f"{args.cell}_{args.wiring}_seed{args.seed}.json"
-    path = os.path.join(args.outdir, fname)
+    path = os.path.join(args.outdir, result_filename(args))
     with open(path, "w") as f:
         json.dump(record, f)
     print(f"wrote {path}")

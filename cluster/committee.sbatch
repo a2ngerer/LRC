@@ -59,6 +59,10 @@ MAXPAR="${CO_MAXPAR:-4}"
 
 OUTDIR="$RUN_DIR/results"
 EXTRA="${CO_EXTRA:-}"   # extra runner flags, e.g. "--vote-lambda 0 --consensus median"
+# CfC-family backbone depth for every arm (V2s control: CO_BACKBONE=1); empty = flag
+# not passed; results get a _bb<N> filename suffix.
+BACKBONE="${CO_BACKBONE:-}"
+[[ -n "${BACKBONE}" ]] && EXTRA="--backbone-layers ${BACKBONE} ${EXTRA}"
 
 run_one() {
     local cell="$1" wiring="$2" K="$3" seed="$4"
