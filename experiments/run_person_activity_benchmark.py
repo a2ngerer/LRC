@@ -36,7 +36,8 @@ import numpy as np
 # Allow running as a plain script (``src`` is the installed package).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.tasks.person_activity.model import WIRINGS  # noqa: E402
+from src.tasks.person_activity.model import (  # noqa: E402
+    WIRINGS, add_multi_column_args, multi_column_config, multi_column_suffix)
 
 DEFAULT_SIZE = 64
 BUDGET_TOLERANCE = 0.05
@@ -50,6 +51,13 @@ CELL_KWARGS = {
     "lrc_pm": dict(elastance_type="asymmetric"),
     "cfc_lrc": dict(elastance_type="asymmetric"),
 }
+
+
+def result_tag(args, multi):
+    """Run tag (log, wandb name, result JSON stem); cncp2_multi adds
+    `_K{K}_{partition}_{coupling}_{readout}`."""
+    return (f"{args.cell}_{args.wiring}_seed{args.seed}"
+            f"{multi_column_suffix(multi)}")
 
 
 def run(args):
@@ -69,12 +77,13 @@ def run(args):
     majority_baseline = float(counts.max() / counts.sum())
 
     cell_kwargs = dict(CELL_KWARGS.get(args.cell, {}))
+    multi = multi_column_config(args)
 
     def build(size):
         return build_person_activity_model(
             args.wiring, args.cell, size=size, seed=args.seed,
             num_classes=data.num_classes, feature_size=data.feature_size,
-            seq_len=data.seq_len, lr=args.lr, **cell_kwargs)
+            seq_len=data.seq_len, lr=args.lr, **multi, **cell_kwargs)
 
     # Capacity: either a fixed width knob or the knob that lands closest to the
     # effective parameter budget for THIS arm.
@@ -90,7 +99,7 @@ def run(args):
     pc = param_counts(model)
     params = pc['params_effective']
 
-    tag = f"{args.cell}_{args.wiring}_seed{args.seed}"
+    tag = result_tag(args, multi)
     print(f"=== TRAIN {tag} size={args.size} params={params} "
           f"(raw {pc['params_raw']}) epochs={args.epochs} lr={args.lr} "
           f"batch={args.batch_size} ===", flush=True)
@@ -107,6 +116,7 @@ def run(args):
         "batch_size": args.batch_size,
         "epochs": args.epochs,
         **pc,
+        **multi,
     }
 
     t0 = time.time()
@@ -139,6 +149,7 @@ def run(args):
         "lr": args.lr,
         "batch_size": args.batch_size,
         **pc,
+        **multi,
         "cell_kwargs": cell_kwargs,
         "train_sequences": int(data.train_x.shape[0]),
         "test_sequences": int(data.test_x.shape[0]),
@@ -189,6 +200,7 @@ def main():
     p.add_argument("--wandb", action="store_true",
                    help="log this run to Weights & Biases (needs the "
                         "'tracking' extra; use WANDB_MODE=offline on cluster)")
+    add_multi_column_args(p)
     args = p.parse_args()
     if args.size is None and args.param_budget is None:
         args.size = DEFAULT_SIZE

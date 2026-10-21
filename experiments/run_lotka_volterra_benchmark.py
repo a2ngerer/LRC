@@ -32,13 +32,15 @@ import numpy as np
 import tensorflow as tf
 
 from src.wirings import (CorticalColumnCell, CorticalColumnV2Cell,
-                         NODE_ORDER, NODE_ORDER_V2, param_counts,
-                         size_for_budget)
+                         MultiColumnV2Cell, NODE_ORDER, NODE_ORDER_V2,
+                         param_counts, size_for_budget)
 
 DEFAULT_SIZE = 64
 BUDGET_TOLERANCE = 0.05
 from src.tasks.lotka_volterra.datasets import load_lotka_volterra, reference_frame
 from src.tasks.lotka_volterra.model import build_lotka_volterra_model, LV_WIRINGS
+from src.tasks.person_activity.model import (
+    add_multi_column_args, multi_column_config, multi_column_suffix)
 from src.tasks.active_sensing.model import TBT_MODES
 from src.benchmark.tracking import keras_callbacks, track
 
@@ -109,6 +111,8 @@ class _StateTap(tf.keras.layers.AbstractRNNCell):
 
 
 def _state_names(cell):
+    if isinstance(cell, MultiColumnV2Cell):
+        return [f"{node}{k}" for k in range(cell.K) for node in NODE_ORDER_V2]
     if isinstance(cell, CorticalColumnV2Cell):
         return list(NODE_ORDER_V2)
     if isinstance(cell, CorticalColumnCell):          # also tbt_cncp*
@@ -168,6 +172,12 @@ class StabilityProbe(tf.keras.callbacks.Callback):
                 values + [self.result["tf_loss_epoch1"]])))
 
 
+def result_filename(args, multi):
+    """Result JSON name; cncp2_multi adds `_K{K}_{partition}_{coupling}_{readout}`."""
+    return (f"{args.cell}_{args.wiring}_seed{args.seed}"
+            f"{multi_column_suffix(multi)}.json")
+
+
 def _round(a, nd=5):
     return np.round(np.asarray(a, dtype=np.float64), nd).tolist()
 
@@ -199,6 +209,7 @@ def main():
                     help="record per-state norms at init, after one step and "
                          "after epoch 1, plus the epoch-1 train loss "
                          "(result key 'stability', spec 2026-10-21 R6)")
+    add_multi_column_args(ap)
     ap.add_argument("--wandb", action="store_true",
                     help="log this run to Weights & Biases (needs the "
                          "'tracking' extra; use WANDB_MODE=offline on cluster)")
@@ -209,6 +220,7 @@ def main():
     cell_kwargs = {}
     if args.cell in ("cfc_lrc", "lrc", "lrc_ar"):
         cell_kwargs["elastance_type"] = args.elastance_type
+    multi = multi_column_config(args)
 
     needs_loc = args.wiring in TBT_MODES
     data = load_lotka_volterra(n_trajectories=args.n_trajectories,
@@ -221,7 +233,7 @@ def main():
         return build_lotka_volterra_model(
             args.wiring, args.cell, size=size, seed=args.seed,
             feature_size=data.feature_size, loc_dim=data.loc_dim, lr=args.lr,
-            **cell_kwargs)
+            **multi, **cell_kwargs)
 
     # Capacity: a fixed width knob, or the knob closest to the effective
     # parameter budget for THIS arm.
@@ -251,7 +263,7 @@ def main():
         "cell": args.cell, "wiring": args.wiring, "seed": args.seed,
         "size": args.size, "param_budget": args.param_budget,
         "budget_deviation": budget_dev, "lr": args.lr,
-        "batch_size": args.batch_size, "epochs": args.epochs, **pc,
+        "batch_size": args.batch_size, "epochs": args.epochs, **pc, **multi,
     }
     tag = f"{args.cell}_{args.wiring}_seed{args.seed}"
     probe = None
@@ -297,7 +309,7 @@ def main():
         "system": args.system,
         "size": args.size, "param_budget": args.param_budget,
         "budget_deviation": budget_dev, "epochs": args.epochs, "lr": args.lr,
-        **pc, "dt": data.dt, "seq_len": data.seq_len,
+        **pc, **multi, "dt": data.dt, "seq_len": data.seq_len,
         "n_test": int(data.test_x.shape[0]),
         "teacher_forced_mse": float(tf_mse), "teacher_forced_mae": float(tf_mae),
         "closed_loop_mse": cl_mse, "persistence_mse": persistence_mse,
@@ -310,8 +322,7 @@ def main():
     }
     if probe is not None:
         record["stability"] = probe.result
-    fname = f"{args.cell}_{args.wiring}_seed{args.seed}.json"
-    path = os.path.join(args.outdir, fname)
+    path = os.path.join(args.outdir, result_filename(args, multi))
     with open(path, "w") as f:
         json.dump(record, f)
     print(f"wrote {path}")

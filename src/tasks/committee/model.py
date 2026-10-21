@@ -19,6 +19,14 @@ is shared (src/wirings/committee.py::VotingMixin):
   wiring 'cncp2' -> MultiColumnV2VotingCell: K weight-shared four-node cNCP v2
                     columns (width u = size) voting on S, output = consensus
                     of the mixed S states (spec 2026-10-21 B.6 (iv)).
+  wiring 'cncp2_multi' -> MultiColumnV2Cell: K cNCP v2 columns with
+                    INDEPENDENT weights, column k on the k-th partial view,
+                    coupling none, readout = ColumnReadout over the column
+                    outputs: consensus 'mean' -> shared head on the mean of
+                    the d_k, 'median' -> per-column heads and the lower median
+                    of the K logit vectors (spec B.7). No state vote, so the
+                    vote_* arguments do not apply (a documented difference to
+                    the weight-shared arms).
   wiring 'dense' -> CommitteeVotingCell: K weight-shared plain cells voting on
                     their hidden state (or, with dense_vote_units, on a leading
                     subspace of it, which is read out as well -- the control that
@@ -33,14 +41,14 @@ in K.
 """
 import tensorflow as tf
 
-from src.wirings import MultiColumnV2VotingCell, NCPWiring
+from src.wirings import MultiColumnV2VotingCell, NCPWiring, multi_column_head
 from src.wirings.tbt_cncp import MultiColumnVotingCell
 from src.wirings.committee import CommitteeVotingCell
 from src.tasks.person_activity.model import (
     scaled_lamina_units, ncp_layer_sizes, _resolve_cell_cls,
     _reject_multi_state)
 
-COMMITTEE_WIRINGS = ("cncp", "ncp", "dense", "cncp2")
+COMMITTEE_WIRINGS = ("cncp", "ncp", "dense", "cncp2", "cncp2_multi")
 
 
 class ChannelDropout(tf.keras.layers.Layer):
@@ -104,8 +112,9 @@ def build_committee_model(wiring, n_columns, cell="cfc_lrc", size=64, seed=42,
     Args:
         wiring:       'cncp' (cortical columns, L2/3 vote), 'ncp' (NCP cell,
                       command-slice vote, motor readout), 'dense' (plain
-                      cells, hidden-state vote) or 'cncp2' (four-node
-                      columns, S vote).
+                      cells, hidden-state vote), 'cncp2' (four-node
+                      columns, S vote) or 'cncp2_multi' (independent
+                      four-node columns, no vote; consensus picks the readout).
         n_columns:    committee size K (K=1 -> single model, no voting).
         cell:         _CELL_REGISTRY key or BaseCell subclass; single-state only.
         size:         width knob. cncp: lamina widths scaled by size/16; ncp:
@@ -149,7 +158,15 @@ def build_committee_model(wiring, n_columns, cell="cfc_lrc", size=64, seed=42,
 
     vote = dict(vote_init=vote_init, vote_lambda=vote_lambda,
                 consensus=consensus)
-    if wiring == "cncp":
+    out = None
+    n_out = num_classes if task == "classification" else feature_size
+    head_name = "logits" if task == "classification" else "pred"
+    if wiring == "cncp2_multi":
+        out = multi_column_head(
+            (feat_in, time), n_out, head_name, columns=n_columns,
+            cell_cls=cell_cls, units=size, seed=seed, coupling="none",
+            readout=consensus, **cell_kwargs)
+    elif wiring == "cncp":
         # Cortical committee: location off -> a zeros (B,T,K,1) placeholder built
         # from the features so the tbt column's call signature is satisfied.
         loc = tf.keras.layers.Lambda(
@@ -185,12 +202,12 @@ def build_committee_model(wiring, n_columns, cell="cfc_lrc", size=64, seed=42,
             vote_slice=sub, readout_slice=sub, **vote, **cell_kwargs)
         h = tf.keras.layers.RNN(cellobj, return_sequences=True)((feat_in, time))
 
+    if out is None:
+        out = tf.keras.layers.Dense(n_out, name=head_name)(h)
     if task == "classification":
-        out = tf.keras.layers.Dense(num_classes, name="logits")(h)
         loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
         metrics = [tf.keras.metrics.SparseCategoricalAccuracy(name="acc")]
     else:
-        out = tf.keras.layers.Dense(feature_size, name="pred")(h)
         loss = tf.keras.losses.MeanSquaredError()
         metrics = [tf.keras.metrics.MeanSquaredError(name="mse")]
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import warnings
 
 import numpy as np
 
@@ -100,6 +101,10 @@ def main():
     args = ap.parse_args()
     if args.size is None and args.param_budget is None:
         args.size = DEFAULT_SIZE
+    if args.wiring == "cncp2_multi" and args.vote_lambda is not None:
+        # Independent columns read out by mean/median, no state vote.
+        warnings.warn("--vote-lambda does not apply to cncp2_multi; ignored")
+        args.vote_lambda = None
 
     cell_kwargs = {}
     if args.cell in ("cfc_lrc", "lrc", "lrc_ar"):
@@ -182,6 +187,8 @@ def main():
         "vote_lambda": args.vote_lambda, "consensus": args.consensus,
         "dense_vote_units": args.dense_vote_units,
         "view_average": bool(args.view_average), "model_columns": n_cols,
+        **({"coupling": "none", "readout": args.consensus}
+           if args.wiring == "cncp2_multi" else {}),
         "clean_accuracy": clean,
         "drop_fracs": levels, "drop_accs": [round(a, 4) for a in accs],
         "drop_stds": [round(s, 4) for s in stds], "drop_seeds": drop_seeds,
