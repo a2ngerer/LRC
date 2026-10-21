@@ -478,15 +478,15 @@ Independent review by OpenAI Codex, model `gpt-6-astra`, reasoning effort high, 
 
 > **[blocking] Die Canary-Diagnose ist plausibel, aber mit falschem `dt` und einer falschen Erklärung des Closed-loop-Ergebnisses begründet.**
 > 
->    [Entwurf:223](/Users/angeral/Repositories/master_thesis/code-benchmarks/docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:223) und Z. 225 nennen synthetische Initialisierungstests mit `dt=1/128`. Der [Canary:1](/Users/angeral/Repositories/master_thesis/cluster_archive/2026-10-21/thesis-person/results/_canary/cfc_lrc_cncp_seed0.json:1) verwendet **`dt=0.078125=10/128`**. Die initiale Relay-Updatefraktion beträgt damit etwa **0,0527 statt 0,0054**. Das ist für die untersuchte Rückkopplung relevant.
+>    [Entwurf:223](docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:223) und Z. 225 nennen synthetische Initialisierungstests mit `dt=1/128`. Der [Canary:1](<thesis repo>/cluster_archive/2026-10-21/thesis-person/results/_canary/cfc_lrc_cncp_seed0.json:1) verwendet **`dt=0.078125=10/128`**. Die initiale Relay-Updatefraktion beträgt damit etwa **0,0527 statt 0,0054**. Das ist für die untersuchte Rückkopplung relevant.
 > 
 >    Weitere Korrekturen:
 > 
->    - Die Trajektorienwerte bis \(1{,}06·10^{11}\) sind **denormalisiert**; nur die MSE ist normalisiert. Das steht ausdrücklich im [Runner:182](/Users/angeral/Repositories/master_thesis/code-benchmarks/experiments/run_lotka_volterra_benchmark.py:182).
->    - Closed-loop verwendet weder Clipping noch eine Gewichtung früher Schritte. Der [Runner:174](/Users/angeral/Repositories/master_thesis/code-benchmarks/experiments/run_lotka_volterra_benchmark.py:174) mittelt über den gesamten Horizont. Beim cNCP beträgt der mittlere Fehler der ersten Hälfte etwa **0,902**, der zweiten **2,933**, der letzte Schritt **11,457**.
+>    - Die Trajektorienwerte bis \(1{,}06·10^{11}\) sind **denormalisiert**; nur die MSE ist normalisiert. Das steht ausdrücklich im [Runner:182](experiments/run_lotka_volterra_benchmark.py:182).
+>    - Closed-loop verwendet weder Clipping noch eine Gewichtung früher Schritte. Der [Runner:174](experiments/run_lotka_volterra_benchmark.py:174) mittelt über den gesamten Horizont. Beim cNCP beträgt der mittlere Fehler der ersten Hälfte etwa **0,902**, der zweiten **2,933**, der letzte Schritt **11,457**.
 >    - Hoher Verlust nach Epoche 1 beweist keine Explosion **vor** dem ersten Optimizer-Schritt.
 > 
->    **Änderung:** Den tatsächlichen Canary vor Training, nach einem Update und nach einer Epoche instrumentieren: echte Inputs, echtes `dt`, identischer Builder, Zustandsnormen pro Knoten. Backbone, Gain und Rückkopplungen anschließend getrennt variieren. Gemeinsame Gewichte explizit übernehmen: Derselbe Seed reicht nicht, wenn entfernte Kanten die Reihenfolge der Zufallsinitialisierung verändern ([cncp.py:416](/Users/angeral/Repositories/master_thesis/code-benchmarks/src/wirings/cncp.py:416)).
+>    **Änderung:** Den tatsächlichen Canary vor Training, nach einem Update und nach einer Epoche instrumentieren: echte Inputs, echtes `dt`, identischer Builder, Zustandsnormen pro Knoten. Backbone, Gain und Rückkopplungen anschließend getrennt variieren. Gemeinsame Gewichte explizit übernehmen: Derselbe Seed reicht nicht, wenn entfernte Kanten die Reihenfolge der Zufallsinitialisierung verändern ([cncp.py:416](src/wirings/cncp.py:416)).
 
 **Response:** **FIXED, with one PUSHBACK.** FIXED: B.5 now states dt = 0.078125 (the scripts `init_stability.py` and `v2_prototype.py` used the canary value; "1/128" was a transcription error in the text, verified against the scripts). The 1e11 trajectory values are now marked as denormalised (`run_lotka_volterra_benchmark.py` line 182). The closed-loop explanation was replaced: the runner averages the whole horizon without clipping (lines 165 to 185), and the per-step closed-loop error of the canary cNCP grows 0.90 (first half), 2.93 (second half), 11.46 (last step), recomputed from the canary JSON. The epoch-1 loss is no longer used as evidence of divergence before the first optimiser step. The instrumented reproduction (real inputs, real dt, identical builder, per-node norms before training, after one update, after one epoch; one factor at a time; weights copied explicitly because `cncp.py` lines 416 to 424 build `SparseLinear` layers only for active edges, so removing an edge changes the initialisation order) is written into B.5 and is step 1 of the sequencing. PUSHBACK on one clause: the growth *at initialisation* in two of three seeds is a measured fact at the canary dt (B.5 table), independent of the epoch-1 argument; its stated limitation is synthetic N(0,1) input and a cell built outside the task builder, which R6(a) and the reproduction close.
 
@@ -494,9 +494,9 @@ Independent review by OpenAI Codex, model `gpt-6-astra`, reasoning effort high, 
 
 > **[blocking] R1–R5 garantieren keine Trainingsstabilität; „lineare Subzellen“ ist mathematisch unzutreffend.**
 > 
->    Die Kandidaten `ff1` und `ff2` sind affine, unbeschränkte Maps. Die gesamte Zelle ist wegen zustandsabhängiger Sigmoid- und Elastanz-Gates **nichtlinear** ([cfc_lrc_cell.py:164](/Users/angeral/Repositories/master_thesis/code-benchmarks/src/neurons/cfc_lrc_cell.py:164)). „Keine squashing nonlinearity anywhere“ in [Entwurf:241](/Users/angeral/Repositories/master_thesis/code-benchmarks/docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:241) sollte heißen: *keine beschränkende Aktivierung auf den Zustandskandidaten*.
+>    Die Kandidaten `ff1` und `ff2` sind affine, unbeschränkte Maps. Die gesamte Zelle ist wegen zustandsabhängiger Sigmoid- und Elastanz-Gates **nichtlinear** ([cfc_lrc_cell.py:164](src/neurons/cfc_lrc_cell.py:164)). „Keine squashing nonlinearity anywhere“ in [Entwurf:241](docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:241) sollte heißen: *keine beschränkende Aktivierung auf den Zustandskandidaten*.
 > 
->    R1 begrenzt externe Rückkopplungsnachrichten. Die interne Rekurrenz bleibt unbeschränkt. Einfaches Gegenbeispiel: `ff1=ff2=1.1*h` ergibt unabhängig vom Gate `h_next=1.1*h`. Raw-state carry ändert daran nichts. Auch die Analogie zum Dense-Arm ist falsch: Dessen Backbone begrenzt die Eingänge der Kandidatenköpfe ([cfc_lrc_cell.py:109](/Users/angeral/Repositories/master_thesis/code-benchmarks/src/neurons/cfc_lrc_cell.py:109)).
+>    R1 begrenzt externe Rückkopplungsnachrichten. Die interne Rekurrenz bleibt unbeschränkt. Einfaches Gegenbeispiel: `ff1=ff2=1.1*h` ergibt unabhängig vom Gate `h_next=1.1*h`. Raw-state carry ändert daran nichts. Auch die Analogie zum Dense-Arm ist falsch: Dessen Backbone begrenzt die Eingänge der Kandidatenköpfe ([cfc_lrc_cell.py:109](src/neurons/cfc_lrc_cell.py:109)).
 > 
 >    Ein Spektralradius unter 1 an einem Nullzustand ist keine globale Stabilitätsaussage für dieses inputabhängige System. Ein Verhältnis zur zufällig kleinen Step-1-Norm ist ebenfalls kein zuverlässiges Akzeptanzkriterium.
 > 
@@ -510,7 +510,7 @@ Independent review by OpenAI Codex, model `gpt-6-astra`, reasoning effort high, 
 > 
 >    V3 verändert gleichzeitig Knotenzahl, Breitenverteilung, Feedforward-Tiefe, Rückkopplungsaktivierung, Initialisierung, Gain-Zentrierung, State-Carry und Relay-Dynamik. Ein Sieg über einen explodierenden V2 wäre kaum Evidenz für die Vier-Knoten-Abstraktion.
 > 
->    Hinzu kommt eine bestehende Konfundierung: cNCP/NCP verwenden standardmäßig `backbone_layers=0`, Dense/Dense3 standardmäßig `1` ([ncp.py:15](/Users/angeral/Repositories/master_thesis/code-benchmarks/src/wirings/ncp.py:15), [person_activity/model.py:98](/Users/angeral/Repositories/master_thesis/code-benchmarks/src/tasks/person_activity/model.py:98), [lotka_volterra/model.py:106](/Users/angeral/Repositories/master_thesis/code-benchmarks/src/tasks/lotka_volterra/model.py:106)). Gleiches `cell`-Label bedeutet hier unterschiedliche Zustandsabbildungen.
+>    Hinzu kommt eine bestehende Konfundierung: cNCP/NCP verwenden standardmäßig `backbone_layers=0`, Dense/Dense3 standardmäßig `1` ([ncp.py:15](src/wirings/ncp.py:15), [person_activity/model.py:98](src/tasks/person_activity/model.py:98), [lotka_volterra/model.py:106](src/tasks/lotka_volterra/model.py:106)). Gleiches `cell`-Label bedeutet hier unterschiedliche Zustandsabbildungen.
 > 
 >    **Änderung:** Zuerst einen stabilisierten Acht-Knoten-cNCP als Kontrollarm festlegen. Für einen reinen Wiring-Vergleich die Backbone-Konfiguration angleichen und Budgets neu bestimmen. Alternativ ausdrücklich vollständige Architekturpakete vergleichen und entsprechend eng interpretieren.
 
@@ -528,7 +528,7 @@ Independent review by OpenAI Codex, model `gpt-6-astra`, reasoning effort high, 
 >    P_1=3p(u,u)+2u^2+m_{DS}+m_A+3ur+F_{\rm in}u+u+3r.
 >    \]
 > 
->    In [Entwurf:187](/Users/angeral/Repositories/master_thesis/code-benchmarks/docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:187) steht fälschlich `1.5 u_R` für diese drei Vektoren. Die vereinfachte Endformel ist bei geradem \(u\) trotzdem korrekt; bei ungeradem \(u\) ignoriert sie die Abrundung.
+>    In [Entwurf:187](docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:187) steht fälschlich `1.5 u_R` für diese drei Vektoren. Die vereinfachte Endformel ist bei geradem \(u\) trotzdem korrekt; bei ungeradem \(u\) ignoriert sie die Abrundung.
 > 
 >    | Konfiguration, jeweils inklusive Head | Korrekter Erwartungswert | Aus den im Entwurf genannten Prototype-Zahlen |
 >    |---|---:|---:|
@@ -538,9 +538,9 @@ Independent review by OpenAI Codex, model `gpt-6-astra`, reasoning effort high, 
 >    | V4 lateral, \(K=2,u=7,d=.5,F=2,O=2\), mean | **3.695** | abhängig von allen realisierten Masken |
 >    | V4 lateral, \(K=4,u=14,d=.25,F=3,O=7\), concat | **29.183** | abhängig von allen realisierten Masken |
 > 
->    Damit sind die **3.733 beziehungsweise ≈29.500** aus [Entwurf:310](/Users/angeral/Repositories/master_thesis/code-benchmarks/docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:310) nicht aus den definierten Formeln ableitbar.
+>    Damit sind die **3.733 beziehungsweise ≈29.500** aus [Entwurf:310](docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:310) nicht aus den definierten Formeln ableitbar.
 > 
->    **Änderung:** Erwartungswerte nur zur Planung verwenden; Tabellen aus gebautem Modell plus `effective_param_count` erzeugen ([ncp.py:323](/Users/angeral/Repositories/master_thesis/code-benchmarks/src/wirings/ncp.py:323)). Bei unabhängigen Masken über die tatsächlichen Spaltenzahlen summieren. Für gestapelte Gewichtstensoren muss die Maskenzählung ausdrücklich unterstützt werden.
+>    **Änderung:** Erwartungswerte nur zur Planung verwenden; Tabellen aus gebautem Modell plus `effective_param_count` erzeugen ([ncp.py:323](src/wirings/ncp.py:323)). Bei unabhängigen Masken über die tatsächlichen Spaltenzahlen summieren. Für gestapelte Gewichtstensoren muss die Maskenzählung ausdrücklich unterstützt werden.
 
 **Response:** **FIXED.** B.4 labels the three relay vectors as 3 u_R and gives the exact formula with u_R = ⌊u/2⌋ next to the even-u shorthand. Recomputed expected values: u = 11 → 4 395, u = 29 → 29 890, u_R = u variant 3 832; V4 K = 2, u = 7 → 3 695; V4 K = 4, u = 14 → 29 239 with F_in = 4 (the observation flag added under finding 10; with F_in = 3 the value is 29 183 as stated in the finding), hub 29 848, K = 30 → 30 228, K = 300 at u = 1 → 19 517. All counts are marked as expected values over the Bernoulli masks, and B.4 requires the campaign tables to come from the built model via `effective_param_count` (`ncp.py` line 323), including support for stacked `(K, u_in, u_out)` tensors. The confirmation of p(u,u) = 10u² + 5u and of the V2 counts 4 082 / 30 926 is noted.
 
@@ -548,7 +548,7 @@ Independent review by OpenAI Codex, model `gpt-6-astra`, reasoning effort high, 
 
 > **[blocking] Der Hub ist nicht vollständig definiert; seine Kosten und der behauptete Schnittpunkt mit lateral stimmen nicht.**
 > 
->    [Entwurf:291](/Users/angeral/Repositories/master_thesis/code-benchmarks/docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:291) fordert die gleiche gated-relay-Regel wie R, zählt aber nur zwei Projektionsfamilien und `1.5 u_H`.
+>    [Entwurf:291](docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:291) fordert die gleiche gated-relay-Regel wie R, zählt aber nur zwei Projektionsfamilien und `1.5 u_H`.
 > 
 >    Bei unabhängigen Projektionen für **Drive**, **Gate** und **Rückgabe** gilt:
 > 
@@ -570,9 +570,9 @@ Independent review by OpenAI Codex, model `gpt-6-astra`, reasoning effort high, 
 
 > **[should-fix] Die Reduktionstabelle behauptet Äquivalenzen, die der Code nicht erfüllt.**
 > 
->    In [Entwurf:275](/Users/angeral/Repositories/master_thesis/code-benchmarks/docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:275):
+>    In [Entwurf:275](docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:275):
 > 
->    - **NCP:** Ein maskierter `SparseLinear` vor einer dicht mischenden Subzelle entspricht keiner NCP-Maske auf jedem einzelnen Head. Das Produkt \(MW\) kann Eingangsabhängigkeiten erzeugen, die die ursprüngliche Maske ausschließt. `NCPLayeredCell` übergibt dagegen sensory/recurrent masks direkt an die Zellen ([ncp.py:214](/Users/angeral/Repositories/master_thesis/code-benchmarks/src/wirings/ncp.py:214), [base_cell.py:123](/Users/angeral/Repositories/master_thesis/code-benchmarks/src/neurons/base_cell.py:123)).
+>    - **NCP:** Ein maskierter `SparseLinear` vor einer dicht mischenden Subzelle entspricht keiner NCP-Maske auf jedem einzelnen Head. Das Produkt \(MW\) kann Eingangsabhängigkeiten erzeugen, die die ursprüngliche Maske ausschließt. `NCPLayeredCell` übergibt dagegen sensory/recurrent masks direkt an die Zellen ([ncp.py:214](src/wirings/ncp.py:214), [base_cell.py:123](src/neurons/base_cell.py:123)).
 >    - **Dense3:** Neben den Projektionen unterscheiden sich die Backbone-Einstellungen. Die aktuelle Dense3-Implementierung ist deshalb keine bloße Umparametrisierung von V3.
 >    - **Committee:** Auf vier Knoten lässt sich derselbe Consensus-Operator anwenden. Dadurch entsteht keine Äquivalenz zum bestehenden Acht-Knoten-`MultiColumnVotingCell`.
 > 
@@ -586,7 +586,7 @@ Independent review by OpenAI Codex, model `gpt-6-astra`, reasoning effort high, 
 
 > **[should-fix] Die KEEP/MERGE/DROP-Entscheidungen sind überwiegend brauchbare ML-Vereinfachungen; mehrere Begründungen behaupten jedoch unbelegte Redundanz.**
 > 
->    Bewertung der vollständigen Tabelle in [Entwurf:103](/Users/angeral/Repositories/master_thesis/code-benchmarks/docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:103):
+>    Bewertung der vollständigen Tabelle in [Entwurf:103](docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:103):
 > 
 >    | Entscheidung | Bewertung |
 >    |---|---|
@@ -605,7 +605,7 @@ Independent review by OpenAI Codex, model `gpt-6-astra`, reasoning effort high, 
 >    | **DROP location gate** | Für diese Tasks und die Trennung von Eingaberepräsentation und Wiring sinnvoll. |
 >    | **ADD partition/lateral/hub** | Plausible neue Hypothesen, aber eine erhebliche Erweiterung des Experiments. |
 > 
->    Besonders die Head-Begründung ist falsch: Für zustandsabhängigen Gain \(G_t\) lässt sich \(W_{\rm out}G_t h_t\) nicht allgemein durch einen festen Head ersetzen. Im aktuellen Code beeinflusst der modulierte L5ET-Zustand außerdem L6 und spätere Schritte ([cncp.py:604](/Users/angeral/Repositories/master_thesis/code-benchmarks/src/wirings/cncp.py:604), [cncp.py:615](/Users/angeral/Repositories/master_thesis/code-benchmarks/src/wirings/cncp.py:615)).
+>    Besonders die Head-Begründung ist falsch: Für zustandsabhängigen Gain \(G_t\) lässt sich \(W_{\rm out}G_t h_t\) nicht allgemein durch einen festen Head ersetzen. Im aktuellen Code beeinflusst der modulierte L5ET-Zustand außerdem L6 und spätere Schritte ([cncp.py:604](src/wirings/cncp.py:604), [cncp.py:615](src/wirings/cncp.py:615)).
 > 
 >    Crandall zeigt gerade eine dynamische Verschiebung zwischen Exzitation und Inhibition durch unterschiedliche Kurzzeitplastizität. Der vorgeschlagene Gate-Ersatz bewahrt davon nur die Dämpfungsfunktion. Das ist für reines ML zulässig, sollte aber als verlorene Dynamik dokumentiert werden. [Crandall et al. 2015](https://pmc.ncbi.nlm.nih.gov/articles/PMC4425600/)
 
@@ -615,13 +615,13 @@ Independent review by OpenAI Codex, model `gpt-6-astra`, reasoning effort high, 
 
 > **[should-fix] Einige anatomische Schlussfolgerungen sind zu stark oder direkt falsch.**
 > 
->    **„Keine inter-column excitatory path into L4“** in [Entwurf:324](/Users/angeral/Repositories/master_thesis/code-benchmarks/docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:324) widerspricht der selbst zitierten Narayanan-Arbeit: Sie beschreibt transkolumnare L2-/L3-Axonprojektionen in die granuläre Schicht. S als Default-Kopplungspunkt ist trotzdem vertretbar; G auszuschließen ist eine Designentscheidung. [Narayanan et al. 2015](https://academic.oup.com/cercor/article/25/11/4450/2367294)
+>    **„Keine inter-column excitatory path into L4“** in [Entwurf:324](docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:324) widerspricht der selbst zitierten Narayanan-Arbeit: Sie beschreibt transkolumnare L2-/L3-Axonprojektionen in die granuläre Schicht. S als Default-Kopplungspunkt ist trotzdem vertretbar; G auszuschließen ist eine Designentscheidung. [Narayanan et al. 2015](https://academic.oup.com/cercor/article/25/11/4450/2367294)
 > 
 >    Die zufälligen lateralen Masken bewahren außerdem **keine feature-selektive Topographie**. Bosking untersucht Verbindungen zwischen koorientierten, räumlich ausgerichteten Rezeptivfeldern; Bernoulli-Masken zwischen anonymen Hidden Units kodieren diese Beziehung nicht. [Bosking et al. 1997](https://pmc.ncbi.nlm.nih.gov/articles/PMC6793759/)
 > 
 >    Die Aussage zur dominierenden intracortical route ist dagegen gut gestützt: Olsen berichtet einen intracortical-Anteil von etwa 73 % unter den untersuchten Bedingungen. Ihr Weglassen ist eine bewusste Einschränkung. [Olsen et al. 2012](https://pmc.ncbi.nlm.nih.gov/articles/PMC3636977/)
 > 
->    Schließlich überträgt [Entwurf:26](/Users/angeral/Repositories/master_thesis/code-benchmarks/docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:26) die lokale Behandlung von Polarität auf Lechner 2020: Die Original-LTC-Gleichung enthält ein reversal potential, das die Synapsenpolarität bestimmt ([extrahiertes Paper:361](/Users/angeral/Repositories/master_thesis/papers/.extracted/lechner2020-ncp.md:361)). Das lokale Wiring nimmt dagegen Absolutwerte der Adjazenz ([ncp.py:134](/Users/angeral/Repositories/master_thesis/code-benchmarks/src/wirings/ncp.py:134)). Diese Ebenen müssen auseinandergehalten werden.
+>    Schließlich überträgt [Entwurf:26](docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:26) die lokale Behandlung von Polarität auf Lechner 2020: Die Original-LTC-Gleichung enthält ein reversal potential, das die Synapsenpolarität bestimmt ([extrahiertes Paper:361](<thesis repo>/papers/.extracted/lechner2020-ncp.md:361)). Das lokale Wiring nimmt dagegen Absolutwerte der Adjazenz ([ncp.py:134](src/wirings/ncp.py:134)). Diese Ebenen müssen auseinandergehalten werden.
 
 **Response:** **FIXED.** B.7 "Not coupling at G" now cites Narayanan's transcolumnar L2/3 axons into the granular layer and calls the exclusion a design choice. The lateral-edge paragraph states that a Bernoulli mask between anonymous hidden units encodes no feature-selective topography (Bosking) and that selectivity, if any, must come from the learned weights. A.1 attributes the polarity treatment correctly: Lechner's LTC carries polarity in the reversal potential E_ij of eq. (1) (`lechner2020-ncp.md` line 361), this repository discards it via the absolute value of the adjacency (`ncp.py` line 134). The Olsen statement stays as it was.
 
@@ -631,7 +631,7 @@ Independent review by OpenAI Codex, model `gpt-6-astra`, reasoning effort high, 
 > 
 >    Eigene Parameter passen zu spezialisierten Sensorströmen. Gelernte \(L_{c'c}\)-Maps können zwischen unterschiedlichen Repräsentationen übersetzen. Das ist eine plausible Wahl.
 > 
->    Drei Einschränkungen fehlen in [Entwurf:290](/Users/angeral/Repositories/master_thesis/code-benchmarks/docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:290):
+>    Drei Einschränkungen fehlen in [Entwurf:290](docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:290):
 > 
 >    - `none` gegen `lateral` bei **gleichem \(u\)** verändert das Parameterbudget. Neumatching verändert dagegen \(u\) und damit die Kapazität jeder Spalte. Für Mechanismus und Budgetnutzen sind das unterschiedliche Vergleiche.
 >    - Mean vor einem gemeinsamen linearen Head ist algebraisch ein Mittel der entsprechend projizierten Outputs. Das funktioniert. **Median im Hidden Space** hat diese Eigenschaft nicht; unabhängig gelernte Hidden-Koordinaten haben keine garantierte gemeinsame Bedeutung.
@@ -645,9 +645,9 @@ Independent review by OpenAI Codex, model `gpt-6-astra`, reasoning effort high, 
 
 > **[should-fix] Die Person-Activity-Partition braucht eine explizite Missing-observation- und Zeitsemantik.**
 > 
->     Der Datensatz enthält tatsächlich einen Tag plus xyz pro Ereignis; `dt` bezeichnet den Abstand zur **vorherigen Zeile**, nicht zur vorherigen Beobachtung desselben Sensors ([datasets.py:73](/Users/angeral/Repositories/master_thesis/code-benchmarks/src/tasks/person_activity/datasets.py:73)).
+>     Der Datensatz enthält tatsächlich einen Tag plus xyz pro Ereignis; `dt` bezeichnet den Abstand zur **vorherigen Zeile**, nicht zur vorherigen Beobachtung desselben Sensors ([datasets.py:73](src/tasks/person_activity/datasets.py:73)).
 > 
->     In [Entwurf:285](/Users/angeral/Repositories/master_thesis/code-benchmarks/docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:285) erhalten inaktive Spalten Nullen. Für CfC-LRC ist das ein reguläres Update mit Nullinput; es ist kein „keine Beobachtung“. Auch `dt=0` hält die Zelle nicht automatisch an ([cfc_lrc_cell.py:185](/Users/angeral/Repositories/master_thesis/code-benchmarks/src/neurons/cfc_lrc_cell.py:185)).
+>     In [Entwurf:285](docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:285) erhalten inaktive Spalten Nullen. Für CfC-LRC ist das ein reguläres Update mit Nullinput; es ist kein „keine Beobachtung“. Auch `dt=0` hält die Zelle nicht automatisch an ([cfc_lrc_cell.py:185](src/neurons/cfc_lrc_cell.py:185)).
 > 
 >     **Änderung:** Festlegen, ob alle Spalten bei jedem Ereignis fortschreiten oder nur die aktive Spalte aktualisiert wird. Eine explizite Observation-Maske verhindert die Gleichsetzung fehlender Messungen mit xyz=0. Bei übersprungenen Updates muss die seit dem letzten eigenen Update verstrichene Zeit berücksichtigt werden. Danach Inputbreiten und Budgets neu zählen.
 > 
@@ -659,11 +659,11 @@ Independent review by OpenAI Codex, model `gpt-6-astra`, reasoning effort high, 
 
 > **[should-fix] Die Compute-Aussagen und die harte Grenze \(K\approx4\) sind nicht belegt.**
 > 
->     Die Aussage „wall time stays at the single-column level“ in [Entwurf:281](/Users/angeral/Repositories/master_thesis/code-benchmarks/docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:281) folgt nicht aus einer konstanten Anzahl von `einsum`-Aufrufen. Tensorgrößen, Speicherverkehr, Backpropagation und Kopplungsaggregation wachsen weiterhin. Lateral verursacht zusätzlich quadratischen Aufwand in \(K\).
+>     Die Aussage „wall time stays at the single-column level“ in [Entwurf:281](docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:281) folgt nicht aus einer konstanten Anzahl von `einsum`-Aufrufen. Tensorgrößen, Speicherverkehr, Backpropagation und Kopplungsaggregation wachsen weiterhin. Lateral verursacht zusätzlich quadratischen Aufwand in \(K\).
 > 
 >     Weitere Punkte:
 > 
->     - `SparseLinear` führt **dichte** Matrixmultiplikation mit maskierten Gewichten aus ([ncp.py:77](/Users/angeral/Repositories/master_thesis/code-benchmarks/src/wirings/ncp.py:77)). Effektive Parameterzahl entspricht weder FLOPs noch Speicherbedarf.
+>     - `SparseLinear` führt **dichte** Matrixmultiplikation mit maskierten Gewichten aus ([ncp.py:77](src/wirings/ncp.py:77)). Effektive Parameterzahl entspricht weder FLOPs noch Speicherbedarf.
 >     - Auch V1 lässt sich über eine zusammengelegte Batch-/Spaltenachse vektorisieren. Ein Vergleich „V1 Python-Loop versus V4 optimiertes Einsum“ misst zusätzlich Implementierungsaufwand.
 >     - „Independent weights cap K at about 4“ widerspricht schon der eigenen K=30-Zeile. Es ist eine vermutete Mindestbreite für brauchbare Modelle, keine Parametergrenze. Selbst \(K=300,u=1\) passt rechnerisch mit einfacher Kopplung unter 30k; seine Nützlichkeit ist eine andere Frage.
 >     - Die erfolgreiche Breite eines Dense3-Arms ist keine experimentell bestimmte Mindestbreite für eine V3-Spalte.
@@ -676,7 +676,7 @@ Independent review by OpenAI Codex, model `gpt-6-astra`, reasoning effort high, 
 
 > **[should-fix] Die Falsifikationskriterien erlauben mehrere unzulässige Schlussfolgerungen.**
 > 
->     [Entwurf:344](/Users/angeral/Repositories/master_thesis/code-benchmarks/docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:344) koppelt fünf Seeds, Wilcoxon und Aussagen wie „adds nothing“. Bei fünf Paaren ist der kleinste exakte zweiseitige p-Wert **0,0625**. Das ist in [Kapitel 5:86](/Users/angeral/Repositories/master_thesis/Thesis/chapters/05_experimental_setup.tex:86) bereits ausdrücklich dokumentiert; Z. 88 verbietet zudem die Interpretation von Nichtsignifikanz als Äquivalenz.
+>     [Entwurf:344](docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md:344) koppelt fünf Seeds, Wilcoxon und Aussagen wie „adds nothing“. Bei fünf Paaren ist der kleinste exakte zweiseitige p-Wert **0,0625**. Das ist in [Kapitel 5:86](<thesis repo>/Thesis/chapters/05_experimental_setup.tex:86) bereits ausdrücklich dokumentiert; Z. 88 verbietet zudem die Interpretation von Nichtsignifikanz als Äquivalenz.
 > 
 >     Auch die Mechanismuskriterien müssen enger werden:
 > 
@@ -685,7 +685,7 @@ Independent review by OpenAI Codex, model `gpt-6-astra`, reasoning effort high, 
 >     - `none≈lateral≈hub` zeigt höchstens keinen nachgewiesenen Kopplungsnutzen in diesem Setting.
 >     - Ein einzelner negativer Median-/Korruptionstest widerlegt keine ganze Familie unabhängiger Spaltenmodelle.
 > 
->     Die NCP-Stabilitätsbehauptung ist ebenfalls zu allgemein: Die Zufallsgenerierung erlaubt Command-Zyklen und Selbstkanten ([wirings.py:543](/Users/angeral/Repositories/master_thesis/code-benchmarks/.venv/lib/python3.11/site-packages/ncps/wirings/wirings.py:543)). Bei Größe 43 waren die Command-Graphen für Seeds 0–2 azyklisch; **Seed 4 enthält bereits einen Zyklus**. Das widerlegt die pauschale Nilpotenzannahme, ohne für diesen Seed Instabilität zu beweisen.
+>     Die NCP-Stabilitätsbehauptung ist ebenfalls zu allgemein: Die Zufallsgenerierung erlaubt Command-Zyklen und Selbstkanten ([wirings.py:543](.venv/lib/python3.11/site-packages/ncps/wirings/wirings.py:543)). Bei Größe 43 waren die Command-Graphen für Seeds 0–2 azyklisch; **Seed 4 enthält bereits einen Zyklus**. Das widerlegt die pauschale Nilpotenzannahme, ohne für diesen Seed Instabilität zu beweisen.
 > 
 >     **Änderung:** Effektgrößen und Unsicherheit berichten; für Äquivalenz eine praktische Toleranz definieren. Motive durch gezielte Interventionen und retrainierte Ablationen beurteilen. Seeds nicht nach Stabilität aussortieren.
 
