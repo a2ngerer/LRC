@@ -30,6 +30,8 @@ This repository is part of a master's thesis at TU Wien evaluating novel neuron 
 |--------|-------------|
 | **Dense** | Fully connected — all neurons connect to all neurons |
 | **NCP** | Neural Circuit Policy — sparse, biologically-inspired wiring ([Lechner et al., 2020](https://www.nature.com/articles/s42256-020-00237-3)) |
+| **cNCP** (`cncp`) | Eight-node cortical-column graph of sub-cells with sparse edges, feedback, gain and a gated relay loop (`src/wirings/cncp.py`) |
+| **cNCP v2** (`cncp2`) | Four-node abstraction G / S / D / R: delayed top-down feedback, one centred gain edge, a gated re-entrant relay; one width knob u (`src/wirings/cncp2.py`, spec `docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md`) |
 
 ### Architecture Matrix
 
