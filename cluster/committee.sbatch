@@ -52,24 +52,31 @@ NOISESIGMAS="${CO_NOISESIGMAS:-0.0,0.25,0.5,1.0}"
 # independent of K.
 PARAM_BUDGET="${CO_PARAM_BUDGET:-30000}"
 MAXPAR="${CO_MAXPAR:-4}"
+# CfC-family backbone depth for EVERY arm (V2s control: CO_BACKBONE=1); empty =
+# flag not passed, per-wiring defaults unchanged. Results get a `_bb<N>` filename
+# suffix and share results/committee with the V2 runs without overwriting (the
+# plot step aggregates the whole directory: use separate runs for V2 vs V2s plots).
+BACKBONE="${CO_BACKBONE:-}"
 
 mkdir -p outputs/slurm results/committee
 
 run_one() {
     local cell="$1" wiring="$2" K="$3" seed="$4"
-    echo "[start] ${cell}_${wiring}_K${K}_pb${PARAM_BUDGET}_seed${seed} $(date -u +%FT%TZ)"
+    local bb_flag="" sfx="${BACKBONE:+_bb${BACKBONE}}"
+    [[ -n "${BACKBONE:-}" ]] && bb_flag="--backbone-layers ${BACKBONE}"
+    echo "[start] ${cell}_${wiring}_K${K}_pb${PARAM_BUDGET}_seed${seed}${sfx} $(date -u +%FT%TZ)"
     uv run python experiments/run_committee_benchmark.py \
         --wiring "$wiring" --n-columns "$K" --param-budget "$PARAM_BUDGET" \
         --cell "$cell" --seed "$seed" --epochs "$EPOCHS" --seq-len "$SEQLEN" \
         --batch-size "$BATCH" \
         --view-mode "$VIEWMODE" --drop-fracs "$DROPFRACS" \
         --train-drop "$TRAINDROP" --train-noise "$TRAINNOISE" \
-        --test-corruption "$TESTCORRUPT" --noise-sigmas "$NOISESIGMAS"
-    echo "[done ] ${cell}_${wiring}_K${K}_pb${PARAM_BUDGET}_seed${seed} (exit $?)"
+        --test-corruption "$TESTCORRUPT" --noise-sigmas "$NOISESIGMAS" $bb_flag
+    echo "[done ] ${cell}_${wiring}_K${K}_pb${PARAM_BUDGET}_seed${seed}${sfx} (exit $?)"
 }
 export -f run_one
 export EPOCHS SEQLEN BATCH VIEWMODE DROPFRACS PARAM_BUDGET TRAINDROP \
-       TRAINNOISE TESTCORRUPT NOISESIGMAS
+       TRAINNOISE TESTCORRUPT NOISESIGMAS BACKBONE
 
 JOBS=""
 for cell in $CELL; do

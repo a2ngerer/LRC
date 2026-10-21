@@ -55,6 +55,10 @@ MAXPAR="${PA_MAXPAR:-3}"
 # Every arm is sized on its own width knob to this EFFECTIVE parameter budget
 # (thesis protocol: 30k for Person Activity).
 PARAM_BUDGET="${PA_PARAM_BUDGET:-30000}"
+# CfC-family backbone depth for EVERY arm (V2s control: PA_BACKBONE=1); empty =
+# flag not passed, per-wiring defaults unchanged. Results get a `_bb<N>` filename
+# suffix and share results/person_activity with the V2 runs without overwriting.
+BACKBONE="${PA_BACKBONE:-}"
 DATA_PATH="$PWD/data/person/ConfLongDemo_JSI.txt"
 
 mkdir -p outputs/slurm results/person_activity
@@ -66,16 +70,18 @@ fi
 
 run_one() {
     local cell="$1" wiring="$2" seed="$3"
-    local wandb_flag=""
+    local wandb_flag="" bb_flag="" sfx="${BACKBONE:+_bb${BACKBONE}}"
     [[ "${USE_WANDB:-0}" == "1" ]] && wandb_flag="--wandb"
-    echo "[start] ${cell}_${wiring}_seed${seed} $(date -u +%FT%TZ)"
+    [[ -n "${BACKBONE:-}" ]] && bb_flag="--backbone-layers ${BACKBONE}"
+    echo "[start] ${cell}_${wiring}_seed${seed}${sfx} $(date -u +%FT%TZ)"
     uv run python experiments/run_person_activity_benchmark.py \
         --wiring "$wiring" --cell "$cell" --seed "$seed" --epochs "$EPOCHS" \
-        --param-budget "$PARAM_BUDGET" --data-path "$DATA_PATH" $wandb_flag
-    echo "[done ] ${cell}_${wiring}_seed${seed} (exit $?)"
+        --param-budget "$PARAM_BUDGET" --data-path "$DATA_PATH" \
+        $bb_flag $wandb_flag
+    echo "[done ] ${cell}_${wiring}_seed${seed}${sfx} (exit $?)"
 }
 export -f run_one
-export EPOCHS DATA_PATH USE_WANDB PARAM_BUDGET
+export EPOCHS DATA_PATH USE_WANDB PARAM_BUDGET BACKBONE
 
 JOBS=""
 for cell in $CELLS; do

@@ -60,6 +60,10 @@ MAXPAR="${LV_MAXPAR:-6}"
 # (thesis protocol: 4k for the rollouts).
 PARAM_BUDGET="${LV_PARAM_BUDGET:-4000}"
 PLOT_CELL="${LV_PLOT_CELL:-cfc_lrc}"
+# CfC-family backbone depth for EVERY arm (V2s control: LV_BACKBONE=1); empty =
+# flag not passed, per-wiring defaults unchanged. Results get a `_bb<N>` filename
+# suffix; use a separate LV_OUTDIR so plot/aggregate do not mix V2 and V2s.
+BACKBONE="${LV_BACKBONE:-}"
 # System / resolution / output dir (predator_prey -> results/lotka_volterra;
 # duffing -> results/lotka_volterra_duffing, submitted as a second job).
 SYSTEM="${LV_SYSTEM:-periodic_predator_prey}"
@@ -70,17 +74,18 @@ mkdir -p outputs/slurm "$OUTDIR"
 
 run_one() {
     local cell="$1" wiring="$2" seed="$3"
-    local wandb_flag=""
+    local wandb_flag="" bb_flag="" sfx="${BACKBONE:+_bb${BACKBONE}}"
     [[ "${USE_WANDB:-0}" == "1" ]] && wandb_flag="--wandb"
-    echo "[start] ${cell}_${wiring}_seed${seed} $(date -u +%FT%TZ)"
+    [[ -n "${BACKBONE:-}" ]] && bb_flag="--backbone-layers ${BACKBONE}"
+    echo "[start] ${cell}_${wiring}_seed${seed}${sfx} $(date -u +%FT%TZ)"
     uv run python experiments/run_lotka_volterra_benchmark.py \
         --wiring "$wiring" --cell "$cell" --seed "$seed" --epochs "$EPOCHS" \
         --system "$SYSTEM" --seq-len "$SEQLEN" --outdir "$OUTDIR" \
-        --param-budget "$PARAM_BUDGET" $wandb_flag
-    echo "[done ] ${cell}_${wiring}_seed${seed} (exit $?)"
+        --param-budget "$PARAM_BUDGET" $bb_flag $wandb_flag
+    echo "[done ] ${cell}_${wiring}_seed${seed}${sfx} (exit $?)"
 }
 export -f run_one
-export EPOCHS SYSTEM SEQLEN OUTDIR USE_WANDB PARAM_BUDGET
+export EPOCHS SYSTEM SEQLEN OUTDIR USE_WANDB PARAM_BUDGET BACKBONE
 
 JOBS=""
 for cell in $CELLS; do
