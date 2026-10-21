@@ -39,8 +39,8 @@ import tensorflow as tf
 from src.models.rnn_model import _CELL_REGISTRY
 from src.models import (make_cncp_model, make_dense_model, make_ncp_model,
                         make_ncp_stacked_model)
-from src.wirings import (effective_param_count, match_param_budget,
-                          ncp_cell_kwargs, param_counts)
+from src.wirings import (CNCP2Wiring, effective_param_count,
+                          match_param_budget, ncp_cell_kwargs, param_counts)
 from src.tasks.neural_ode.datasets import (
     generate_dataset, generate_stress_dataset, STRESS_REGIMES,
 )
@@ -553,12 +553,16 @@ def _make_net(cell, wiring, cell_kwargs, units, ncp_cfg, lamina_units,
         # output_neurons=2 matches the ODE output dimension, like dense.
         return make_cncp_model(cell, output_neurons=2, seed=ncp_wiring_seed,
                                lamina_units=lamina_units, **cell_kwargs)
+    if wiring == 'cncp2':
+        # cNCP v2 four-node column (src/wirings/cncp2.py): width u = units.
+        return CNCP2Wiring(cell, output_neurons=2, units=units,
+                           seed=ncp_wiring_seed, **cell_kwargs).build_model()
     # No bare else: a fallback would silently mislabel unknown wirings as
     # ncp (results written under the wrong wiring name -- the exact
     # failure a 'cncp' campaign hit before this branch existed).
     raise ValueError(
         f"unhandled wiring {wiring!r}; known wirings: dense, ncp, "
-        "ncp_stacked, cncp")
+        "ncp_stacked, cncp, cncp2")
 
 
 def _arm_sizes(wiring, size):

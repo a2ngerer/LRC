@@ -39,8 +39,9 @@ WIRING_LABELS = {"dense": "dense", "ncp": "NCP", "cncp": "cNCP",
                  "tbt_cncp_film": "tbt_cNCP (FiLM)"}
 # Preference order for the bar / summary panels; only wirings actually present in
 # the result dir are shown.
-WIRING_ORDER = ("dense", "ncp", "cncp", "tbt_cncp_noloc", "tbt_cncp",
-                "tbt_cncp_film", "tbt_cncp_concat", "tbt_cncp_both")
+WIRING_ORDER = ("dense", "dense3", "ncp", "cncp", "cncp2", "cncp2_multi",
+                "tbt_cncp_noloc", "tbt_cncp", "tbt_cncp_film", "tbt_cncp_concat",
+                "tbt_cncp_both")
 # Phase / time-series overlays: the most informative arms, to keep the orbit
 # plots readable (the rest live in the MSE / horizon panels). Includes FiLM so
 # the affine-gate rollout can be compared with concat directly.

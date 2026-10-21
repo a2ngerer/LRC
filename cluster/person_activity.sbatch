@@ -85,7 +85,9 @@ run_one() {
         --wiring "$wiring" --cell "$cell" --seed "$seed" --epochs "$EPOCHS" \
         $budget_flag --data-path "$DATA_PATH" \
         --outdir "$OUTDIR" --lr "$LR" $bb_flag $EXTRA $wandb_flag
-    echo "[done ] ${cell}_${wiring}_seed${seed} (exit $?)"
+    local rc=$?
+    echo "[done ] ${cell}_${wiring}_seed${seed} (exit $rc)"
+    return $rc
 }
 export -f run_one
 export EPOCHS DATA_PATH USE_WANDB PARAM_BUDGET OUTDIR LR BACKBONE EXTRA
@@ -100,6 +102,10 @@ for cell in $CELLS; do
 done
 
 echo "=== person-activity cNCP-vs-NCP: $(printf '%s' "$JOBS" | grep -c .) runs, par ${MAXPAR}, ${EPOCHS} epochs, on $(hostname) ==="
-printf '%s' "$JOBS" | grep . | xargs -P "$MAXPAR" -n 3 bash -c 'run_one "$1" "$2" "$3"' _
+N_FITS=$(printf '%s' "$JOBS" | grep -c .)
+printf '%s' "$JOBS" | grep . | xargs -P "$MAXPAR" -n 3 bash -c 'run_one "$1" "$2" "$3"' _ || echo "WARNING: at least one fit exited non-zero (xargs exit $?)"
 echo "=== all runs done $(date -u +%FT%TZ) ==="
-ls -la results/person_activity/*.json
+N_JSON=$(find "$OUTDIR" -maxdepth 1 -name '*.json' | wc -l)
+echo "result files: ${N_JSON} of ${N_FITS} expected"
+ls -la "$OUTDIR"/*.json
+[[ "$N_JSON" -ge "$N_FITS" ]] || { echo "FATAL: ${N_FITS} fits expected, ${N_JSON} result files written" >&2; exit 1; }

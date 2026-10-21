@@ -64,8 +64,8 @@ MAXPAR="${LV_MAXPAR:-6}"
 # (thesis protocol: 4k for the rollouts).
 PARAM_BUDGET="${LV_PARAM_BUDGET:-4000}"   # 0 = no --param-budget (use --size via LV_EXTRA)
 PLOT_CELL="${LV_PLOT_CELL:-cfc_lrc}"
-# System / resolution / output dir (predator_prey -> results/lotka_volterra;
-# duffing -> results/lotka_volterra_duffing, submitted as a second job).
+# System / resolution; output dir is the run folder (duffing is a second launch
+# into 02_duffing).
 SYSTEM="${LV_SYSTEM:-periodic_predator_prey}"
 SEQLEN="${LV_SEQLEN:-128}"
 OUTDIR="$RUN_DIR/results"
@@ -88,7 +88,9 @@ run_one() {
         --wiring "$wiring" --cell "$cell" --seed "$seed" --epochs "$EPOCHS" \
         --system "$SYSTEM" --seq-len "$SEQLEN" --outdir "$OUTDIR" \
         $budget_flag --lr "$LR" $bb_flag $EXTRA $wandb_flag
-    echo "[done ] ${cell}_${wiring}_seed${seed} (exit $?)"
+    local rc=$?
+    echo "[done ] ${cell}_${wiring}_seed${seed} (exit $rc)"
+    return $rc
 }
 export -f run_one
 export EPOCHS SYSTEM SEQLEN OUTDIR USE_WANDB PARAM_BUDGET LR BACKBONE EXTRA
@@ -103,8 +105,11 @@ for cell in $CELLS; do
 done
 
 echo "=== ${SYSTEM} topology-vs-tbt: $(printf '%s' "$JOBS" | grep -c .) runs, par ${MAXPAR}, ${EPOCHS} epochs, seq_len ${SEQLEN}, -> ${OUTDIR}, on $(hostname) ==="
-printf '%s' "$JOBS" | grep . | xargs -P "$MAXPAR" -n 3 bash -c 'run_one "$1" "$2" "$3"' _
+N_FITS=$(printf '%s' "$JOBS" | grep -c .)
+printf '%s' "$JOBS" | grep . | xargs -P "$MAXPAR" -n 3 bash -c 'run_one "$1" "$2" "$3"' _ || echo "WARNING: at least one fit exited non-zero (xargs exit $?)"
 echo "=== all runs done $(date -u +%FT%TZ) ==="
+N_JSON=$(find "$OUTDIR" -maxdepth 1 -name '*.json' | wc -l)
+echo "result files: ${N_JSON} of ${N_FITS} expected"
 ls -la "$OUTDIR"/*.json
 
 echo "=== rendering plots (cell ${PLOT_CELL}, ${SYSTEM}) ==="
@@ -113,3 +118,4 @@ uv run python experiments/plot_lotka_volterra.py \
 mv "$OUTDIR"/*.png "$RUN_DIR/figures/" 2>/dev/null || true
 ls -la "$RUN_DIR/figures"
 echo "=== plots done $(date -u +%FT%TZ) ==="
+[[ "$N_JSON" -ge "$N_FITS" ]] || { echo "FATAL: ${N_FITS} fits expected, ${N_JSON} result files written" >&2; exit 1; }
