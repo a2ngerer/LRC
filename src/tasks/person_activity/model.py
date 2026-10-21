@@ -199,8 +199,9 @@ def stacked_dense(cell_cls, size, features, time, n_layers=1, **cell_kwargs):
 
 def build_person_activity_model(wiring, cell, size=64, seed=42,
                                 num_classes=7, feature_size=7, seq_len=32,
-                                lr=1e-3, timescale_prior=None, columns=2,
-                                partition="same", coupling="lateral",
+                                lr=1e-3, timescale_prior=None, columns=MULTI_COLUMN_DEFAULTS["columns"],
+                                partition=MULTI_COLUMN_DEFAULTS["partition"],
+                                coupling=MULTI_COLUMN_DEFAULTS["coupling"],
                                 readout="mean", **cell_kwargs):
     """Build and compile a person-activity model for one (wiring, cell).
 

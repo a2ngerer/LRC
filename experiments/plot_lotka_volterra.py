@@ -28,11 +28,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-WIRING_COLORS = {"dense": "#55A868", "ncp": "#4C72B0", "cncp": "#C44E52",
+WIRING_COLORS = {"dense": "#55A868", "dense3": "#2E7D4F", "ncp": "#4C72B0",
+                 "cncp": "#C44E52", "cncp2": "#E07B39", "cncp2_multi": "#B5651D",
                  "tbt_cncp_concat": "#E0A53F", "tbt_cncp_noloc": "#9AA0A6",
                  "tbt_cncp": "#8172B3", "tbt_cncp_both": "#CCB974",
                  "tbt_cncp_film": "#D1495B"}
-WIRING_LABELS = {"dense": "dense", "ncp": "NCP", "cncp": "cNCP",
+WIRING_LABELS = {"dense": "dense", "dense3": "dense3", "ncp": "NCP", "cncp": "cNCP",
+                 "cncp2": "cNCP v2", "cncp2_multi": "cNCP v2 multi",
                  "tbt_cncp_concat": "tbt_cNCP", "tbt_cncp_noloc": "tbt_cNCP (no-loc)",
                  "tbt_cncp": "tbt_cNCP (gate)",
                  "tbt_cncp_both": "tbt_cNCP (gate+concat)",

@@ -199,6 +199,7 @@ def test_single_column_path_unchanged_by_extra_s_edges():
         tf.keras.utils.set_random_seed(3)
         col = CorticalColumnV2Cell('cfc_lrc', units=4, seed=3, **_ASYM, **kw)
         h = tf.keras.layers.RNN(col, return_sequences=True)((x, t))
-        outs.append((h.numpy(), [v.name for v in col.trainable_variables]))
+        outs.append((h.numpy(), [(v.name.split('/')[-1], tuple(v.shape))
+                                 for v in col.trainable_variables]))
     np.testing.assert_array_equal(outs[0][0], outs[1][0])
     assert outs[0][1] == outs[1][1]

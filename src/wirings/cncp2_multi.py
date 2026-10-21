@@ -166,9 +166,11 @@ class MultiColumnV2Cell(tf.keras.layers.AbstractRNNCell):
             self.lateral.build((None, K * u))
             # R2: glorot of one u x u block (the (Ku, Ku) glorot limit is
             # sqrt(K) smaller), then 1/sqrt(n) with n the edges summed into S
-            # (E_GS, E_DS if feedback, lateral as one edge).
-            n = 1 + int(self.cols[0]._feedback) + 1
-            self.lateral.W.assign(self.lateral.W * np.sqrt(K) / np.sqrt(n))
+            # (E_GS, E_DS if feedback, lateral as one edge), per target
+            # column (W columns = destination units).
+            scale = np.repeat([np.sqrt(K) / np.sqrt(1 + int(c._feedback) + 1)
+                               for c in self.cols], u).astype(np.float32)
+            self.lateral.W.assign(self.lateral.W * scale[None, :])
         self.built = True
 
     def call(self, inputs, states):
