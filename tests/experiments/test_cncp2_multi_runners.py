@@ -15,7 +15,8 @@ from experiments import run_lotka_volterra_benchmark as lv_runner
 from experiments.run_person_activity_benchmark import result_tag
 from src.tasks.person_activity.model import multi_column_config
 
-_FLAGS = dict(columns=None, partition=None, coupling=None, readout=None)
+_FLAGS = dict(columns=None, partition=None, coupling=None, readout=None,
+              backbone_layers=None)
 
 
 def test_multi_column_config_defaults_and_ignore_warning():

@@ -82,7 +82,7 @@ def result_filename(args, multi=None):
     """Result JSON name; a set --backbone-layers adds `_bb{N}` (V2 vs V2s),
     cncp2_multi adds `_K{K}_{partition}_{coupling}_{readout}`."""
     return (f"{args.cell}_{args.wiring}_seed{args.seed}"
-            f"{backbone_suffix(getattr(args, 'backbone_layers', None))}"
+            f"{backbone_suffix(args.backbone_layers)}"
             f"{multi_column_suffix(multi or {})}.json")
 
 
@@ -276,8 +276,7 @@ def main():
         "batch_size": args.batch_size, "epochs": args.epochs,
         "backbone_layers": args.backbone_layers, **pc, **multi,
     }
-    tag = (f"{args.cell}_{args.wiring}_seed{args.seed}"
-           f"{backbone_suffix(getattr(args, 'backbone_layers', None))}")
+    tag = result_filename(args, multi)[:-len(".json")]
     probe = None
     if args.probe_stability:
         # A real training batch (the first batch_size training sequences).

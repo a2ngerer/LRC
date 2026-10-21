@@ -187,3 +187,18 @@ def test_committee_builder_independent_columns(K, consensus):
                 if isinstance(l, tf.keras.layers.RNN))
     assert isinstance(cell, MultiColumnV2Cell) and cell.lateral is None
     assert list(cell.column_input_dims) == [7] * K
+
+
+def test_single_column_path_unchanged_by_extra_s_edges():
+    """extra_s_edges=0 and the two-element input are the #9 column: same
+    variables, same fan-in, same outputs as the plain constructor."""
+    from src.wirings import CorticalColumnV2Cell
+    x, t = _inputs(F=F_IN, batch=2, steps=4)
+    outs = []
+    for kw in ({}, dict(extra_s_edges=0)):
+        tf.keras.utils.set_random_seed(3)
+        col = CorticalColumnV2Cell('cfc_lrc', units=4, seed=3, **_ASYM, **kw)
+        h = tf.keras.layers.RNN(col, return_sequences=True)((x, t))
+        outs.append((h.numpy(), [v.name for v in col.trainable_variables]))
+    np.testing.assert_array_equal(outs[0][0], outs[1][0])
+    assert outs[0][1] == outs[1][1]

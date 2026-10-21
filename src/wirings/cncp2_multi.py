@@ -109,6 +109,10 @@ class MultiColumnV2Cell(tf.keras.layers.AbstractRNNCell):
         """Per-column input widths and a function x -> list of K inputs."""
         K = self.K
         if len(x_shape) == 3:                           # committee views
+            if self._partition != 'same':
+                warnings.warn("per-column views (B, K, F) are routed as given; "
+                              f"partition={self._partition!r} is ignored",
+                              stacklevel=2)
             if int(x_shape[1]) != K:
                 raise ValueError(f"views axis has {x_shape[1]} columns, "
                                  f"the cell has {K}")

@@ -58,7 +58,8 @@ def result_tag(args, multi=None):
     """Run tag (log, wandb name, result JSON stem); --backbone-layers adds
     `_bb{N}`, cncp2_multi adds `_K{K}_{partition}_{coupling}_{readout}`."""
     return (f"{args.cell}_{args.wiring}_seed{args.seed}"
-            f"{backbone_suffix(getattr(args, 'backbone_layers', None))}{multi_column_suffix(multi or {})}")
+            f"{backbone_suffix(args.backbone_layers)}"
+            f"{multi_column_suffix(multi or {})}")
 
 
 def run(args):
