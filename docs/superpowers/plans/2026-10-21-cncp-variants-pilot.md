@@ -335,3 +335,15 @@ Numbers are medians over 3 seeds; CL = closed-loop MSE at 200 epochs, acc = fina
 **Decision needed before the final suite** (Codex plan review, finding 9): run the sub-cells with backbone 1 in all CfC arms (row bb1, the wiring comparison), or stabilise the backbone-0 package. Row bb1 is the recommended basis: it is the only row in which every hypothesis arm trains in every seed, and cncp bb1 passes the UC-B rule against dense3.
 
 **Costs realised.** LV/Duffing jobs 6 to 30 min (9 to 12 fits, 6 parallel), PA 27 to 37 min (9 to 12 fits), UC-C 13 to 54 min (3 fits); total about 9 GPU-h for 188 + 3 fits, below the 16.5 to 25 GPU-h estimate (the committee canary over-estimated K = 4 by about 2x because K = 16 shared the GPU).
+
+## 11. Codex code review of #10 (round 2, on 54ce4be)
+
+Verdict: launch-ready, no blocking findings; three minor ones, all applied in the follow-up commit.
+
+| # | Finding | Response |
+|---|---|---|
+| 1 (minor) | builders default `readout="mean"` while the CLI resolves `region` to `concat`; direct calls get a different model and budget | FIXED: `default_readout(partition)` in the PA model is used by the runner flags and both builders (`readout=None`) |
+| 2 (minor) | `none` vs `lateral` at the same u also changes the initialisation of `E_GS`/`E_DS` (1/sqrt(3) vs 1/sqrt(2)), so the coupling mechanism is not isolated | documented in spec B.7 with the third control needed for causal attribution (not in the pilot) |
+| 3 (minor) | `_make_mask` repairs an empty off-diagonal block to one edge, so lateral blocks are not pure Bernoulli draws (all connected at u = 1 or d_lat = 0) | documented in the `lateral_density` docstring with the valid range; parameter counts are realised counts and stay correct |
+
+Codex reproduced the realised counts for seed 0 exactly (LV K = 2 u = 7: 3639 none / 3667 lateral; PA K = 4 u = 14: 28668 / 29275) and confirmed bit-identical weights and outputs of the single-column path against 501e51d.

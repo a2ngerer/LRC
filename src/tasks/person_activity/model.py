@@ -170,8 +170,15 @@ def multi_column_config(args):
         if cfg[n] is None:
             cfg[n] = v
     if cfg["readout"] is None:
-        cfg["readout"] = "concat" if cfg["partition"] == "region" else "mean"
+        cfg["readout"] = default_readout(cfg["partition"])
     return cfg
+
+
+def default_readout(partition):
+    """Readout when none is given: concat under 'region' (columns carry
+    different information), mean otherwise. Shared by the runner flags and
+    the builders so direct calls resolve like the CLI."""
+    return "concat" if partition == "region" else "mean"
 
 
 def multi_column_suffix(cfg):
@@ -202,7 +209,7 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
                                 lr=1e-3, timescale_prior=None, columns=MULTI_COLUMN_DEFAULTS["columns"],
                                 partition=MULTI_COLUMN_DEFAULTS["partition"],
                                 coupling=MULTI_COLUMN_DEFAULTS["coupling"],
-                                readout="mean", **cell_kwargs):
+                                readout=None, **cell_kwargs):
     """Build and compile a person-activity model for one (wiring, cell).
 
     Args:
@@ -249,7 +256,8 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
         logits = multi_column_head(
             (features, time), num_classes, "logits", columns=columns,
             cell_cls=cell_cls, units=size, seed=seed, partition=partition,
-            coupling=coupling, readout=readout, region_tags=PA_SENSOR_TAGS,
+            coupling=coupling, readout=readout or default_readout(partition),
+            region_tags=PA_SENSOR_TAGS,
             **cell_kwargs)
     elif wiring == "cncp":
         # One composite RNN cell holding the whole sparse cNCP graph; it

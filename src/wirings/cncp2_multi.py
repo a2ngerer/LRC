@@ -61,7 +61,12 @@ class MultiColumnV2Cell(tf.keras.layers.AbstractRNNCell):
                          sum_{c' != c} L_{c'c} tanh(s_{c'}(t-1)), L a
                          SparseLinear(u, u) of density ``lateral_density``.
                          No-op for K = 1.
-        lateral_density: d_lat (default 0.25).
+        lateral_density: d_lat (default 0.25), valid range (0, 1]. Each
+                         off-diagonal u x u block is a Bernoulli draw that
+                         is repaired to at least one edge when it comes out
+                         empty (``_make_mask``), so every ordered column pair
+                         is connected; at u = 1 or d_lat = 0 the blocks are
+                         therefore all connected, not Bernoulli.
         region_tags:     number of leading one-hot tag features (see partition).
         (rest)           forwarded to every CorticalColumnV2Cell (column flags
                          and sub-cell kwargs).

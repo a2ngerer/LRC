@@ -22,6 +22,7 @@ from src.wirings import (CorticalColumnCell, CorticalColumnV2Cell, NCPWiring,
 from src.wirings.tbt_cncp import TbtCorticalColumnCell
 from src.tasks.person_activity.model import (
     WIRINGS, COMPOSITE_WIRINGS, DENSE3_LAYERS, MULTI_COLUMN_DEFAULTS,
+    default_readout,
     ncp_layer_sizes,
     scaled_lamina_units, stacked_dense, _resolve_cell_cls, _reject_multi_state)
 from src.tasks.active_sensing.model import TBT_MODES
@@ -41,7 +42,7 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
                                loc_dim=12, lr=1e-3, columns=MULTI_COLUMN_DEFAULTS["columns"],
                                partition=MULTI_COLUMN_DEFAULTS["partition"],
                                coupling=MULTI_COLUMN_DEFAULTS["coupling"],
-                               readout="mean", **cell_kwargs):
+                               readout=None, **cell_kwargs):
     """Build and compile a next-step trajectory model for one (wiring, cell).
 
     Args:
@@ -116,7 +117,8 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
         next_state = multi_column_head(
             (state, time), feature_size, "next_state", columns=columns,
             cell_cls=cell_cls, units=size, seed=seed, partition=partition,
-            coupling=coupling, readout=readout, **cell_kwargs)
+            coupling=coupling, readout=readout or default_readout(partition),
+            **cell_kwargs)
         inputs = [state, time]
     elif wiring == "ncp":
         inter, command, motor = ncp_layer_sizes(size)
