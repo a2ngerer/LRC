@@ -17,10 +17,13 @@
 
 import tensorflow as tf
 
-from src.wirings import CorticalColumnCell, CorticalColumnV2Cell, NCPWiring
+from src.wirings import (CorticalColumnCell, CorticalColumnV2Cell, NCPWiring,
+                         multi_column_head)
 from src.wirings.tbt_cncp import TbtCorticalColumnCell
 from src.tasks.person_activity.model import (
-    WIRINGS, COMPOSITE_WIRINGS, DENSE3_LAYERS, ncp_layer_sizes,
+    WIRINGS, COMPOSITE_WIRINGS, DENSE3_LAYERS, MULTI_COLUMN_DEFAULTS,
+    default_readout,
+    ncp_layer_sizes,
     scaled_lamina_units, stacked_dense, _resolve_cell_cls, _reject_multi_state)
 from src.tasks.active_sensing.model import TBT_MODES
 
@@ -36,12 +39,15 @@ LV_WIRINGS = WIRINGS + tuple(TBT_MODES)
 
 
 def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
-                               loc_dim=12, lr=1e-3, **cell_kwargs):
+                               loc_dim=12, lr=1e-3, columns=MULTI_COLUMN_DEFAULTS["columns"],
+                               partition=MULTI_COLUMN_DEFAULTS["partition"],
+                               coupling=MULTI_COLUMN_DEFAULTS["coupling"],
+                               readout=None, **cell_kwargs):
     """Build and compile a next-step trajectory model for one (wiring, cell).
 
     Args:
         wiring:       one of LV_WIRINGS: 'dense', 'dense3', 'ncp', 'cncp',
-                      'cncp2'
+                      'cncp2', 'cncp2_multi'
                       (2-input, no reference frame) or a tbt_cncp* mode
                       (3-input, with the phase-space location signal).
         cell:         _CELL_REGISTRY key (e.g. 'cfc_lrc', 'gru', 'lstm') or
@@ -50,7 +56,8 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
         size:         the arm's width knob. dense/dense3: RNN units per layer;
                       ncp: inter=size, command=motor=size//2; cncp/tbt: lamina
                       widths scaled by size/16 (person_activity.
-                      scaled_lamina_units); cncp2: column width u = size.
+                      scaled_lamina_units); cncp2 / cncp2_multi: column
+                      width u = size.
                       Derive it per arm from the budget
                       (src.wirings.size_for_budget).
         seed:         seeds tf/numpy/python RNGs (weight init) and the wiring
@@ -59,6 +66,9 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
         loc_dim:      reference-frame code width (datasets.RF_DIM == 12); only
                       used by the tbt_cncp* wirings.
         lr:           RMSprop learning rate.
+        columns, partition, coupling, readout: cncp2_multi only (spec B.7);
+                      the 2-D state has no sensor structure, so
+                      partition='region' splits the state axis (warning).
         **cell_kwargs: forwarded to every cell constructor.
 
     Returns:
@@ -102,6 +112,14 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
                                    **cell_kwargs)
         h = tf.keras.layers.RNN(col, return_sequences=True)((state, time))
         inputs = [state, time]
+    elif wiring == "cncp2_multi":
+        h = None                                    # head built below
+        next_state = multi_column_head(
+            (state, time), feature_size, "next_state", columns=columns,
+            cell_cls=cell_cls, units=size, seed=seed, partition=partition,
+            coupling=coupling, readout=readout or default_readout(partition),
+            **cell_kwargs)
+        inputs = [state, time]
     elif wiring == "ncp":
         inter, command, motor = ncp_layer_sizes(size)
         ncp = NCPWiring(cell_cls, inter, command, motor, seed=seed,
@@ -118,7 +136,8 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
 
     # Linear regression head: predict the next (prey, predator) state. A plain
     # Dense on (B, T, units) applies to the last axis == TimeDistributed here.
-    next_state = tf.keras.layers.Dense(feature_size, name="next_state")(h)
+    if h is not None:
+        next_state = tf.keras.layers.Dense(feature_size, name="next_state")(h)
 
     model = tf.keras.Model(inputs=inputs, outputs=next_state)
     model.compile(
