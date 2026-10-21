@@ -29,11 +29,13 @@ fi
 # Forward any PA_* matrix overrides through the ssh environment to the sbatch.
 PA_ENV=""
 for v in PA_EPOCHS PA_CELLS PA_WIRINGS PA_SEEDS PA_MAXPAR PA_WANDB \
-         PA_PARAM_BUDGET PA_LR; do
+         PA_PARAM_BUDGET PA_LR PA_BACKBONE PA_EXTRA; do
     if [[ -n "${!v:-}" ]]; then PA_ENV+="${v}='${!v}' "; fi
 done
 RUN_ENV="${PA_ENV:-<defaults>}"
 RUN_COMMAND="${PA_ENV}./cluster/submit_person_activity.sh ${LABEL}"
+# ponytail: defaults mirror cluster/person_activity.sbatch
+run_count "${PA_CELLS:-cfc_lrc gru}" "${PA_WIRINGS:-ncp cncp}" "${PA_SEEDS:-0 1 2}"
 
 run_rsync
 run_prepare 03_person_activity

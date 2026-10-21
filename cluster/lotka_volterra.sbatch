@@ -62,7 +62,7 @@ SEEDS="${LV_SEEDS:-0 1 2}"
 MAXPAR="${LV_MAXPAR:-6}"
 # Every arm is sized on its own width knob to this EFFECTIVE parameter budget
 # (thesis protocol: 4k for the rollouts).
-PARAM_BUDGET="${LV_PARAM_BUDGET:-4000}"
+PARAM_BUDGET="${LV_PARAM_BUDGET:-4000}"   # 0 = no --param-budget (use --size via LV_EXTRA)
 PLOT_CELL="${LV_PLOT_CELL:-cfc_lrc}"
 # System / resolution / output dir (predator_prey -> results/lotka_volterra;
 # duffing -> results/lotka_volterra_duffing, submitted as a second job).
@@ -70,21 +70,28 @@ SYSTEM="${LV_SYSTEM:-periodic_predator_prey}"
 SEQLEN="${LV_SEQLEN:-128}"
 OUTDIR="$RUN_DIR/results"
 LR="${LV_LR:-1e-3}"
+# CfC-family backbone depth for every arm (V2s control: LV_BACKBONE=1); empty = flag
+# not passed, per-wiring defaults unchanged; results get a _bb<N> filename suffix.
+BACKBONE="${LV_BACKBONE:-}"
+EXTRA="${LV_EXTRA:-}"   # extra runner flags, e.g. "--columns 2 --partition same" or "--size 18"
 
 
+# shellcheck disable=SC2086  # flag lists are split on purpose
 run_one() {
     local cell="$1" wiring="$2" seed="$3"
-    local wandb_flag=""
+    local wandb_flag="" bb_flag="" budget_flag=""
+    [[ "${PARAM_BUDGET}" != "0" ]] && budget_flag="--param-budget ${PARAM_BUDGET}"
+    [[ -n "${BACKBONE:-}" ]] && bb_flag="--backbone-layers ${BACKBONE}"
     [[ "${USE_WANDB:-0}" == "1" ]] && wandb_flag="--wandb"
     echo "[start] ${cell}_${wiring}_seed${seed} $(date -u +%FT%TZ)"
     uv run python experiments/run_lotka_volterra_benchmark.py \
         --wiring "$wiring" --cell "$cell" --seed "$seed" --epochs "$EPOCHS" \
         --system "$SYSTEM" --seq-len "$SEQLEN" --outdir "$OUTDIR" \
-        --param-budget "$PARAM_BUDGET" --lr "$LR" $wandb_flag
+        $budget_flag --lr "$LR" $bb_flag $EXTRA $wandb_flag
     echo "[done ] ${cell}_${wiring}_seed${seed} (exit $?)"
 }
 export -f run_one
-export EPOCHS SYSTEM SEQLEN OUTDIR USE_WANDB PARAM_BUDGET LR
+export EPOCHS SYSTEM SEQLEN OUTDIR USE_WANDB PARAM_BUDGET LR BACKBONE EXTRA
 
 JOBS=""
 for cell in $CELLS; do

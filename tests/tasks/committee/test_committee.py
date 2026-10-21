@@ -1,4 +1,6 @@
 """Tests for the partial-view voting committee (Iteration 7)."""
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import tensorflow as tf
@@ -8,7 +10,11 @@ from src.tasks.committee.views import (partition_masks, masked_views,
                                        make_views)
 from src.tasks.committee.model import (build_committee_model, ChannelDropout,
                                        NoiseAugment, COMMITTEE_WIRINGS)
+from src.neurons import CfC_Cell, CfC_LRC_Cell
+from src.tasks.person_activity.model import (backbone_override,
+                                             effective_backbone_layers)
 from src.wirings import effective_param_count, match_param_budget
+from experiments.run_committee_benchmark import result_filename
 from src.wirings.committee import CommitteeVotingCell
 
 
@@ -331,3 +337,28 @@ def test_train_drop_builds_adds_no_params_and_infers_deterministically():
     p1 = m.predict([X, t], verbose=0)
     p2 = m.predict([X, t], verbose=0)
     assert np.allclose(p1, p2)                               # dropout off at test
+
+
+# --- --backbone-layers override (V2s control) ---
+
+@pytest.mark.parametrize("backbone_layers", [None, 0, 1])
+@pytest.mark.parametrize("wiring", COMMITTEE_WIRINGS)
+def test_backbone_override_reaches_every_committee_arm(wiring, backbone_layers):
+    kw = backbone_override("cfc_lrc", backbone_layers)
+    m = build_committee_model(wiring, 2, cell="cfc_lrc", size=16, feature_size=7,
+                              seq_len=6, num_classes=7, seed=0, **kw)
+    depths = {len(c._backbone) for c in m._flatten_layers()
+              if isinstance(c, (CfC_Cell, CfC_LRC_Cell))}
+    assert depths == {effective_backbone_layers(wiring, "cfc_lrc", kw)}
+
+
+def test_result_filename_backbone_suffix():
+    a = SimpleNamespace(cell="cfc_lrc", wiring="cncp", n_columns=4, size=48,
+                        view_mode="partition", vote_lambda=None,
+                        consensus="mean", dense_vote_units=None,
+                        view_average=False, train_drop=0.0, train_noise=0.0,
+                        test_corruption="dropout", seed=0, backbone_layers=None)
+    base = "cfc_lrc_cncp_K4_s48_partition_seed0"
+    assert result_filename(a) == base + ".json"
+    a.backbone_layers = 1
+    assert result_filename(a) == base + "_bb1.json"
