@@ -54,7 +54,7 @@ NOISESIGMAS="${CO_NOISESIGMAS:-0.0,0.25,0.5,1.0}"
 # Every arm is sized on its own width knob to this EFFECTIVE parameter budget
 # (thesis protocol: 30k for the consensus study); weight sharing keeps the count
 # independent of K.
-PARAM_BUDGET="${CO_PARAM_BUDGET:-30000}"
+PARAM_BUDGET="${CO_PARAM_BUDGET:-30000}"   # 0 = no --param-budget (use --size via CO_EXTRA)
 MAXPAR="${CO_MAXPAR:-4}"
 
 OUTDIR="$RUN_DIR/results"
@@ -65,18 +65,21 @@ BACKBONE="${CO_BACKBONE:-}"
 [[ -n "${BACKBONE}" ]] && EXTRA="--backbone-layers ${BACKBONE} ${EXTRA}"
 
 run_one() {
-    local cell="$1" wiring="$2" K="$3" seed="$4"
+    local cell="$1" wiring="$2" K="$3" seed="$4" budget_flag="" rc
+    [[ "${PARAM_BUDGET}" != "0" ]] && budget_flag="--param-budget ${PARAM_BUDGET}"
     echo "[start] ${cell}_${wiring}_K${K}_pb${PARAM_BUDGET}_seed${seed} $(date -u +%FT%TZ)"
-    # shellcheck disable=SC2086  # CO_EXTRA is a flag list, split on purpose
+    # shellcheck disable=SC2086  # flag lists are split on purpose
     uv run python experiments/run_committee_benchmark.py \
-        --wiring "$wiring" --n-columns "$K" --param-budget "$PARAM_BUDGET" \
+        --wiring "$wiring" --n-columns "$K" $budget_flag \
         --cell "$cell" --seed "$seed" --epochs "$EPOCHS" --seq-len "$SEQLEN" \
         --batch-size "$BATCH" \
         --view-mode "$VIEWMODE" --drop-fracs "$DROPFRACS" \
         --train-drop "$TRAINDROP" --train-noise "$TRAINNOISE" \
         --test-corruption "$TESTCORRUPT" --noise-sigmas "$NOISESIGMAS" \
         --outdir "$OUTDIR" $EXTRA
-    echo "[done ] ${cell}_${wiring}_K${K}_pb${PARAM_BUDGET}_seed${seed} (exit $?)"
+    rc=$?
+    echo "[done ] ${cell}_${wiring}_K${K}_pb${PARAM_BUDGET}_seed${seed} (exit $rc)"
+    return $rc
 }
 export -f run_one
 export EPOCHS SEQLEN BATCH VIEWMODE DROPFRACS PARAM_BUDGET TRAINDROP \
@@ -94,8 +97,11 @@ for cell in $CELL; do
 done
 
 echo "=== committee: $(printf '%s' "$JOBS" | grep -c .) runs, par ${MAXPAR}, ${EPOCHS} epochs, mode ${VIEWMODE}, on $(hostname) ==="
-printf '%s' "$JOBS" | grep . | xargs -P "$MAXPAR" -n 4 bash -c 'run_one "$1" "$2" "$3" "$4"' _
+N_FITS=$(printf '%s' "$JOBS" | grep -c .)
+printf '%s' "$JOBS" | grep . | xargs -P "$MAXPAR" -n 4 bash -c 'run_one "$1" "$2" "$3" "$4"' _ || echo "WARNING: at least one fit exited non-zero (xargs exit $?)"
 echo "=== all runs done $(date -u +%FT%TZ) ==="
+N_JSON=$(find "$OUTDIR" -maxdepth 1 -name '*.json' | wc -l)
+echo "result files: ${N_JSON} of ${N_FITS} expected"
 ls -la "$OUTDIR"/*.json
 
 echo "=== rendering plot ==="
@@ -103,3 +109,4 @@ uv run python experiments/plot_committee.py --indir "$OUTDIR" || echo "plot step
 mv "$OUTDIR"/*.png "$RUN_DIR/figures/" 2>/dev/null || true
 ls -la "$RUN_DIR/figures" 2>/dev/null || true
 echo "=== done $(date -u +%FT%TZ) ==="
+[[ "$N_JSON" -ge "$N_FITS" ]] || { echo "FATAL: ${N_FITS} fits expected, ${N_JSON} result files written" >&2; exit 1; }

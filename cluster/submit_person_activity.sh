@@ -37,6 +37,6 @@ RUN_COMMAND="${PA_ENV}./cluster/submit_person_activity.sh ${LABEL}"
 # ponytail: defaults mirror cluster/person_activity.sbatch
 run_count "${PA_CELLS:-cfc_lrc gru}" "${PA_WIRINGS:-ncp cncp}" "${PA_SEEDS:-0 1 2}"
 
+run_prepare 03_person_activity   # reserve the run folder first, then touch the shared code tree
 run_rsync
-run_prepare 03_person_activity
 run_sbatch cluster/person_activity.sbatch "${PA_ENV}"
