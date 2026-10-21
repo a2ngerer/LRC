@@ -14,11 +14,15 @@
 #SBATCH --gres=gpu:a40:1
 #SBATCH --mem=16G
 #SBATCH --time=01:30:00
-#SBATCH --output=outputs/slurm/%x-%j.out
-#SBATCH --error=outputs/slurm/%x-%j.err
+# --output/--error are passed on the sbatch command line by cluster/_run.sh
+# (<run folder>/logs/); RUN_DIR is exported by the launcher.
 #SBATCH --open-mode=append
 #SBATCH --requeue
 set -euo pipefail
+# Run folder (cluster/_run.sh): results, logs, figures and wandb live here,
+# never under the code tree (which is rsync --delete-d).
+RUN_DIR="${RUN_DIR:?RUN_DIR not set: submit via cluster/submit_*.sh}"
+mkdir -p "$RUN_DIR/results" "$RUN_DIR/figures" "$RUN_DIR/wandb"
 
 # Virtual nodes have a non-writable /tmp -> redirect temp into $HOME.
 export TMPDIR="$HOME/tmp"; export TMP="$TMPDIR"; export TEMP="$TMPDIR"
@@ -41,7 +45,7 @@ export PYTHONUNBUFFERED=1
 # locally via cluster/wandb_sync.sh. Opt in with PA_WANDB=1 at submit time;
 # default off keeps existing runs untouched.
 export WANDB_MODE=offline
-export WANDB_DIR="$PWD/outputs/wandb"
+export WANDB_DIR="$RUN_DIR/wandb"
 export WANDB_SILENT=true
 mkdir -p "$WANDB_DIR"
 USE_WANDB="${PA_WANDB:-0}"
@@ -57,7 +61,8 @@ MAXPAR="${PA_MAXPAR:-3}"
 PARAM_BUDGET="${PA_PARAM_BUDGET:-30000}"
 DATA_PATH="$PWD/data/person/ConfLongDemo_JSI.txt"
 
-mkdir -p outputs/slurm results/person_activity
+OUTDIR="$RUN_DIR/results"
+LR="${PA_LR:-1e-3}"
 
 if [[ ! -f "$DATA_PATH" ]]; then
     echo "FATAL: dataset not found at $DATA_PATH (rsync must include data/)." >&2
@@ -71,11 +76,12 @@ run_one() {
     echo "[start] ${cell}_${wiring}_seed${seed} $(date -u +%FT%TZ)"
     uv run python experiments/run_person_activity_benchmark.py \
         --wiring "$wiring" --cell "$cell" --seed "$seed" --epochs "$EPOCHS" \
-        --param-budget "$PARAM_BUDGET" --data-path "$DATA_PATH" $wandb_flag
+        --param-budget "$PARAM_BUDGET" --data-path "$DATA_PATH" \
+        --outdir "$OUTDIR" --lr "$LR" $wandb_flag
     echo "[done ] ${cell}_${wiring}_seed${seed} (exit $?)"
 }
 export -f run_one
-export EPOCHS DATA_PATH USE_WANDB PARAM_BUDGET
+export EPOCHS DATA_PATH USE_WANDB PARAM_BUDGET OUTDIR LR
 
 JOBS=""
 for cell in $CELLS; do

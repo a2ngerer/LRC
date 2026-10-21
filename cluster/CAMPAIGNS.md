@@ -72,6 +72,15 @@ Resources can be overridden per invocation without touching the YAML:
 CLUSTER_MEM=64G CLUSTER_RUNS_PER_GPU=6 ./cluster/submit_campaign.sh configs/campaigns/X.yaml
 ```
 
+## Run folders
+
+The task launchers (`submit_lotka_volterra.sh`, `submit_person_activity.sh`,
+`submit_committee.sh`) write every launch into its own run folder under the
+cluster benchmarks tree and log it as `<NN_benchmark>/<run>`; see the "Run
+folders" section of [`cluster/README.md`](README.md). The campaign array
+(`submit_campaign.sh`) still writes to `results/` and `outputs/slurm/` inside
+`CLUSTER_REPO_DIR`; moving it onto run folders is a follow-up.
+
 ## Auto work-log
 
 After a successful submit, `submit_campaign.sh` calls

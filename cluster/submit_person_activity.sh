@@ -1,38 +1,24 @@
 #!/usr/bin/env bash
-# Sync code + dataset to the ISOLATED cluster repo ~/thesis-person and submit the
-# cNCP-vs-NCP Person-Activity benchmark as a SINGLE SLURM job (cluster/person_activity.sbatch).
+# Sync code + dataset and submit the Person-Activity benchmark
+# (cluster/person_activity.sbatch) as ONE SLURM job into its own run folder
+# under 03_person_activity (see cluster/_run.sh for the layout).
 #
-# Isolated on purpose: a separate directory + its own uv venv means this never
-# perturbs ~/thesis-benchmark (Neural-ODE) or ~/thesis-mujoco.
+#   ./cluster/submit_person_activity.sh setup        # one-time venv on the login node
+#   ./cluster/submit_person_activity.sh <label>      # cfc_lrc + gru x {ncp,cncp} x 3 seeds, 50 epochs
+#   PA_CELLS="cfc_lrc" PA_SEEDS="0 1 2" ./cluster/submit_person_activity.sh <label>
+#   ./cluster/submit_person_activity.sh -n <label>   # dry run
 #
-#   # one-time env setup (login node has internet; downloads TF-CUDA):
-#   ./cluster/submit_person_activity.sh setup
-#   # submit the benchmark (cfc_lrc + gru x {ncp,cncp} x 3 seeds, 50 epochs):
-#   ./cluster/submit_person_activity.sh
-#   # smaller/faster override via env:
-#   PA_CELLS="cfc_lrc" PA_SEEDS="0 1 2" ./cluster/submit_person_activity.sh
-#
-# Prereqs: TU Wien VPN active + ~/.ssh/config "datalab" entry (see cluster/config.sh).
+# Prereqs: TU Wien VPN + ~/.ssh/config "datalab" entry (cluster/config.sh).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source cluster/config.sh
+source cluster/_run.sh
+run_parse_args "$@"
 
-REPO_DIR="thesis-person"
-
-_rsync() {
-    echo "rsync $(pwd) -> ${CLUSTER_HOST}:${REPO_DIR}/  (includes data/ for the dataset)"
-    rsync -avz --delete \
-        --exclude='.git/' --exclude='.venv/' --exclude='results/' \
-        --exclude='outputs/' --exclude='__pycache__/' --exclude='*.pyc' \
-        --exclude='.DS_Store' --exclude='.pytest_cache/' --exclude='datasets/' \
-        --exclude='papers/' \
-        ./ "${CLUSTER_HOST}:${REPO_DIR}/"
-}
-
-if [[ "${1:-}" == "setup" ]]; then
-    _rsync
-    echo "Setting up isolated venv (uv sync --extra cuda --extra tracking) on the login node ..."
-    ssh "${CLUSTER_HOST}" "cd ${REPO_DIR} && export PATH=\$HOME/.local/bin:\$PATH && \
+if [[ "${SETUP}" -eq 1 ]]; then
+    run_rsync
+    echo "Setting up the venv (uv sync --extra cuda --extra tracking) on the login node ..."
+    _run_ssh "cd ${CLUSTER_REPO_DIR} && export PATH=\$HOME/.local/bin:\$PATH && \
         export TMPDIR=\$HOME/tmp && mkdir -p \$HOME/tmp && \
         uv sync --extra cuda --extra tracking && \
         uv run python -c 'import tensorflow as tf; print(\"tf\", tf.__version__)'"
@@ -43,18 +29,12 @@ fi
 # Forward any PA_* matrix overrides through the ssh environment to the sbatch.
 PA_ENV=""
 for v in PA_EPOCHS PA_CELLS PA_WIRINGS PA_SEEDS PA_MAXPAR PA_WANDB \
-         PA_PARAM_BUDGET; do
+         PA_PARAM_BUDGET PA_LR; do
     if [[ -n "${!v:-}" ]]; then PA_ENV+="${v}='${!v}' "; fi
 done
+RUN_ENV="${PA_ENV:-<defaults>}"
+RUN_COMMAND="${PA_ENV}./cluster/submit_person_activity.sh ${LABEL}"
 
-_rsync
-
-# shellcheck disable=SC2029
-ssh "${CLUSTER_HOST}" "cd ${REPO_DIR} && mkdir -p outputs/slurm results/person_activity && \
-export PATH=\$HOME/.local/bin:\$PATH && \
-${PA_ENV}sbatch --export=ALL cluster/person_activity.sbatch"
-
-echo
-echo "Monitor:  ssh ${CLUSTER_HOST} squeue -u \\\$USER"
-echo "Logs:     ssh ${CLUSTER_HOST} tail -f ${REPO_DIR}/outputs/slurm/person-cncp-<jobid>.out"
-echo "Fetch:    ./cluster/fetch_person_activity.sh"
+run_rsync
+run_prepare 03_person_activity
+run_sbatch cluster/person_activity.sbatch "${PA_ENV}"
