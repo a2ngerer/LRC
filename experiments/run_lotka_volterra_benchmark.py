@@ -160,7 +160,8 @@ def result_filename(args, multi=None):
     return (f"{args.cell}_{args.wiring}_seed{args.seed}"
             f"{backbone_suffix(args.backbone_layers)}"
             f"{multi_column_suffix(multi or {})}"
-            f"{'_mixed' if args.forcing == 'mixed' else ''}.json")
+            f"{'_mixed' if getattr(args, 'forcing', None) == 'mixed' else ''}"
+            ".json")
 
 
 class _StateTap(tf.keras.layers.AbstractRNNCell):
