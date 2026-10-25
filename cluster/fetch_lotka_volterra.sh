@@ -1,26 +1,17 @@
 #!/usr/bin/env bash
-# Fetch the Lotka-Volterra benchmark result JSONs + rendered plots from the
-# isolated cluster repo ~/thesis-person back into the local results/ tree.
-# Prereqs: TU Wien VPN + "datalab" ssh entry (cluster/config.sh).
+# Thin wrapper: fetch Lotka-Volterra (01) or Duffing (02) run folders.
+#   ./cluster/fetch_lotka_volterra.sh                 # list runs of both
+#   ./cluster/fetch_lotka_volterra.sh <run> [--logs]  # 01_lotka_volterra/<run>
+#   LV_SYSTEM=duffing ./cluster/fetch_lotka_volterra.sh <run>   # 02_duffing/<run>
 set -euo pipefail
 cd "$(dirname "$0")/.."
-source cluster/config.sh
-
-REPO_DIR="thesis-person"
-# predator_prey + duffing are submitted as two jobs into two result dirs.
-for sub in lotka_volterra lotka_volterra_duffing; do
-    mkdir -p "results/${sub}"
-    echo "rsync ${CLUSTER_HOST}:${REPO_DIR}/results/${sub}/ -> results/${sub}/"
-    rsync -avz "${CLUSTER_HOST}:${REPO_DIR}/results/${sub}/" "results/${sub}/" || true
-    echo "-- results/${sub}:"
-    ls -la "results/${sub}"/*.json 2>/dev/null | tail -20
-    ls -la "results/${sub}"/*.png 2>/dev/null
-done
-
-# Bring back any offline wandb runs (only present if submitted with LV_WANDB=1);
-# upload them locally with ./cluster/wandb_sync.sh.
-mkdir -p outputs/wandb
-echo "rsync ${CLUSTER_HOST}:${REPO_DIR}/outputs/wandb/ -> outputs/wandb/"
-rsync -avz "${CLUSTER_HOST}:${REPO_DIR}/outputs/wandb/" outputs/wandb/ || true
-
-echo "Done."
+case "${LV_SYSTEM:-periodic_predator_prey}" in
+    duffing) bench=02_duffing ;;
+    *)       bench=01_lotka_volterra ;;
+esac
+if [[ $# -eq 0 ]]; then
+    ./cluster/fetch_run.sh 01_lotka_volterra
+    ./cluster/fetch_run.sh 02_duffing
+    exit 0
+fi
+exec ./cluster/fetch_run.sh "${bench}" "$@"

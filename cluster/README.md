@@ -127,3 +127,30 @@ rsync -a datalab:thesis-benchmark/papers/.extracted/ papers/.extracted/
 
 `sync_to_cluster.sh` currently rsyncs the code tree; extend it to include
 `papers/`, or push them once with `rsync -a papers/ datalab:thesis-benchmark/papers/`.
+
+## Run folders (task launchers, since 2026-10-21)
+
+The cluster workspace is one code tree (`CLUSTER_REPO_DIR`, rsync'd with
+`--delete`) and a benchmarks tree (`CLUSTER_BENCH_DIR`) with one folder per
+benchmark family (`00_canary`, `01_lotka_volterra`, `02_duffing`,
+`03_person_activity`, `04_column_voting`, `05_halfcheetah_ppo`). The task
+launchers (`submit_lotka_volterra.sh`, `submit_person_activity.sh`,
+`submit_committee.sh`) take a run label and create
+
+```
+<CLUSTER_BENCH_DIR>/<NN_benchmark>/runs/<YYYY-MM-DD>_<label>/
+    LAUNCH.md   written before sbatch: purpose, git SHA, command, env, job id
+    results/    runner --outdir (JSONs)
+    logs/       SLURM stdout/stderr
+    figures/    plots rendered at the end of the job
+    wandb/      offline wandb runs (only with *_WANDB=1)
+```
+
+A run folder is never reused (an existing folder aborts the launch). `-n` is a
+dry run that resolves every path and prints the sbatch command without touching
+the cluster. `BENCH=00_canary` redirects a smoke test into the canary folder.
+Fill the `Purpose` line of `LAUNCH.md` (`LAUNCH_PURPOSE="..."` at submit time or
+by hand afterwards) and the `Outcome` line once the run is evaluated. Fetch with
+`./cluster/fetch_run.sh <NN_benchmark> <run>` (mirrors to
+`results/<NN_benchmark>/<run>/`); the old `fetch_*.sh` are thin wrappers.
+`cluster/test_launchers.sh` checks the dry-run paths offline.
