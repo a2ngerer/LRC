@@ -268,6 +268,9 @@ def main():
                      help="size the arm to this EFFECTIVE parameter budget "
                           "(closest size on the arm's own knob)")
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--clipnorm", type=float, default=None,
+                    help="clip every gradient tensor to this L2 norm (the "
+                         "optimizer's clipnorm); default: no clipping")
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--n-trajectories", type=int, default=80)
     ap.add_argument("--seq-len", type=int, default=128)
@@ -328,6 +331,7 @@ def main():
         print(f"budget {args.param_budget}: size={args.size} "
               f"params_effective={n_eff} (dev {budget_dev:.1%}){flag}")
     model = build(args.size)
+    model.optimizer.clipnorm = args.clipnorm      # None = no clipping
     pc = param_counts(model)
     params = pc['params_effective']
     print(f"{args.wiring}/{args.cell} seed {args.seed}: size {args.size}, "
@@ -343,6 +347,7 @@ def main():
         "cell": args.cell, "wiring": args.wiring, "seed": args.seed,
         "size": args.size, "param_budget": args.param_budget,
         "budget_deviation": budget_dev, "lr": args.lr,
+        "clipnorm": args.clipnorm,
         "batch_size": args.batch_size, "epochs": args.epochs,
         "backbone_layers": args.backbone_layers, "data_seed": data_seed,
         **pc, **multi,
@@ -399,6 +404,7 @@ def main():
         "system": args.system,
         "size": args.size, "param_budget": args.param_budget,
         "budget_deviation": budget_dev, "epochs": args.epochs, "lr": args.lr,
+        "clipnorm": args.clipnorm,
         "backbone_layers": args.backbone_layers,
         "backbone_layers_effective": bb_effective,
         **pc, **multi, "dt": data.dt, "seq_len": data.seq_len,

@@ -101,6 +101,7 @@ def run(args):
               f"params_effective={n_eff} (dev {budget_dev:.1%}){flag}",
               flush=True)
     model = build(args.size)
+    model.optimizer.clipnorm = args.clipnorm      # None = no clipping
     pc = param_counts(model)
     params = pc['params_effective']
 
@@ -119,6 +120,7 @@ def run(args):
         "param_budget": args.param_budget,
         "budget_deviation": budget_dev,
         "lr": args.lr,
+        "clipnorm": args.clipnorm,
         "batch_size": args.batch_size,
         "epochs": args.epochs,
         "backbone_layers": args.backbone_layers,
@@ -154,6 +156,7 @@ def run(args):
         "param_budget": args.param_budget,
         "budget_deviation": budget_dev,
         "lr": args.lr,
+        "clipnorm": args.clipnorm,
         "batch_size": args.batch_size,
         "backbone_layers": args.backbone_layers,
         "backbone_layers_effective": bb_effective,
@@ -212,6 +215,9 @@ def main():
                      help="size the arm to this EFFECTIVE parameter budget "
                           "(closest size on the arm's own knob)")
     p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--clipnorm", type=float, default=None,
+                   help="clip every gradient tensor to this L2 norm (the "
+                        "optimizer's clipnorm); default: no clipping")
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--backbone-layers", type=int, default=None,
                    help="CfC-family backbone depth for EVERY wiring (overrides "
