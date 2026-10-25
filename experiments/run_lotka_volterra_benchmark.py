@@ -16,6 +16,11 @@ Model selection (HPO) reads the val keys only. best_val_epoch is the epoch with
 the lowest validation loss; best_test_teacher_forced_mse is the test loss at
 that epoch, never a minimum over the test curve.
 
+Rollout endpoints (#20): rollout_metrics_val / rollout_metrics_test hold the
+src/evaluation/rollout_metrics dict of the closed-loop rollouts (VPT(0.5) as the
+primary endpoint, NRMSE@16/32/128, orbit error, invariant drift, divergence
+class rates); norm_stats lets experiments/rollout_metrics.py recompute it.
+
 Data: 48/16/16 whole trajectories at the default 80, drawn with data seed
 DATA_SEED_BASE + --seed (+ --data-seed-offset for tuning runs), so all arms of
 one replicate share a draw and every replicate gets a fresh one.
@@ -56,6 +61,7 @@ from src.tasks.person_activity.model import (
 from src.tasks.active_sensing.model import TBT_MODES
 from src.benchmark.tracking import keras_callbacks, track
 from src.benchmark.checkpoints import save_weights
+from src.evaluation.rollout_metrics import make_norm_stats, rollout_metrics
 
 
 def closed_loop_rollout(model, data, needs_loc: bool = False,
@@ -366,7 +372,7 @@ def main():
     val_curve = hist.history["val_loss"]
     best = int(np.argmin(np.nan_to_num(val_curve, nan=np.inf)))  # NaN never wins
 
-    val_metrics, _ = evaluate_split(model, data, "val", needs_loc)
+    val_metrics, val_gen = evaluate_split(model, data, "val", needs_loc)
     test_metrics, gen_norm = evaluate_split(model, data, "test", needs_loc)
     tf_pred_norm = model.predict(test_in, verbose=0)                    # (N,T,2)
 
@@ -374,11 +380,18 @@ def main():
     tf_traj = np.concatenate(
         [data.test_traj[:, :1, :], data.denormalise(tf_pred_norm)], axis=1)
     cl_traj = data.denormalise(gen_norm)
+    norm_stats = make_norm_stats(data.train_traj, data.mean, data.std)
+    rollout = {
+        "val": rollout_metrics(data.val_traj, data.denormalise(val_gen),
+                               norm_stats, args.system),
+        "test": rollout_metrics(data.test_traj, cl_traj, norm_stats,
+                                args.system)}
 
     for name, m in (("val", val_metrics), ("test", test_metrics)):
         print(f"  {name}: teacher-forced MSE {m['teacher_forced_mse']:.5f} | "
               f"closed-loop MSE {m['closed_loop_mse']:.5f} | persistence "
-              f"{m['persistence_mse']:.5f}")
+              f"{m['persistence_mse']:.5f} | VPT median "
+              f"{rollout[name]['vpt_median']:g}/{data.seq_len}")
 
     os.makedirs(args.outdir, exist_ok=True)
     record = {
@@ -397,6 +410,8 @@ def main():
         "best_val_teacher_forced_mse": float(val_curve[best]),
         "best_test_teacher_forced_mse": float(test_curve[best]),
         "val_loss_curve": _round(val_curve, 6),
+        "norm_stats": norm_stats,
+        **{f"rollout_metrics_{s}": m for s, m in rollout.items()},
         # Trajectories (de-normalised, raw prey/predator) for the overlay plots.
         "ground_truth_traj": _round(data.test_traj),
         "teacher_forced_traj": _round(tf_traj),
