@@ -16,6 +16,7 @@ from src.tasks.person_activity.model import (backbone_override,
 from src.wirings import effective_param_count, match_param_budget
 from experiments.run_committee_benchmark import result_filename
 from src.wirings.committee import CommitteeVotingCell
+from src.wirings.tbt_cncp import MultiColumnVotingCell
 
 
 # --- view operators ---
@@ -202,13 +203,13 @@ def test_vote_and_readout_slices_shape_the_output():
 
 # --- NCP committee (2026-10-04) ---
 
-def _ncp_committee(K, vote_lambda, vote_slice, readout_slice, seed=0):
+def _ncp_committee(K, vote_lambda, vote_slice, readout_slice, seed=0, **vote):
     from src.wirings import NCPWiring
     tf.keras.utils.set_random_seed(seed)
     ncp = NCPWiring(_resolve("gru"), 8, 4, 4, seed=1)
     cell = CommitteeVotingCell(n_columns=K, cell=ncp.make_cell(),
                                vote_slice=vote_slice, readout_slice=readout_slice,
-                               vote_lambda=vote_lambda)
+                               vote_lambda=vote_lambda, **vote)
     cell.build((tf.TensorShape([None, K, 5]), tf.TensorShape([None, 1])))
     return cell
 
@@ -337,6 +338,94 @@ def test_train_drop_builds_adds_no_params_and_infers_deterministically():
     p1 = m.predict([X, t], verbose=0)
     p2 = m.predict([X, t], verbose=0)
     assert np.allclose(p1, p2)                               # dropout off at test
+
+
+# --- folded-batch columns == per-column loop (#32) ---
+
+def _fold_arm(arm, K, vote):
+    """A built weight-shared committee cell of the given arm (random weights)."""
+    tf.keras.utils.set_random_seed(0)
+    if arm == "cncp":
+        cell = MultiColumnVotingCell(n_columns=K, cell_cls="cfc_lrc",
+                                     use_location="gate",
+                                     elastance_type="asymmetric", **vote)
+        cell.build((tf.TensorShape([None, K, 5]), tf.TensorShape([None, 1]),
+                    tf.TensorShape([None, K, 2])))
+        return cell
+    if arm == "ncp":
+        return _ncp_committee(K, vote_slice=slice(4, 8),
+                              readout_slice=slice(0, 4), **vote)
+    cell = CommitteeVotingCell(n_columns=K, cell_cls="cfc_lrc", units=8,
+                               vote_slice=slice(2, 6), readout_slice=slice(0, 4),
+                               elastance_type="asymmetric", **vote)
+    cell.build((tf.TensorShape([None, K, 5]), tf.TensorShape([None, 1])))
+    return cell
+
+
+def _rollout(cell, step, inputs, states):
+    """Steps `step` over inputs; returns (outputs, final states, gradients of
+    a scalar loss on both w.r.t. the cell's trainable variables)."""
+    with tf.GradientTape() as tape:
+        outs = []
+        for x in inputs:
+            out, states = step(x, states)
+            outs.append(out)
+        loss = (tf.add_n([tf.reduce_sum(o ** 2) for o in outs])
+                + tf.add_n([tf.reduce_sum(tf.sin(s)) for s in states]))
+    return outs, list(states), tape.gradient(loss, cell.trainable_variables)
+
+
+@pytest.mark.parametrize("vote_lambda", [0.0, 0.3, None])
+@pytest.mark.parametrize("consensus", ["mean", "median"])
+@pytest.mark.parametrize("K", [1, 2, 4])
+@pytest.mark.parametrize("arm", ["dense", "ncp", "cncp"])
+def test_folded_columns_match_column_loop(arm, K, consensus, vote_lambda):
+    """One shared-cell call on the (B*K)-folded batch computes the per-column
+    loop: same outputs, states and gradients over three steps from random
+    states, with per-row elapsed times and per-column features/locations."""
+    B, T = 3, 3
+    cell = _fold_arm(arm, K, dict(vote_lambda=vote_lambda, vote_init=0.4,
+                                  consensus=consensus))
+    tf.keras.utils.set_random_seed(1)
+    inputs = [(tf.random.normal([B, K, 5]),
+               tf.random.uniform([B, 1], 0.5, 1.5))
+              + ((tf.random.normal([B, K, 2]),) if arm == "cncp" else ())
+              for _ in range(T)]
+    s0 = [tf.random.normal(s.shape)
+          for s in cell.get_initial_state(batch_size=B)]
+    ref_out, ref_st, ref_g = _rollout(cell, cell._call_loop, inputs, s0)
+    out, st, g = _rollout(cell, cell.call, inputs, s0)
+    assert len(st) == len(ref_st) and len(g) == len(ref_g)
+    for a, b in zip(ref_out + ref_st, out + st):
+        np.testing.assert_allclose(b.numpy(), a.numpy(), atol=1e-5)
+    # Weight gradients sum over the batch rows in a different order (one
+    # (B*K)-row reduction vs K B-row ones): float32 rounding on the scale of
+    # the summands, so the tolerance is relative to the tensor's largest entry.
+    for a, b in zip(ref_g, g):
+        assert (a is None) == (b is None)
+        if a is not None:
+            a = a.numpy()
+            np.testing.assert_allclose(
+                b.numpy(), a, atol=1e-5 * max(1.0, np.abs(a).max()))
+
+
+@pytest.mark.parametrize("wiring", ["cncp", "ncp", "dense"])
+def test_column_loop_flag_reaches_cell_and_matches_folded_model(wiring):
+    kw = dict(cell="cfc_lrc", size=24 if wiring == "cncp" else 32,
+              feature_size=7, seq_len=6, num_classes=7,
+              elastance_type="asymmetric", seed=0)
+    fold = build_committee_model(wiring, 3, **kw)
+    loop = build_committee_model(wiring, 3, column_loop=True, **kw)
+    assert loop.count_params() == fold.count_params()
+    loop.set_weights(fold.get_weights())
+    cells = [l.cell for m in (fold, loop) for l in m.layers
+             if isinstance(l, tf.keras.layers.RNN)]
+    assert [c._column_loop for c in cells] == [False, True]
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((10, 6, 3, 7)).astype("float32")
+    t = rng.uniform(0.5, 1.5, (10, 6, 1)).astype("float32")
+    np.testing.assert_allclose(fold.predict([X, t], verbose=0),
+                               loop.predict([X, t], verbose=0), atol=1e-5)
 
 
 # --- --backbone-layers override (V2s control) ---

@@ -35,14 +35,16 @@ CONSENSUS_MODES = ("mean", "median")
 
 
 def consensus_target(cols, how="mean"):
-    """Consensus of a list of K tensors (B, U): the column mean, or the
-    coordinate-wise LOWER median (index (K - 1) // 2 of the sorted columns, so
-    an even K takes the lower of the two middle values)."""
+    """Consensus over the K columns of cols -- a (B, K, U) tensor (column axis
+    1) or a list of K tensors (B, U): the column mean, or the coordinate-wise
+    LOWER median (index (K - 1) // 2 of the sorted columns, so an even K takes
+    the lower of the two middle values)."""
+    if isinstance(cols, (list, tuple)):
+        cols = tf.stack(cols, axis=1)
     if how == "mean":
-        return tf.add_n(cols) / float(len(cols))
+        return tf.reduce_mean(cols, axis=1)
     if how == "median":
-        stacked = tf.sort(tf.stack(cols, axis=0), axis=0)      # (K, B, U)
-        return stacked[(len(cols) - 1) // 2]
+        return tf.sort(cols, axis=1)[:, (cols.shape[1] - 1) // 2]
     raise ValueError(f"consensus must be one of {CONSENSUS_MODES}, got {how!r}")
 
 
@@ -52,10 +54,14 @@ def consensus_mix(cols, lam, how="mean"):
     mixed_k = (1 - lam) * h_k + lam * target, readout = consensus of the mixed
     columns. For how='mean' the readout equals the pre-mix mean for every lam
     (see the module header); for how='median' target and readout are both the
-    lower median.
+    lower median. cols as in consensus_target; the mixed columns come back in
+    the same form (a list for a list).
     """
+    if isinstance(cols, (list, tuple)):
+        mixed, readout = consensus_mix(tf.stack(cols, axis=1), lam, how)
+        return tf.unstack(mixed, axis=1), readout
     target = consensus_target(cols, how)
-    mixed = [(1.0 - lam) * h + lam * target for h in cols]
+    mixed = (1.0 - lam) * cols + lam * target[:, None, :]
     return mixed, consensus_target(mixed, how)
 
 
@@ -92,8 +98,32 @@ class VotingMixin:
         return tf.constant(self._vote_lambda, dtype=tf.float32)
 
     def _consensus(self, cols):
-        """(mixed columns, readout) for a list of K per-column tensors."""
+        """(mixed columns, readout) for (B, K, U) or a list of K (B, U)."""
         return consensus_mix(cols, self.vote_strength, self._consensus_mode)
+
+    # --- batch folding (issue #32) ------------------------------------------ #
+    # The K columns share ONE cell, so a step folds the column axis into the
+    # batch axis, (B, K, D) -> (B*K, D) row b*K + k, and calls the cell once
+    # instead of K times. The cells never mix batch rows, so this is the
+    # per-column function up to float32 summation order. The stored state
+    # layout (K blocks of the column's node states, column-major) is unchanged.
+    def _fold(self, x):
+        """(B, K, D) -> (B*K, D)."""
+        return tf.reshape(x, [-1, x.shape[-1]])
+
+    def _unfold(self, x):
+        """(B*K, D) -> (B, K, D)."""
+        return tf.reshape(x, [-1, self.K, x.shape[-1]])
+
+    def _fold_states(self, states, n):
+        """K column-major blocks of n node states (B, U_j) -> n folded node
+        states (B*K, U_j)."""
+        return [self._fold(tf.stack(states[j::n], axis=1)) for j in range(n)]
+
+    def _unfold_states(self, nodes):
+        """n node states (B, K, U_j) -> K column-major blocks, flat."""
+        cols = [tf.unstack(h, axis=1) for h in nodes]
+        return [c[k] for k in range(self.K) for c in cols]
 
 
 def _normalise_slice(sl, width, name):
@@ -141,14 +171,19 @@ class CommitteeVotingCell(VotingMixin, tf.keras.layers.AbstractRNNCell):
         cell:          a prebuilt single-state cell to share across the columns,
                        e.g. ``NCPWiring(...).make_cell()``; its state_size sets
                        ``units``.
+        column_loop:   run the K columns in a Python loop (one cell call per
+                       column) instead of one call on the folded batch; the
+                       same function, kept for the equivalence check (#32).
         (rest)         forwarded to the shared cell constructor (cell_cls path).
     """
 
     def __init__(self, n_columns=3, cell_cls="cfc_lrc", units=64, seed=42,
                  vote_init=0.0, vote_lambda=None, consensus="mean",
-                 vote_slice=None, readout_slice=None, cell=None, **cell_kwargs):
+                 vote_slice=None, readout_slice=None, cell=None,
+                 column_loop=False, **cell_kwargs):
         super().__init__()
         self.K = int(n_columns)
+        self._column_loop = bool(column_loop)
         if cell is not None:
             if isinstance(cell.state_size, (list, tuple)):
                 raise ValueError(
@@ -193,6 +228,22 @@ class CommitteeVotingCell(VotingMixin, tf.keras.layers.AbstractRNNCell):
                 for _ in range(self.K)]
 
     def call(self, inputs, states):
+        if self._column_loop:
+            return self._call_loop(inputs, states)
+        features, elapsed_time = inputs             # (B,K,F), (B,1)
+        _, ns = self.col((self._fold(features),
+                          tf.repeat(elapsed_time, self.K, axis=0)),
+                         self._fold_states(states, 1))
+        h = self._unfold(ns[0])                     # (B,K,U)
+        v0, v1 = self._vote
+        mixed, _ = self._consensus(h[:, :, v0:v1])
+        h = tf.concat([h[:, :, :v0], mixed, h[:, :, v1:]], axis=-1)
+        r0, r1 = self._read
+        output = consensus_target(h[:, :, r0:r1], self._consensus_mode)
+        return output, tf.unstack(h, axis=1)
+
+    def _call_loop(self, inputs, states):
+        """The per-column loop (pre-#32 call): one cell call per column."""
         features, elapsed_time = inputs             # (B,K,F), (B,1)
         outs = []
         for k in range(self.K):

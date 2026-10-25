@@ -117,6 +117,10 @@ def main():
                     help="CfC-family backbone depth for EVERY wiring (overrides "
                          "the dense default 1 and the ncp/cncp family default 0); "
                          "default: unchanged per-wiring behaviour")
+    ap.add_argument("--column-loop", action="store_true",
+                    help="cncp/ncp/dense: step the K columns in the per-column "
+                         "loop instead of the folded batch (same function, "
+                         "slower; the #32 equivalence canary)")
     ap.add_argument("--verbose", type=int, default=0)
     args = ap.parse_args()
     if args.size is None and args.param_budget is None:
@@ -161,7 +165,7 @@ def main():
             seed=args.seed, vote_lambda=args.vote_lambda,
             consensus=args.consensus, dense_vote_units=args.dense_vote_units,
             train_drop=args.train_drop, train_noise=args.train_noise,
-            **cell_kwargs)
+            column_loop=args.column_loop, **cell_kwargs)
 
     # Capacity: a fixed width knob, or the knob closest to the effective
     # parameter budget for THIS arm.

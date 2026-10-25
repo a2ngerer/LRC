@@ -153,14 +153,17 @@ class MultiColumnVotingCell(VotingMixin, tf.keras.layers.AbstractRNNCell):
         vote_init:   initial voting strength (pre-sigmoid); 0.0 -> lambda 0.5.
         vote_lambda: None (learnable) or a fixed strength in [0, 1].
         consensus:   'mean' (default) or 'median'.
+        column_loop: run the K columns in a Python loop instead of one call
+                     on the folded batch (as CommitteeVotingCell, #32).
         (rest)       forwarded to the shared TbtCorticalColumnCell.
     """
 
     def __init__(self, n_columns=3, cell_cls="cfc_lrc", lamina_units=None,
                  seed=42, use_location=False, vote_init=0.0, vote_lambda=None,
-                 consensus="mean", **cell_kwargs):
+                 consensus="mean", column_loop=False, **cell_kwargs):
         super().__init__()
         self.K = int(n_columns)
+        self._column_loop = bool(column_loop)
         units = dict(DEFAULT_LAMINA_UNITS)
         if lamina_units:
             units.update(lamina_units)
@@ -194,6 +197,20 @@ class MultiColumnVotingCell(VotingMixin, tf.keras.layers.AbstractRNNCell):
                 for _ in range(self.K) for node in NODE_ORDER]
 
     def call(self, inputs, states):
+        if self._column_loop:
+            return self._call_loop(inputs, states)
+        features, elapsed_time, locs = inputs      # (B,K,F), (B,1), (B,K,L)
+        # One column call on the folded batch (VotingMixin._fold, #32).
+        _, ns = self.col((self._fold(features),
+                          tf.repeat(elapsed_time, self.K, axis=0),
+                          self._fold(locs)),
+                         self._fold_states(states, self._n_node))
+        ns = [self._unfold(h) for h in ns]          # each (B,K,U_node)
+        ns[_L23_IDX], output = self._consensus(ns[_L23_IDX])   # voted object rep
+        return output, self._unfold_states(ns)
+
+    def _call_loop(self, inputs, states):
+        """The per-column loop (pre-#32 call): one column call per column."""
         features, elapsed_time, locs = inputs      # (B,K,F), (B,1), (B,K,L)
         n = self._n_node
         l23_list, per_col = [], []
