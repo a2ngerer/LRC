@@ -5,11 +5,20 @@ Sequence-rollout regression: the RNN is unrolled over the full trajectory
 Euler harness the cNCP delayed-state edges actually receive gradient. See
 src/tasks/lotka_volterra/datasets.py for the why.
 
-Two evaluations are stored per run:
+Two evaluations are stored per run, each on the val and the test split
+(keys val_* / test_*, normalised units; unprefixed keys repeat the test values
+for older readers):
   * teacher-forced  -- predict step k+1 from the TRUE state at step k;
   * closed-loop     -- feed only the initial state, then feed the model's own
                        predictions back (true test of whether the dynamics were
                        learned; this is what the phase-space overlay shows).
+Model selection (HPO) reads the val keys only. best_val_epoch is the epoch with
+the lowest validation loss; best_test_teacher_forced_mse is the test loss at
+that epoch, never a minimum over the test curve.
+
+Data: 48/16/16 whole trajectories at the default 80, drawn with data seed
+DATA_SEED_BASE + --seed (+ --data-seed-offset for tuning runs), so all arms of
+one replicate share a draw and every replicate gets a fresh one.
 
 De-normalised ground-truth / teacher-forced / closed-loop trajectories for the
 test split are written into the JSON so plot_lotka_volterra.py needs no retrain.
@@ -37,7 +46,9 @@ from src.wirings import (CorticalColumnCell, CorticalColumnV2Cell,
 
 DEFAULT_SIZE = 64
 BUDGET_TOLERANCE = 0.05
-from src.tasks.lotka_volterra.datasets import load_lotka_volterra, reference_frame
+from src.tasks.lotka_volterra.datasets import (DATA_SEED_BASE,
+                                               load_lotka_volterra,
+                                               reference_frame)
 from src.tasks.lotka_volterra.model import build_lotka_volterra_model, LV_WIRINGS
 from src.tasks.person_activity.model import (
     backbone_override, backbone_suffix, effective_backbone_layers,
@@ -47,8 +58,10 @@ from src.benchmark.tracking import keras_callbacks, track
 from src.benchmark.checkpoints import save_weights
 
 
-def closed_loop_rollout(model, data, needs_loc: bool = False) -> np.ndarray:
-    """Autoregressively roll the model from each test initial state.
+def closed_loop_rollout(model, data, needs_loc: bool = False,
+                        split: str = "test") -> np.ndarray:
+    """Autoregressively roll the model from each initial state of ``split``
+    ('val' or 'test').
 
     Returns the generated NORMALISED trajectory (N, seq_len+1, 2): column 0 is
     the given initial state, columns 1.. are the model's own predictions fed
@@ -62,8 +75,8 @@ def closed_loop_rollout(model, data, needs_loc: bool = False) -> np.ndarray:
     deterministic function of the state, so closed-loop stays self-consistent.
     """
     n_steps = data.seq_len
-    dt_col = data.test_t                       # (N, seq_len, 1) constant dt
-    history = [data.test_x[:, 0, :].astype(np.float32)]   # (N, 2) initial state
+    dt_col = getattr(data, f"{split}_t")       # (N, seq_len, 1) constant dt
+    history = [getattr(data, f"{split}_x")[:, 0, :].astype(np.float32)]  # (N, 2)
     for _ in range(n_steps):
         length = len(history)
         seq = np.stack(history, axis=1)                    # (N, length, 2)
@@ -77,6 +90,35 @@ def closed_loop_rollout(model, data, needs_loc: bool = False) -> np.ndarray:
                          training=False).numpy()           # (N, length, 2)
         history.append(pred[:, -1, :].astype(np.float32))  # next state
     return np.stack(history, axis=1)                       # (N, seq_len+1, 2)
+
+
+def split_inputs(data, split, needs_loc):
+    """Keras inputs of one split; tbt_cncp* wirings take the reference-frame code
+    as a 3rd input, the topology arms (dense/ncp/cncp) only (state, time)."""
+    x, t = getattr(data, f"{split}_x"), getattr(data, f"{split}_t")
+    return (x, t, getattr(data, f"{split}_loc")) if needs_loc else (x, t)
+
+
+def evaluate_split(model, data, split, needs_loc):
+    """Teacher-forced and closed-loop metrics on 'val' or 'test' (normalised
+    units; NRMSE = sqrt of the pooled MSE). Returns (metrics, rollout)."""
+    y = getattr(data, f"{split}_y")
+    tf_mse, tf_mae = model.evaluate(split_inputs(data, split, needs_loc), y,
+                                    verbose=0)
+    gen_norm = closed_loop_rollout(model, data, needs_loc, split)  # (N,T+1,2)
+    truth_norm = (getattr(data, f"{split}_traj") - data.mean) / data.std
+    sq_err = (gen_norm[:, 1:] - truth_norm[:, 1:]) ** 2
+    cl_mse = float(np.mean(sq_err))
+    return {
+        "teacher_forced_mse": float(tf_mse), "teacher_forced_mae": float(tf_mae),
+        "teacher_forced_nrmse": float(np.sqrt(tf_mse)),
+        "closed_loop_mse": cl_mse, "closed_loop_nrmse": float(np.sqrt(cl_mse)),
+        # Per-step closed-loop MSE (error growth vs rollout horizon) for the plot.
+        "closed_loop_mse_per_step": _round(np.mean(sq_err, axis=(0, 2)), 6),
+        # Persistence baseline (predict next == current), teacher-forced.
+        "persistence_mse": float(np.mean(
+            (getattr(data, f"{split}_x") - y) ** 2)),
+    }, gen_norm
 
 
 def result_filename(args, multi=None):
@@ -134,6 +176,8 @@ class StabilityProbe(tf.keras.callbacks.Callback):
     """--probe-stability (spec 2026-10-21 B.5, R6): per-state L2 norms of the
     model's RNN states on one fixed training batch at init, after exactly one
     optimiser step and after the first epoch, plus the epoch-1 train loss.
+    ``held_out`` batches (runner: val and test) are probed at the same points
+    under suffixed keys (norms_init_val, ...); 'finite' covers all of them.
 
     Each norm is the L2 norm over the unit axis, max over batch and time,
     keyed "<rnn layer>/<state>" (cncp: the eight nodes, cncp2: G/S/D/R, ncp
@@ -142,7 +186,7 @@ class StabilityProbe(tf.keras.callbacks.Callback):
     trajectory beyond the extra forward computation.
     """
 
-    def __init__(self, model, batch_inputs):
+    def __init__(self, model, batch_inputs, held_out=None):
         super().__init__()
         self._taps = []
         for layer in model.layers:
@@ -153,31 +197,38 @@ class StabilityProbe(tf.keras.callbacks.Callback):
                 self._taps.append((layer.name, _state_names(layer.cell),
                                    np.atleast_1d(layer.cell.state_size),
                                    feed, tap))
-        self._batch = batch_inputs
+        # key suffix -> batch: "" is the training batch (spec R6); held_out
+        # adds e.g. "_val"/"_test" (norms_init_val, ...) on held-out batches.
+        self._batches = {"": batch_inputs,
+                         **{f"_{k}": v for k, v in (held_out or {}).items()}}
         self.result = {}
 
-    def _norms(self):
+    def _record(self, key):
+        for suffix, batch in self._batches.items():
+            self.result[key + suffix] = self._norms(batch)
+
+    def _norms(self, batch):
         out = {}
         for name, states, sizes, feed, tap in self._taps:
-            seq = tap(feed(self._batch, training=False), training=False)
+            seq = tap(feed(batch, training=False), training=False)
             for state, part in zip(states, tf.split(seq, sizes.tolist(), -1)):
                 out[f"{name}/{state}"] = float(tf.reduce_max(
                     tf.norm(part, axis=-1)))
         return out
 
     def on_train_begin(self, logs=None):
-        self.result["norms_init"] = self._norms()
+        self._record("norms_init")
 
     def on_train_batch_end(self, batch, logs=None):
         if "norms_step1" not in self.result:
-            self.result["norms_step1"] = self._norms()
+            self._record("norms_step1")
 
     def on_epoch_end(self, epoch, logs=None):
         if epoch == 0:
-            self.result["norms_epoch1"] = self._norms()
+            self._record("norms_epoch1")
             self.result["tf_loss_epoch1"] = float(logs["loss"])
-            values = [v for k in ("norms_init", "norms_step1", "norms_epoch1")
-                      for v in self.result[k].values()]
+            values = [v for k, norms in self.result.items()
+                      if k.startswith("norms_") for v in norms.values()]
             self.result["finite"] = bool(np.all(np.isfinite(
                 values + [self.result["tf_loss_epoch1"]])))
 
@@ -193,6 +244,15 @@ def main():
     ap.add_argument("--system", default="periodic_predator_prey",
                     help="neural_ode 2D system (e.g. periodic_predator_prey, duffing)")
     ap.add_argument("--seed", type=int, default=0)
+    data_seed = ap.add_mutually_exclusive_group()
+    data_seed.add_argument("--data-seed", type=int, default=None,
+                           help="trajectory draw + split seed (default "
+                                "DATA_SEED_BASE + offset + --seed)")
+    data_seed.add_argument("--data-seed-offset", type=int, nargs="?",
+                           const=1000, default=0,
+                           help="shift of the derived data seed; tuning runs "
+                                "pass it (bare flag = 1000) so their draws are "
+                                "disjoint from the final replicates' (offset 0)")
     ap.add_argument("--epochs", type=int, default=300)
     cap = ap.add_mutually_exclusive_group()
     cap.add_argument("--size", type=int, default=None,
@@ -236,11 +296,15 @@ def main():
     multi = multi_column_config(args)
 
     needs_loc = args.wiring in TBT_MODES
+    data_seed = (args.data_seed if args.data_seed is not None
+                 else DATA_SEED_BASE + args.data_seed_offset + args.seed)
     data = load_lotka_volterra(n_trajectories=args.n_trajectories,
-                               seq_len=args.seq_len, system=args.system)
-    print(f"[{args.system}] train {data.train_x.shape[0]} / test "
-          f"{data.test_x.shape[0]} trajectories, seq_len {data.seq_len}, "
-          f"dt {data.dt:.4f}, loc_dim {data.loc_dim}")
+                               seq_len=args.seq_len, seed=data_seed,
+                               system=args.system)
+    split = [len(data.train_x), len(data.val_x), len(data.test_x)]
+    print(f"[{args.system}] train/val/test {split} trajectories (data seed "
+          f"{data_seed}), seq_len {data.seq_len}, dt {data.dt:.4f}, "
+          f"loc_dim {data.loc_dim}")
 
     def build(size):
         return build_lotka_volterra_model(
@@ -265,12 +329,8 @@ def main():
           f"needs_loc={needs_loc}, backbone_layers requested "
           f"{args.backbone_layers} effective {bb_effective})")
 
-    # tbt_cncp* wirings take a 3rd input (the reference-frame code); the topology
-    # arms (dense/ncp/cncp) take only (state, time).
-    train_in = ((data.train_x, data.train_t, data.train_loc) if needs_loc
-                else (data.train_x, data.train_t))
-    test_in = ((data.test_x, data.test_t, data.test_loc) if needs_loc
-               else (data.test_x, data.test_t))
+    train_in, val_in, test_in = (split_inputs(data, s, needs_loc)
+                                 for s in ("train", "val", "test"))
 
     wandb_config = {
         "task": "lotka_volterra", "system": args.system,
@@ -278,45 +338,47 @@ def main():
         "size": args.size, "param_budget": args.param_budget,
         "budget_deviation": budget_dev, "lr": args.lr,
         "batch_size": args.batch_size, "epochs": args.epochs,
-        "backbone_layers": args.backbone_layers, **pc, **multi,
+        "backbone_layers": args.backbone_layers, "data_seed": data_seed,
+        **pc, **multi,
     }
     tag = result_filename(args, multi)[:-len(".json")]
     probe = None
     if args.probe_stability:
-        # A real training batch (the first batch_size training sequences).
-        probe = StabilityProbe(model, tuple(a[:args.batch_size]
-                                            for a in train_in))
+        # The first batch_size sequences of each split: train (spec R6), val
+        # and test.
+        tr_b, val_b, te_b = (tuple(a[:args.batch_size] for a in inputs)
+                             for inputs in (train_in, val_in, test_in))
+        probe = StabilityProbe(model, tr_b, {"val": val_b, "test": te_b})
+    # Test teacher-forced loss per epoch, read only at the best-val epoch.
+    test_curve = []
+    test_tap = tf.keras.callbacks.LambdaCallback(
+        on_epoch_end=lambda epoch, logs: test_curve.append(
+            model.evaluate(test_in, data.test_y, verbose=0)[0]))
     with track(args.wandb, group=args.cell, job_type=args.wiring, name=tag,
                config=wandb_config) as run_:
         hist = model.fit(
             train_in, data.train_y,
             batch_size=args.batch_size, epochs=args.epochs,
-            validation_data=(test_in, data.test_y),
+            validation_data=(val_in, data.val_y),
             verbose=args.verbose,
-            callbacks=keras_callbacks(run_) + ([probe] if probe else []))
+            callbacks=keras_callbacks(run_) + [test_tap]
+            + ([probe] if probe else []))
+    val_curve = hist.history["val_loss"]
+    best = int(np.argmin(np.nan_to_num(val_curve, nan=np.inf)))  # NaN never wins
 
-    # Teacher-forced: MSE/MAE in normalised space + de-normalised prediction.
-    tf_mse, tf_mae = model.evaluate(test_in, data.test_y, verbose=0)
+    val_metrics, _ = evaluate_split(model, data, "val", needs_loc)
+    test_metrics, gen_norm = evaluate_split(model, data, "test", needs_loc)
     tf_pred_norm = model.predict(test_in, verbose=0)                    # (N,T,2)
-
-    # Closed-loop rollout from the initial state only.
-    gen_norm = closed_loop_rollout(model, data, needs_loc=needs_loc)    # (N,T+1,2)
-    truth_norm = (data.test_traj - data.mean) / data.std
-    cl_mse = float(np.mean((gen_norm[:, 1:] - truth_norm[:, 1:]) ** 2))
-    # Per-step closed-loop MSE (error growth vs rollout horizon) for the plot.
-    cl_mse_per_step = np.mean((gen_norm[:, 1:] - truth_norm[:, 1:]) ** 2,
-                              axis=(0, 2))                               # (T,)
-
-    # Persistence baseline (predict next == current), teacher-forced, normalised.
-    persistence_mse = float(np.mean((data.test_x - data.test_y) ** 2))
 
     # De-normalised trajectories aligned with the ground truth for plotting.
     tf_traj = np.concatenate(
         [data.test_traj[:, :1, :], data.denormalise(tf_pred_norm)], axis=1)
     cl_traj = data.denormalise(gen_norm)
 
-    print(f"  teacher-forced MSE {float(tf_mse):.5f} | closed-loop MSE "
-          f"{cl_mse:.5f} | persistence {persistence_mse:.5f}")
+    for name, m in (("val", val_metrics), ("test", test_metrics)):
+        print(f"  {name}: teacher-forced MSE {m['teacher_forced_mse']:.5f} | "
+              f"closed-loop MSE {m['closed_loop_mse']:.5f} | persistence "
+              f"{m['persistence_mse']:.5f}")
 
     os.makedirs(args.outdir, exist_ok=True)
     record = {
@@ -327,11 +389,14 @@ def main():
         "backbone_layers": args.backbone_layers,
         "backbone_layers_effective": bb_effective,
         **pc, **multi, "dt": data.dt, "seq_len": data.seq_len,
-        "n_test": int(data.test_x.shape[0]),
-        "teacher_forced_mse": float(tf_mse), "teacher_forced_mae": float(tf_mae),
-        "closed_loop_mse": cl_mse, "persistence_mse": persistence_mse,
-        "closed_loop_mse_per_step": _round(cl_mse_per_step, 6),
-        "val_loss_curve": _round(hist.history["val_loss"], 6),
+        "data_seed": data_seed, "split": split, "n_test": split[2],
+        **{f"val_{k}": v for k, v in val_metrics.items()},
+        **{f"test_{k}": v for k, v in test_metrics.items()},
+        **test_metrics,       # unprefixed = test (plot_lotka_volterra.py, #20)
+        "best_val_epoch": best + 1,      # 1-based; curve index best_val_epoch-1
+        "best_val_teacher_forced_mse": float(val_curve[best]),
+        "best_test_teacher_forced_mse": float(test_curve[best]),
+        "val_loss_curve": _round(val_curve, 6),
         # Trajectories (de-normalised, raw prey/predator) for the overlay plots.
         "ground_truth_traj": _round(data.test_traj),
         "teacher_forced_traj": _round(tf_traj),
@@ -340,6 +405,7 @@ def main():
         "config": {"effective": {
             "task": "lotka_volterra", "system": args.system,
             "n_trajectories": args.n_trajectories, "seq_len": args.seq_len,
+            "data_seed": data_seed, "split": split,
             "param_budget": args.param_budget, "backbone_layers": bb_effective,
             "build": dict(wiring=args.wiring, cell=args.cell, size=args.size,
                           seed=args.seed, feature_size=data.feature_size,

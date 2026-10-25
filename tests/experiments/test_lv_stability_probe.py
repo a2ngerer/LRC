@@ -2,7 +2,8 @@
 # --probe-stability of the Lotka-Volterra runner (canary gate, spec 2026-10-21
 # R6): the result JSON gains a 'stability' block with per-state norms at init,
 # after one optimiser step and after epoch 1, the epoch-1 train loss and a
-# 'finite' flag, measured on the model the runner actually trains.
+# 'finite' flag, measured on the model the runner actually trains; the same
+# norms on a val and a test batch under suffixed keys (issue #19).
 import json
 import sys
 
@@ -26,7 +27,8 @@ def test_probe_stability_block(wiring, tmp_path, monkeypatch):
     record = json.loads(
         (tmp_path / f'cfc_lrc_{wiring}_seed0.json').read_text())
     stab = record['stability']
-    for key in ('norms_init', 'norms_step1', 'norms_epoch1'):
+    for key in [f'norms_{p}{s}' for p in ('init', 'step1', 'epoch1')
+                for s in ('', '_val', '_test')]:
         names = [k.split('/')[-1] for k in stab[key]]
         assert names == list(STATES[wiring]), key
         assert all(np.isfinite(v) for v in stab[key].values())

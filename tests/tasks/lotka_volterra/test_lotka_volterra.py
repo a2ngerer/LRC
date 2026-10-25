@@ -1,6 +1,8 @@
 # tests/tasks/lotka_volterra/test_lotka_volterra.py
 # Validation of the predator-prey (Lotka-Volterra) sequence-rollout benchmark:
-#   - the dataset loader returns the documented shapes and is deterministic;
+#   - the dataset loader returns the documented shapes, splits train/val/test
+#     by whole trajectories and is deterministic per data seed (fresh draw per
+#     seed);
 #   - build_lotka_volterra_model builds + forward-passes for every wiring with
 #     the (state, time) two-input contract and a linear Dense(2) head;
 #   - EVERY cncp trainable variable receives non-zero gradient on the rollout
@@ -21,7 +23,8 @@ from src.neurons import CfC_Cell, CfC_LRC_Cell
 from src.wirings import size_for_budget
 from src.tasks.lotka_volterra import (build_lotka_volterra_model,
                                       load_lotka_volterra, LotkaVolterraData,
-                                      reference_frame, RF_DIM, LV_WIRINGS)
+                                      reference_frame, RF_DIM, LV_WIRINGS,
+                                      DATA_SEED_BASE)
 from src.tasks.active_sensing.model import TBT_MODES
 from src.tasks.person_activity.model import (backbone_override,
                                              effective_backbone_layers)
@@ -50,9 +53,10 @@ def _dummy_loc(batch=2, seq_len=16, loc_dim=RF_DIM, seed=1):
 def test_dataset_shapes_and_split():
     d = load_lotka_volterra(n_trajectories=20, seq_len=32)
     assert isinstance(d, LotkaVolterraData)
-    n_train, n_test = d.train_x.shape[0], d.test_x.shape[0]
-    assert n_train + n_test == 20
-    assert n_test == 4                          # 20% of 20
+    n_train = d.train_x.shape[0]
+    assert (n_train, d.val_x.shape[0], d.test_x.shape[0]) == (12, 4, 4)  # 60/20/20
+    assert d.val_traj.shape == (4, 33, 2)
+    assert d.val_loc.shape == (4, 32, RF_DIM)
     assert d.train_x.shape == (n_train, 32, 2)
     assert d.train_y.shape == (n_train, 32, 2)
     assert d.train_t.shape == (n_train, 32, 1)
@@ -69,6 +73,42 @@ def test_dataset_deterministic():
     b = load_lotka_volterra(n_trajectories=16, seq_len=24)
     assert np.array_equal(a.train_x, b.train_x)
     assert np.array_equal(a.test_traj, b.test_traj)
+
+
+def _all_traj(d):
+    return np.concatenate([d.train_traj, d.val_traj, d.test_traj])
+
+
+def test_data_seed_draws_fresh_trajectories():
+    kw = dict(n_trajectories=10, seq_len=8, split=(6, 2, 2))
+    a, b = (load_lotka_volterra(seed=DATA_SEED_BASE, **kw) for _ in range(2))
+    for split in ("train", "val", "test"):
+        for k in ("x", "y", "traj"):
+            assert np.array_equal(getattr(a, f"{split}_{k}"),
+                                  getattr(b, f"{split}_{k}"))
+    c = load_lotka_volterra(seed=DATA_SEED_BASE + 1, **kw)
+    # a fresh draw: no initial condition of seed+1 occurs in seed's draw
+    assert not np.isin(_all_traj(c)[:, 0], _all_traj(a)[:, 0]).any()
+
+
+def test_split_is_disjoint_by_whole_trajectory():
+    d = load_lotka_volterra(n_trajectories=80, seq_len=8, split=(48, 16, 16))
+    sizes = (len(d.train_traj), len(d.val_traj), len(d.test_traj))
+    assert sizes == (48, 16, 16)
+    # 80 distinct initial conditions across the three splits: no trajectory
+    # is in two splits
+    assert len(np.unique(_all_traj(d)[:, 0], axis=0)) == 80
+    # z-score from train only
+    raw_train = d.denormalise(d.train_x).reshape(-1, 2)
+    assert np.allclose(d.mean, raw_train.mean(axis=0), atol=1e-4)
+    assert not np.allclose(d.mean, d.denormalise(d.test_x).reshape(-1, 2)
+                           .mean(axis=0), atol=1e-4)
+
+
+@pytest.mark.parametrize("split", [(48, 16, 15), (64, 16, 0)])
+def test_split_must_sum_to_n_trajectories(split):
+    with pytest.raises(ValueError, match="split"):
+        load_lotka_volterra(n_trajectories=80, seq_len=8, split=split)
 
 
 # --- model build + forward pass ---
@@ -144,13 +184,15 @@ def test_invalid_wiring_rejected():
 
 # --- closed-loop rollout ---
 
-def test_closed_loop_rollout_shape():
-    d = load_lotka_volterra(n_trajectories=12, seq_len=16)
+@pytest.mark.parametrize("split", ["test", "val"])
+def test_closed_loop_rollout_shape(split):
+    d = load_lotka_volterra(n_trajectories=12, seq_len=16, split=(6, 2, 4))
     model = build_lotka_volterra_model("cncp", "cfc_lrc", size=16, seed=0)
-    gen = closed_loop_rollout(model, d)
-    assert gen.shape == (d.test_x.shape[0], d.seq_len + 1, 2)
+    gen = closed_loop_rollout(model, d, split=split)
+    x = getattr(d, f"{split}_x")
+    assert gen.shape == (x.shape[0], d.seq_len + 1, 2)
     # column 0 is the given (normalised) initial state, verbatim
-    assert np.allclose(gen[:, 0, :], d.test_x[:, 0, :], atol=1e-5)
+    assert np.allclose(gen[:, 0, :], x[:, 0, :], atol=1e-5)
 
 
 # --- reference frame (TBT location signal) + tbt_cncp wirings ---
@@ -176,7 +218,7 @@ def test_loader_emits_reference_frame():
 def test_duffing_system_loads():
     d = load_lotka_volterra(n_trajectories=16, seq_len=24, system="duffing")
     assert d.system == "duffing"
-    assert d.train_x.shape[0] + d.test_x.shape[0] == 16
+    assert len(d.train_x) + len(d.val_x) + len(d.test_x) == 16
     assert np.isfinite(d.train_traj).all()
 
 
@@ -305,3 +347,46 @@ def test_runner_records_backbone_end_to_end(tmp_path, monkeypatch):
     rec = json.loads((tmp_path / "cfc_lrc_cncp_seed0_bb1.json").read_text())
     assert rec["backbone_layers"] == 1
     assert rec["backbone_layers_effective"] == 1
+
+
+# --- val/test reporting and the per-replicate data seed (issue #19) ---
+
+def _run(tmp_path, monkeypatch, wiring, seed, *extra):
+    monkeypatch.setattr(sys, "argv", [
+        "run_lotka_volterra_benchmark.py", "--wiring", wiring, "--cell", "gru",
+        "--size", "4", "--seed", str(seed), "--epochs", "2",
+        "--n-trajectories", "10", "--seq-len", "16", "--batch-size", "4",
+        "--outdir", str(tmp_path), *extra])
+    lv_runner.main()
+    return json.loads((tmp_path / f"gru_{wiring}_seed{seed}.json").read_text())
+
+
+def test_runner_reports_val_and_test_on_paired_draws(tmp_path, monkeypatch):
+    a = _run(tmp_path / "a", monkeypatch, "dense", 3)
+    b = _run(tmp_path / "b", monkeypatch, "ncp", 3)
+    c = _run(tmp_path / "c", monkeypatch, "dense", 4)
+    assert a["split"] == [6, 2, 2]
+    assert a["data_seed"] == b["data_seed"] == DATA_SEED_BASE + 3   # paired arms
+    assert c["data_seed"] == DATA_SEED_BASE + 4                      # fresh draw
+    assert a["ground_truth_traj"] == b["ground_truth_traj"]
+    assert a["ground_truth_traj"] != c["ground_truth_traj"]
+    for key in ("teacher_forced_mse", "teacher_forced_nrmse",
+                "closed_loop_mse", "closed_loop_nrmse", "persistence_mse"):
+        assert np.isfinite(a[f"val_{key}"]) and np.isfinite(a[f"test_{key}"])
+        assert a[key] == a[f"test_{key}"]           # unprefixed = test (legacy)
+    assert a["val_closed_loop_nrmse"] != a["test_closed_loop_nrmse"]
+    assert np.isclose(a["test_closed_loop_nrmse"] ** 2, a["test_closed_loop_mse"])
+    # best = test at the best-VAL epoch (1-based)
+    assert a["best_val_epoch"] in (1, 2)
+    assert np.isclose(a["best_val_teacher_forced_mse"],
+                      min(a["val_loss_curve"]), atol=1e-6)
+    assert np.isfinite(a["best_test_teacher_forced_mse"])
+    eff = a["config"]["effective"]
+    assert eff["data_seed"] == a["data_seed"] and eff["split"] == a["split"]
+
+
+def test_runner_data_seed_offset_and_override(tmp_path, monkeypatch):
+    tuning = _run(tmp_path / "t", monkeypatch, "dense", 0, "--data-seed-offset")
+    assert tuning["data_seed"] == DATA_SEED_BASE + 1000
+    fixed = _run(tmp_path / "f", monkeypatch, "dense", 0, "--data-seed", "7")
+    assert fixed["data_seed"] == 7

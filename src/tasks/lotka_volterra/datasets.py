@@ -14,9 +14,9 @@
 # evaluated both teacher-forced and closed-loop (feed predictions back).
 #
 # Generalisation: many trajectories from jittered initial conditions, split
-# train/test by trajectory, so the test set is HELD-OUT initial conditions -- a
-# real dynamics-generalisation test, not the single-trajectory near-tautology the
-# neural_ode v5 comments warn about.
+# train/val/test by whole trajectory, so val and test are HELD-OUT initial
+# conditions -- a real dynamics-generalisation test, not the single-trajectory
+# near-tautology the neural_ode v5 comments warn about.
 
 from dataclasses import dataclass
 
@@ -34,10 +34,12 @@ from src.tasks.neural_ode.datasets import generate_dataset, _SYSTEMS
 SYSTEM = "periodic_predator_prey"
 BASE_Y0 = np.array([1.0, 1.0])
 
-# Fixed data-generation seed: every wiring/cell/model-seed must see the SAME
-# trajectories and the SAME train/test split, or the comparison is not fair
-# (mirrors the fixed permutation seed in person_activity/datasets.py).
-DATA_SEED = 20260702
+# Base of the data-generation seed. The runner draws replicate i with data seed
+# DATA_SEED_BASE + i: every arm (wiring/cell) of one replicate sees the SAME
+# trajectories and split (paired comparison), and every replicate a fresh draw
+# from the same initial-condition distribution, so seed-level intervals cover
+# the data draw, not only the initialisation.
+DATA_SEED_BASE = 20260702
 
 # Reference-frame (TBT) encoding: a grid-cell-like Fourier code of the current
 # 2D state, the differentiable analogue of "where on the object am I sensing"
@@ -74,7 +76,7 @@ def reference_frame(state_norm: np.ndarray) -> np.ndarray:
 
 @dataclass
 class LotkaVolterraData:
-    """Next-step train/test tensors plus raw trajectories and norm stats.
+    """Next-step train/val/test tensors plus raw trajectories and norm stats.
 
     Supervised tensors (N = number of trajectories, T = seq_len):
         *_x:      (N, T, 2)   float32  normalised state at step k (input)
@@ -90,12 +92,17 @@ class LotkaVolterraData:
     train_x: np.ndarray
     train_t: np.ndarray
     train_y: np.ndarray
+    val_x: np.ndarray
+    val_t: np.ndarray
+    val_y: np.ndarray
     test_x: np.ndarray
     test_t: np.ndarray
     test_y: np.ndarray
     train_loc: np.ndarray
+    val_loc: np.ndarray
     test_loc: np.ndarray
     train_traj: np.ndarray
+    val_traj: np.ndarray
     test_traj: np.ndarray
     mean: np.ndarray
     std: np.ndarray
@@ -126,21 +133,25 @@ def _sample_initial_conditions(n: int, rng, base=BASE_Y0, spread=0.4) -> np.ndar
 
 
 def load_lotka_volterra(n_trajectories: int = 80, seq_len: int = 128,
-                        test_fraction: float = 0.2, spread: float = 0.4,
-                        seed: int = DATA_SEED,
+                        split: tuple[int, int, int] | None = None,
+                        spread: float = 0.4, seed: int = DATA_SEED_BASE,
                         system: str = SYSTEM) -> LotkaVolterraData:
     """Generate the next-step-prediction dataset for a 2D dynamical system.
 
     Args:
-        n_trajectories: total trajectories (train + test).
+        n_trajectories: total trajectories (train + val + test).
         seq_len:        supervised timesteps per trajectory. The underlying
                         trajectory has seq_len + 1 points; the last input is the
                         second-to-last state, its target the last state.
-        test_fraction:  share of trajectories held out for the test split.
+        split:          (n_train, n_val, n_test) whole trajectories, summing to
+                        n_trajectories. Default: 20 % each for val and test
+                        (48/16/16 at 80, the Chapter 5 protocol).
         spread:         initial-condition jitter fraction (see
                         _sample_initial_conditions).
-        seed:           data-generation seed (fixed default DATA_SEED so all
-                        runs share the identical data and split).
+        seed:           data-generation seed: draws the initial conditions and
+                        the split. The runner passes DATA_SEED_BASE + replicate
+                        seed, so arms are paired within a replicate and
+                        replicates see independent draws.
         system:         neural_ode system name (default periodic_predator_prey;
                         'duffing' is the second trajectory benchmark). The initial
                         conditions jitter around the system's canonical y0.
@@ -150,6 +161,12 @@ def load_lotka_volterra(n_trajectories: int = 80, seq_len: int = 128,
     """
     if system not in _SYSTEMS:
         raise ValueError(f"unknown system {system!r}, valid: {list(_SYSTEMS)}")
+    if split is None:
+        n_held = max(1, int(round(0.2 * n_trajectories)))
+        split = (n_trajectories - 2 * n_held, n_held, n_held)
+    if sum(split) != n_trajectories or min(split) < 1:
+        raise ValueError(f"split {tuple(split)} must be three positive counts "
+                         f"summing to n_trajectories={n_trajectories}")
     base = np.asarray(_SYSTEMS[system]["y0"], dtype=float)
 
     rng = np.random.default_rng(seed)
@@ -170,12 +187,11 @@ def load_lotka_volterra(n_trajectories: int = 80, seq_len: int = 128,
     y_target = trajs[:, 1:, :]    # (N, T, 2) state at step k+1
     t_col = np.full((n_trajectories, seq_len, 1), dt, dtype=np.float32)
 
-    # Deterministic split (permutation under the same fixed seed).
-    perm = np.random.default_rng(seed + 1).permutation(n_trajectories)
-    n_test = max(1, int(round(test_fraction * n_trajectories)))
-    test_idx, train_idx = perm[:n_test], perm[n_test:]
+    # Split by whole trajectories, a permutation from the same data seed.
+    train_idx, val_idx, test_idx = np.split(rng.permutation(n_trajectories),
+                                            np.cumsum(split)[:-1])
 
-    # z-score fit on TRAIN inputs only (avoid test leakage), per feature dim.
+    # z-score fit on TRAIN inputs only (no val/test leakage), per feature dim.
     mean = x[train_idx].reshape(-1, 2).mean(axis=0).astype(np.float32)
     std = x[train_idx].reshape(-1, 2).std(axis=0).astype(np.float32)
     std = np.where(std < 1e-6, 1.0, std).astype(np.float32)
@@ -183,16 +199,20 @@ def load_lotka_volterra(n_trajectories: int = 80, seq_len: int = 128,
     def norm(a):
         return ((a - mean) / std).astype(np.float32)
 
-    train_x_n, test_x_n = norm(x[train_idx]), norm(x[test_idx])
+    train_x_n, val_x_n, test_x_n = (norm(x[i]) for i in
+                                    (train_idx, val_idx, test_idx))
 
     return LotkaVolterraData(
         train_x=train_x_n, train_t=t_col[train_idx],
         train_y=norm(y_target[train_idx]),
+        val_x=val_x_n, val_t=t_col[val_idx], val_y=norm(y_target[val_idx]),
         test_x=test_x_n, test_t=t_col[test_idx],
         test_y=norm(y_target[test_idx]),
         train_loc=reference_frame(train_x_n),
+        val_loc=reference_frame(val_x_n),
         test_loc=reference_frame(test_x_n),
-        train_traj=trajs[train_idx], test_traj=trajs[test_idx],
+        train_traj=trajs[train_idx], val_traj=trajs[val_idx],
+        test_traj=trajs[test_idx],
         mean=mean, std=std, dt=dt, feature_size=2, seq_len=seq_len,
         loc_dim=RF_DIM, system=system,
     )

@@ -67,11 +67,12 @@ def test_lv_round_trip_reproduces_closed_loop_mse(tmp_path, monkeypatch):
     built = _capture_builds(monkeypatch, lv_runner,
                             'build_lotka_volterra_model')
     monkeypatch.setattr(sys, 'argv', _lv_argv(
-        tmp_path, '--wiring', 'ncp', '--cell', 'cfc_lrc', '--size', '8'))
+        tmp_path, '--wiring', 'ncp', '--cell', 'cfc_lrc', '--size', '8',
+        '--seed', '2'))
     lv_runner.main()
     x = np.random.default_rng(1).normal(size=(3, 8, 2)).astype(np.float32)
     record, rebuilt = _assert_round_trip(
-        tmp_path / 'cfc_lrc_ncp_seed0.json', built,
+        tmp_path / 'cfc_lrc_ncp_seed2.json', built,
         (x, np.full((3, 8, 1), 0.1, np.float32)))
     eff = record['config']['effective']
     assert eff['task'] == 'lotka_volterra'
@@ -79,7 +80,8 @@ def test_lv_round_trip_reproduces_closed_loop_mse(tmp_path, monkeypatch):
     assert eff['cell_kwargs'] == {'elastance_type': 'asymmetric'}
     # the cluster pass rule: closed_loop_mse recomputed from the JSON alone
     data = load_lotka_volterra(n_trajectories=eff['n_trajectories'],
-                               seq_len=eff['seq_len'], system=eff['system'])
+                               seq_len=eff['seq_len'], system=eff['system'],
+                               split=eff['split'], seed=eff['data_seed'])
     gen = lv_runner.closed_loop_rollout(rebuilt, data)
     truth = (data.test_traj - data.mean) / data.std
     assert abs(np.mean((gen[:, 1:] - truth[:, 1:]) ** 2)
