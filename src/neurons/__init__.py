@@ -7,9 +7,11 @@ from .ltc_cell import LTC_Cell
 from .gru_cell import GRU_Cell
 from .cfc_cell import CfC_Cell
 from .cfc_lrc_cell import CfC_LRC_Cell
+from .cfc_static_cell import CfCStaticCell
 from .mixed_memory_cell import (MixedMemoryCell, MM_LTC_Cell, MM_LRC_Cell,
                                 CfC_MM_LRC_Cell, CfC_MM_LTC_Cell)
 
 __all__ = ["BaseCell", "LRC_Cell", "LRC_AR_Cell", "CTRNN_Cell", "LSTM_Cell",
            "LTC_Cell", "GRU_Cell", "CfC_Cell", "CfC_LRC_Cell", "MixedMemoryCell",
-           "MM_LTC_Cell", "MM_LRC_Cell", "CfC_MM_LRC_Cell", "CfC_MM_LTC_Cell"]
+           "MM_LTC_Cell", "MM_LRC_Cell", "CfC_MM_LRC_Cell", "CfC_MM_LTC_Cell",
+           "CfCStaticCell"]

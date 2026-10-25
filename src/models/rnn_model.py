@@ -2,7 +2,7 @@ import tensorflow as tf
 from src.neurons import (LRC_Cell, LRC_AR_Cell, CTRNN_Cell, LSTM_Cell,
                          LTC_Cell, GRU_Cell, CfC_Cell, CfC_LRC_Cell,
                          MM_LTC_Cell, MM_LRC_Cell, CfC_MM_LRC_Cell,
-                         CfC_MM_LTC_Cell)
+                         CfC_MM_LTC_Cell, CfCStaticCell)
 from src.wirings import NCPWiring, NCPStackedWiring, CNCPWiring
 
 _CELL_REGISTRY = {
@@ -13,6 +13,9 @@ _CELL_REGISTRY = {
     "ltc": LTC_Cell,
     "gru": GRU_Cell,
     "cfc": CfC_Cell,
+    # cfc_static: cfc with per-unit time constants instead of the t_a/t_b heads
+    # -- the H-a control for input-dependent time constants (issue #31).
+    "cfc_static": CfCStaticCell,
     # cfc_lrc: closed-form LRC (CfC + liquid-elastance gate). cfc_pm: plain CfC with
     # a wider backbone -- the parameter-matched capacity control for the v3.1
     # cfc_lrc ablation (backbone width set via CELL_KWARGS in run_benchmark.py).
