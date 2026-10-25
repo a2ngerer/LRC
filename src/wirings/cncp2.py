@@ -72,12 +72,17 @@ class CorticalColumnV2Cell(BaseCell):
                            relay); the R slot stays inert at zero so the state
                            layout is unchanged. Overrides gain and relay_gate.
         dt:                elapsed time in regularly sampled mode.
+        extra_s_edges:     number of external edges summed into S (the lateral
+                           coupling of cncp2_multi counts as one); only enters
+                           the R2 fan-in of E_GS / E_DS. The drive itself is
+                           passed as a third input element, (x, dt, s_extra),
+                           and added to basal_S.
         **cell_kwargs:     forwarded to the sub-cells (after ncp_cell_kwargs).
     """
 
     def __init__(self, cell_cls='cfc_lrc', units=8, seed=42, feedback=True,
                  gain=True, relay_gate='attenuate', feedforward_only=False,
-                 dt=1.0, **cell_kwargs):
+                 dt=1.0, extra_s_edges=0, **cell_kwargs):
         if relay_gate not in RELAY_GATES:
             raise ValueError(
                 f"relay_gate must be one of {RELAY_GATES}, got {relay_gate!r}")
@@ -97,6 +102,7 @@ class CorticalColumnV2Cell(BaseCell):
         self._relay = not self._ff
         self._gate = relay_gate if self._relay else 'off'
         self._dt = dt
+        self._extra_s = int(extra_s_edges)
 
     @property
     def state_size(self):
@@ -150,7 +156,7 @@ class CorticalColumnV2Cell(BaseCell):
         # and A_DS feeds the gain, not a sum. n follows the active flags.
         active = self._active_edges()
         fan_in = {'E_in': 1 + ('E_RG' in active),
-                  'E_GS': 1 + ('E_DS' in active)}
+                  'E_GS': 1 + ('E_DS' in active) + self._extra_s}
         fan_in['E_RG'] = fan_in['E_in']
         fan_in['E_DS'] = fan_in['E_GS']
 
@@ -208,8 +214,10 @@ class CorticalColumnV2Cell(BaseCell):
         self.built = True
 
     def call(self, inputs, states):
+        s_extra = None
         if isinstance(inputs, (tuple, list)):
-            x, dt = inputs
+            x, dt, *rest = inputs
+            s_extra = rest[0] if rest else None
         else:
             x, dt = inputs, self._dt
         g_, s_, d_, r_ = states
@@ -226,6 +234,8 @@ class CorticalColumnV2Cell(BaseCell):
         basal_s = e['E_GS'](g)
         if self._feedback:
             basal_s = basal_s + e['E_DS'](fb_d)
+        if s_extra is not None:
+            basal_s = basal_s + s_extra
         s, _ = c['S']((basal_s, dt), [s_])
         s_mod = s
         if self._gain:

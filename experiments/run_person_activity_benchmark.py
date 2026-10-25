@@ -37,7 +37,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.tasks.person_activity.model import (  # noqa: E402
-    WIRINGS, backbone_override, backbone_suffix, effective_backbone_layers)
+    WIRINGS, backbone_override, backbone_suffix, effective_backbone_layers,
+    add_multi_column_args, multi_column_config, multi_column_suffix)
 
 DEFAULT_SIZE = 64
 BUDGET_TOLERANCE = 0.05
@@ -53,10 +54,12 @@ CELL_KWARGS = {
 }
 
 
-def result_tag(args):
-    """Run tag (log, wandb name, result JSON stem); --backbone-layers adds `_bb{N}`."""
+def result_tag(args, multi=None):
+    """Run tag (log, wandb name, result JSON stem); --backbone-layers adds
+    `_bb{N}`, cncp2_multi adds `_K{K}_{partition}_{coupling}_{readout}`."""
     return (f"{args.cell}_{args.wiring}_seed{args.seed}"
-            f"{backbone_suffix(args.backbone_layers)}")
+            f"{backbone_suffix(args.backbone_layers)}"
+            f"{multi_column_suffix(multi or {})}")
 
 
 def run(args):
@@ -78,12 +81,13 @@ def run(args):
     cell_kwargs = dict(CELL_KWARGS.get(args.cell, {}))
     cell_kwargs.update(backbone_override(args.cell, args.backbone_layers))
     bb_effective = effective_backbone_layers(args.wiring, args.cell, cell_kwargs)
+    multi = multi_column_config(args)
 
     def build(size):
         return build_person_activity_model(
             args.wiring, args.cell, size=size, seed=args.seed,
             num_classes=data.num_classes, feature_size=data.feature_size,
-            seq_len=data.seq_len, lr=args.lr, **cell_kwargs)
+            seq_len=data.seq_len, lr=args.lr, **multi, **cell_kwargs)
 
     # Capacity: either a fixed width knob or the knob that lands closest to the
     # effective parameter budget for THIS arm.
@@ -99,7 +103,7 @@ def run(args):
     pc = param_counts(model)
     params = pc['params_effective']
 
-    tag = result_tag(args)
+    tag = result_tag(args, multi)
     print(f"=== TRAIN {tag} size={args.size} params={params} "
           f"(raw {pc['params_raw']}) epochs={args.epochs} lr={args.lr} "
           f"batch={args.batch_size} backbone_layers={args.backbone_layers} "
@@ -118,6 +122,7 @@ def run(args):
         "epochs": args.epochs,
         "backbone_layers": args.backbone_layers,
         **pc,
+        **multi,
     }
 
     t0 = time.time()
@@ -152,6 +157,7 @@ def run(args):
         "backbone_layers": args.backbone_layers,
         "backbone_layers_effective": bb_effective,
         **pc,
+        **multi,
         "cell_kwargs": cell_kwargs,
         "train_sequences": int(data.train_x.shape[0]),
         "test_sequences": int(data.test_x.shape[0]),
@@ -206,6 +212,7 @@ def main():
     p.add_argument("--wandb", action="store_true",
                    help="log this run to Weights & Biases (needs the "
                         "'tracking' extra; use WANDB_MODE=offline on cluster)")
+    add_multi_column_args(p)
     args = p.parse_args()
     if args.size is None and args.param_budget is None:
         args.size = DEFAULT_SIZE
