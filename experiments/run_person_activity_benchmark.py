@@ -11,10 +11,16 @@ EFFECTIVE parameter budget (masked-off weights excluded); --size fixes the
 knob directly. The run records size, effective and raw counts and the
 deviation from the budget (flagged above 5 %).
 
+Split: --split grouped (default) trains on 15 whole recordings, validates on
+5 and tests on 5 (one per person each, --split-seed); --split random_window is
+the original window-level split (literature anchor only, val = test).
+Metrics: per-step macro-F1 (primary) and accuracy; the epoch with the best
+val macro-F1 is selected and the test values are read at that epoch.
+
 Mirrors the run + JSON-result-file structure of run_mujoco_benchmark.py /
 run_campaign.py: one JSON per run under --outdir, containing the config,
-the parameter counts, final/best test accuracy and the per-epoch
-val-accuracy curve.
+the parameter counts, val/test macro-F1 and accuracy at the best-val epoch,
+the per-epoch val curves and the test confusion matrix per test recording.
 
 Examples
 --------
@@ -36,6 +42,8 @@ import numpy as np
 # Allow running as a plain script (``src`` is the installed package).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.evaluation.metrics import confusion_matrix, macro_f1  # noqa: E402
+from src.tasks.person_activity.datasets import SPLITS  # noqa: E402
 from src.tasks.person_activity.model import (  # noqa: E402
     WIRINGS, backbone_override, backbone_suffix, effective_backbone_layers,
     add_multi_column_args, multi_column_config, multi_column_suffix)
@@ -62,16 +70,34 @@ def result_tag(args, multi=None):
             f"{multi_column_suffix(multi or {})}")
 
 
+def split_confusions(model, data, part, batch_size):
+    """{recording id: confusion matrix} of the per-step predictions on one
+    split ('val' or 'test')."""
+    x, t, y, rec = (getattr(data, f"{part}_{k}") for k in ("x", "t", "y", "rec"))
+    pred = model.predict((x, t), batch_size=batch_size, verbose=0).argmax(-1)
+    return {str(r): confusion_matrix(y[rec == r], pred[rec == r],
+                                     data.num_classes)
+            for r in np.unique(rec)}
+
+
+def accuracy(cm):
+    return float(np.trace(cm) / cm.sum())
+
+
 def run(args):
+    import tensorflow as tf
     from src.tasks.person_activity import (build_person_activity_model,
                                            load_person_activity)
     from src.benchmark.tracking import keras_callbacks, track
     from src.wirings import param_counts, size_for_budget
 
-    data = load_person_activity(data_path=args.data_path)
-    print(f"data: train {data.train_x.shape} test {data.test_x.shape} "
-          f"features={data.feature_size} classes={data.num_classes}",
-          flush=True)
+    data = load_person_activity(data_path=args.data_path, split=args.split,
+                                split_seed=args.split_seed)
+    print(f"data ({data.split}, split_seed={data.split_seed}, "
+          f"{data.n_recordings} recordings, {data.n_negative_dt} negative dt "
+          f"clamped): train {data.train_x.shape} val {data.val_x.shape} "
+          f"test {data.test_x.shape} features={data.feature_size} "
+          f"classes={data.num_classes}", flush=True)
 
     # Majority-class share of the test labels: the trivial-accuracy floor a
     # trained model must clear.
@@ -121,9 +147,23 @@ def run(args):
         "batch_size": args.batch_size,
         "epochs": args.epochs,
         "backbone_layers": args.backbone_layers,
+        "split": data.split,
+        "split_seed": data.split_seed,
         **pc,
         **multi,
     }
+
+    # After every epoch: val macro-F1 / accuracy (the val curve selects the
+    # epoch) and the per-recording test confusion matrices (read at that
+    # epoch only). val_macro_f1 also goes to the Keras logs (history, wandb).
+    val_f1, val_acc, test_cms = [], [], []
+
+    def evaluate(epoch, logs):
+        cm = sum(split_confusions(model, data, "val", args.batch_size).values())
+        val_f1.append(macro_f1(cm))
+        val_acc.append(accuracy(cm))
+        test_cms.append(split_confusions(model, data, "test", args.batch_size))
+        logs["val_macro_f1"] = val_f1[-1]
 
     t0 = time.time()
     with track(args.wandb, group=args.cell, job_type=args.wiring, name=tag,
@@ -133,16 +173,17 @@ def run(args):
             y=data.train_y,
             batch_size=args.batch_size,
             epochs=args.epochs,
-            validation_data=((data.test_x, data.test_t), data.test_y),
+            validation_data=((data.val_x, data.val_t), data.val_y),
             verbose=2,
-            callbacks=keras_callbacks(run_),
+            callbacks=[tf.keras.callbacks.LambdaCallback(on_epoch_end=evaluate),
+                       *keras_callbacks(run_)],
         )
     wall = time.time() - t0
 
-    val_acc = [float(a)
-               for a in hist.history["val_sparse_categorical_accuracy"]]
     train_acc = [float(a)
                  for a in hist.history["sparse_categorical_accuracy"]]
+    best = int(np.argmax(val_f1))
+    test_cm = sum(test_cms[best].values())
 
     result = {
         "wiring": args.wiring,
@@ -159,13 +200,32 @@ def run(args):
         **pc,
         **multi,
         "cell_kwargs": cell_kwargs,
+        "split": data.split,
+        "split_seed": data.split_seed,
+        "recordings": data.recordings,
+        "n_recordings": data.n_recordings,
+        "n_negative_dt": data.n_negative_dt,
         "train_sequences": int(data.train_x.shape[0]),
+        "val_sequences": int(data.val_x.shape[0]),
         "test_sequences": int(data.test_x.shape[0]),
         "majority_baseline": majority_baseline,
-        # validation split == test split (as in the original runner), so
-        # val accuracy IS test accuracy.
-        "test_accuracy": val_acc[-1],
-        "best_test_accuracy": max(val_acc),
+        # Selection on val macro-F1, test read at that epoch (1-based; curve
+        # index best_val_epoch - 1). random_window: val == test, so this is
+        # selection on test (literature protocol).
+        "best_val_epoch": best + 1,
+        "val_macro_f1": val_f1[best],
+        "val_accuracy": val_acc[best],
+        "test_macro_f1": macro_f1(test_cm),
+        # same epoch, one score per test recording (hierarchical bootstrap
+        # over seeds x test recordings in the aggregation)
+        "test_macro_f1_per_recording": {r: macro_f1(cm) for r, cm in
+                                        test_cms[best].items()},
+        "test_accuracy": accuracy(test_cm),
+        # rows = true, columns = predicted; summing a resample of recordings
+        # gives its pooled confusion (recording-level bootstrap).
+        "test_confusion_by_recording": {r: cm.tolist() for r, cm in
+                                        test_cms[best].items()},
+        "val_macro_f1_curve": val_f1,
         "val_accuracy_curve": val_acc,
         "train_accuracy_curve": train_acc,
         "wallclock_s": round(wall, 1),
@@ -177,9 +237,10 @@ def run(args):
     out_path = os.path.join(args.outdir, f"{tag}.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
-    print(f"[{tag}] done in {wall:.0f}s  final={val_acc[-1]:.4f}  "
-          f"best={max(val_acc):.4f}  baseline={majority_baseline:.4f}  "
-          f"-> {out_path}", flush=True)
+    print(f"[{tag}] done in {wall:.0f}s  best_val_epoch={best + 1}  "
+          f"val_f1={val_f1[best]:.4f}  test_f1={result['test_macro_f1']:.4f}  "
+          f"test_acc={result['test_accuracy']:.4f}  "
+          f"baseline={majority_baseline:.4f}  -> {out_path}", flush=True)
     return result
 
 
@@ -209,6 +270,14 @@ def main():
     p.add_argument("--outdir", default="results/person_activity")
     p.add_argument("--data-path", default=None,
                    help="override the ConfLongDemo_JSI.txt location")
+    p.add_argument("--split", default="grouped", choices=SPLITS,
+                   help="grouped: whole recordings to train/val/test (15/5/5, "
+                        "one val and one test recording per person); "
+                        "random_window: original window-level split, val = "
+                        "test (literature anchor only)")
+    p.add_argument("--split-seed", type=int, default=0,
+                   help="seed of the grouped recording assignment (keep it "
+                        "fixed across a suite; ignored for random_window)")
     p.add_argument("--wandb", action="store_true",
                    help="log this run to Weights & Biases (needs the "
                         "'tracking' extra; use WANDB_MODE=offline on cluster)")

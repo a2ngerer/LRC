@@ -6,6 +6,7 @@
 #   ./cluster/submit_person_activity.sh setup        # one-time venv on the login node
 #   ./cluster/submit_person_activity.sh <label>      # cfc_lrc + gru x {ncp,cncp} x 3 seeds, 50 epochs
 #   PA_CELLS="cfc_lrc" PA_SEEDS="0 1 2" ./cluster/submit_person_activity.sh <label>
+#   PA_SPLIT=random_window ./cluster/submit_person_activity.sh <label>   # literature anchor
 #   ./cluster/submit_person_activity.sh -n <label>   # dry run
 #
 # Prereqs: TU Wien VPN + ~/.ssh/config "datalab" entry (cluster/config.sh).
@@ -29,7 +30,7 @@ fi
 # Forward any PA_* matrix overrides through the ssh environment to the sbatch.
 PA_ENV=""
 for v in PA_EPOCHS PA_CELLS PA_WIRINGS PA_SEEDS PA_MAXPAR PA_WANDB \
-         PA_PARAM_BUDGET PA_LR PA_BACKBONE PA_EXTRA; do
+         PA_PARAM_BUDGET PA_LR PA_BACKBONE PA_SPLIT PA_SPLIT_SEED PA_EXTRA; do
     if [[ -n "${!v:-}" ]]; then PA_ENV+="${v}='${!v}' "; fi
 done
 RUN_ENV="${PA_ENV:-<defaults>}"
