@@ -44,6 +44,7 @@ from src.tasks.person_activity.model import (
     add_multi_column_args, multi_column_config, multi_column_suffix)
 from src.tasks.active_sensing.model import TBT_MODES
 from src.benchmark.tracking import keras_callbacks, track
+from src.benchmark.checkpoints import save_weights
 
 
 def closed_loop_rollout(model, data, needs_loc: bool = False) -> np.ndarray:
@@ -216,6 +217,9 @@ def main():
                     help="record per-state norms at init, after one step and "
                          "after epoch 1, plus the epoch-1 train loss "
                          "(result key 'stability', spec 2026-10-21 R6)")
+    ap.add_argument("--no-save-weights", dest="save_weights",
+                    action="store_false",
+                    help="do not write <stem>.weights.h5 next to the result JSON")
     add_multi_column_args(ap)
     ap.add_argument("--wandb", action="store_true",
                     help="log this run to Weights & Biases (needs the "
@@ -332,10 +336,20 @@ def main():
         "ground_truth_traj": _round(data.test_traj),
         "teacher_forced_traj": _round(tf_traj),
         "closed_loop_traj": _round(cl_traj),
+        "training_diverged": not np.isfinite(hist.history["loss"][-1]),
+        "config": {"effective": {
+            "task": "lotka_volterra", "system": args.system,
+            "n_trajectories": args.n_trajectories, "seq_len": args.seq_len,
+            "param_budget": args.param_budget, "backbone_layers": bb_effective,
+            "build": dict(wiring=args.wiring, cell=args.cell, size=args.size,
+                          seed=args.seed, feature_size=data.feature_size,
+                          loc_dim=data.loc_dim, lr=args.lr, **multi),
+            "cell_kwargs": cell_kwargs}},
     }
     if probe is not None:
         record["stability"] = probe.result
     path = os.path.join(args.outdir, result_filename(args, multi))
+    record["weights_path"] = save_weights(model, path, args.save_weights)
     with open(path, "w") as f:
         json.dump(record, f)
     print(f"wrote {path}")

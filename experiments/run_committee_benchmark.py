@@ -28,6 +28,7 @@ import warnings
 import numpy as np
 
 from src.wirings import param_counts, size_for_budget
+from src.benchmark.checkpoints import save_weights
 from src.tasks.person_activity.datasets import load_person_activity
 from src.tasks.committee.views import make_views, drop_features, add_noise
 from src.tasks.committee.model import build_committee_model, COMMITTEE_WIRINGS
@@ -118,6 +119,9 @@ def main():
                          "the dense default 1 and the ncp/cncp family default 0); "
                          "default: unchanged per-wiring behaviour")
     ap.add_argument("--verbose", type=int, default=0)
+    ap.add_argument("--no-save-weights", dest="save_weights",
+                    action="store_false",
+                    help="do not write <stem>.weights.h5 next to the result JSON")
     args = ap.parse_args()
     if args.size is None and args.param_budget is None:
         args.size = DEFAULT_SIZE
@@ -177,6 +181,8 @@ def main():
               validation_data=([views(d.test_x), d.test_t], d.test_y),
               epochs=args.epochs, batch_size=args.batch_size,
               verbose=args.verbose)
+    # read before predict() replaces model.history
+    diverged = not np.isfinite(model.history.history["loss"][-1])
     pc = param_counts(model)
     params = pc['params_effective']
 
@@ -217,8 +223,26 @@ def main():
         "clean_accuracy": clean,
         "drop_fracs": levels, "drop_accs": [round(a, 4) for a in accs],
         "drop_stds": [round(s, 4) for s in stds], "drop_seeds": drop_seeds,
+        "training_diverged": diverged,
+        "config": {"effective": {
+            "task": "committee", "param_budget": args.param_budget,
+            "backbone_layers": bb_effective,
+            "views": dict(n_columns=args.n_columns, mode=args.view_mode,
+                          overlap=args.overlap, noise=args.noise,
+                          seed=args.view_seed,
+                          average=bool(args.view_average)),
+            "build": dict(wiring=args.wiring, n_columns=n_cols,
+                          cell=args.cell, size=args.size, feature_size=F,
+                          seq_len=args.seq_len, num_classes=C, lr=args.lr,
+                          seed=args.seed, vote_lambda=args.vote_lambda,
+                          consensus=args.consensus,
+                          dense_vote_units=args.dense_vote_units,
+                          train_drop=args.train_drop,
+                          train_noise=args.train_noise),
+            "cell_kwargs": cell_kwargs}},
     }
     path = os.path.join(args.outdir, result_filename(args))
+    record["weights_path"] = save_weights(model, path, args.save_weights)
     with open(path, "w") as f:
         json.dump(record, f)
     print(f"wrote {path}")
