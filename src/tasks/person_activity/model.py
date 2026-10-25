@@ -10,7 +10,8 @@
 # with output (B, T, num_classes). Only the wiring in between differs.
 # Discrete cells (DISCRETE_CELLS) discard the time input, so by default they
 # get the same elapsed-time tensor concatenated to their feature input instead
-# (dt_feature, issue #27).
+# (dt_feature, issue #27). The builders multiply the time input by dt_scale
+# before it reaches any cell or the dt feature (task-level time unit, issue #28).
 #
 # Capacity: the arms are compared at the same EFFECTIVE parameter budget
 # (masked-off weights excluded, src/wirings/ncp.py::effective_param_count).
@@ -23,6 +24,7 @@ import warnings
 
 import tensorflow as tf
 
+from src.neurons import LRC_Cell, LTC_Cell, MM_LRC_Cell, MM_LTC_Cell
 from src.neurons.base_cell import BaseCell
 from src.wirings import (CorticalColumnCell, CorticalColumnV2Cell, NCPWiring,
                          PARTITIONS, COUPLINGS, READOUTS, multi_column_head)
@@ -58,6 +60,11 @@ DENSE3_LAYERS = 3
 
 # Discrete-time cells: they ignore the elapsed time of the (x, dt) input tuple.
 DISCRETE_CELLS = ("lstm", "gru")
+
+# Numerical ODE cells: explicit Euler sub-steps per input step (ode_unfolds).
+# ltc, lrc (and its LRC_Cell variants such as lrc_pm), mm_ltc, mm_lrc; the
+# cfc_mm_* inner cells are closed-form and take no sub-steps (issue #28).
+ODE_UNFOLD_CELLS = (LTC_Cell, LRC_Cell, MM_LTC_Cell, MM_LRC_Cell)
 
 
 def scaled_lamina_units(size):
@@ -152,6 +159,31 @@ def effective_backbone_layers(wiring, cell, cell_kwargs):
 def backbone_suffix(backbone_layers):
     """Result-filename suffix: '' when unset, '_bb{N}' otherwise."""
     return "" if backbone_layers is None else f"_bb{backbone_layers}"
+
+
+def ode_unfolds_override(cell, ode_unfolds):
+    """cell_kwargs entry for the runners' --ode-unfolds flag.
+
+    ``{'ode_unfolds': N}`` for the numerical ODE cells (ODE_UNFOLD_CELLS),
+    ``{}`` for closed-form and discrete cells, which would reject the kwarg.
+    """
+    if ode_unfolds < 1:
+        raise ValueError(f"ode_unfolds must be >= 1, got {ode_unfolds}")
+    if not issubclass(_resolve_cell_cls(cell), ODE_UNFOLD_CELLS):
+        return {}
+    return {"ode_unfolds": int(ode_unfolds)}
+
+
+def scaled_time(time, dt_scale=1.0):
+    """The elapsed-time tensor the cells receive: time * dt_scale. At the
+    default 1.0 the input itself, so the graph stays unchanged."""
+    if dt_scale <= 0:
+        raise ValueError(f"dt_scale must be > 0, got {dt_scale}")
+    if dt_scale == 1.0:
+        return time
+    return tf.keras.layers.Rescaling(dt_scale, name="dt_scale")(time)
+
+
 def add_multi_column_args(parser):
     """The cncp2_multi flags of the LV and PA runners (default None = unset)."""
     parser.add_argument("--columns", type=int, default=None,
@@ -226,7 +258,8 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
                                 lr=1e-3, timescale_prior=None, columns=MULTI_COLUMN_DEFAULTS["columns"],
                                 partition=MULTI_COLUMN_DEFAULTS["partition"],
                                 coupling=MULTI_COLUMN_DEFAULTS["coupling"],
-                                readout=None, dt_feature=True, **cell_kwargs):
+                                readout=None, dt_feature=True, dt_scale=1.0,
+                                **cell_kwargs):
     """Build and compile a person-activity model for one (wiring, cell).
 
     Args:
@@ -250,9 +283,13 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
                       partition='region' uses the four sensor tags.
         dt_feature:   discrete cells (DISCRETE_CELLS) only: concatenate the
                       time input (the tensor the continuous-time cells
-                      integrate, unscaled) to the features of every layer
-                      that receives them -- each dense3 layer, the input of
-                      every other wiring. No-op for continuous-time cells.
+                      integrate, after dt_scale) to the features of every
+                      layer that receives them -- each dense3 layer, the
+                      input of every other wiring. No-op for continuous-time
+                      cells.
+        dt_scale:     multiplies the time input before it reaches any cell
+                      and the dt feature (task-level time unit, issue #28);
+                      1.0 adds no layer.
         **cell_kwargs: forwarded to every cell constructor.
 
     Returns:
@@ -271,7 +308,8 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
     tf.keras.utils.set_random_seed(seed)
 
     features = tf.keras.Input(shape=(seq_len, feature_size), name="features")
-    time = tf.keras.Input(shape=(seq_len, 1), name="time")
+    time_in = tf.keras.Input(shape=(seq_len, 1), name="time")
+    time = scaled_time(time_in, dt_scale)
     dt_feature = dt_feature_applies(cell_cls, dt_feature)
     # dense / dense3 concatenate per layer (stacked_dense).
     x = (tf.keras.layers.Concatenate()([features, time])
@@ -318,7 +356,7 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
     if logits is None:
         logits = tf.keras.layers.Dense(num_classes, name="logits")(h)
 
-    model = tf.keras.Model(inputs=[features, time], outputs=logits)
+    model = tf.keras.Model(inputs=[features, time_in], outputs=logits)
     model.compile(
         optimizer=tf.keras.optimizers.RMSprop(lr),
         loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),

@@ -19,6 +19,10 @@ val macro-F1 is selected and the test values are read at that epoch.
 
 Elapsed time: the discrete cells (gru, lstm) ignore the time input, so with
 --dt-feature on (default) they get dt as an extra input feature (issue #27).
+--dt-scale multiplies dt before it reaches any cell or that feature (default
+1.0 = unchanged); the numerical ODE cells (ltc, lrc, lrc_pm, mm_ltc, mm_lrc)
+take --ode-unfolds explicit Euler sub-steps per input step (default 6). Both
+are recorded in the result JSON (issue #28).
 
 Mirrors the run + JSON-result-file structure of run_mujoco_benchmark.py /
 run_campaign.py: one JSON per run under --outdir, containing the config,
@@ -50,7 +54,7 @@ from src.tasks.person_activity.datasets import SPLITS  # noqa: E402
 from src.tasks.person_activity.model import (  # noqa: E402
     WIRINGS, backbone_override, backbone_suffix, dt_feature_applies,
     effective_backbone_layers, add_multi_column_args, multi_column_config,
-    multi_column_suffix)
+    multi_column_suffix, ode_unfolds_override)
 
 DEFAULT_SIZE = 64
 BUDGET_TOLERANCE = 0.05
@@ -58,7 +62,8 @@ BUDGET_TOLERANCE = 0.05
 # Per-cell constructor kwargs, mirroring CELL_KWARGS in run_benchmark.py:
 # the numerical LRC family needs elastance_type='asymmetric' (its 'interp'
 # default disables the elastance mechanism); cfc_lrc already defaults to
-# 'asymmetric', listed here for explicitness.
+# 'asymmetric', listed here for explicitness. run() adds ode_unfolds from
+# --ode-unfolds for the numerical cells (lrc, lrc_pm, ltc, mm_*; issue #28).
 CELL_KWARGS = {
     "lrc": dict(elastance_type="asymmetric"),
     "lrc_pm": dict(elastance_type="asymmetric"),
@@ -110,6 +115,8 @@ def run(args):
 
     cell_kwargs = dict(CELL_KWARGS.get(args.cell, {}))
     cell_kwargs.update(backbone_override(args.cell, args.backbone_layers))
+    cell_kwargs.update(ode_unfolds_override(args.cell, args.ode_unfolds))
+    ode_unfolds = cell_kwargs.get("ode_unfolds")   # None: closed-form/discrete
     bb_effective = effective_backbone_layers(args.wiring, args.cell, cell_kwargs)
     multi = multi_column_config(args)
     dt_feature = dt_feature_applies(args.cell, args.dt_feature == "on")
@@ -118,8 +125,8 @@ def run(args):
         return build_person_activity_model(
             args.wiring, args.cell, size=size, seed=args.seed,
             num_classes=data.num_classes, feature_size=data.feature_size,
-            seq_len=data.seq_len, lr=args.lr, dt_feature=dt_feature, **multi,
-            **cell_kwargs)
+            seq_len=data.seq_len, lr=args.lr, dt_feature=dt_feature,
+            dt_scale=args.dt_scale, **multi, **cell_kwargs)
 
     # Capacity: either a fixed width knob or the knob that lands closest to the
     # effective parameter budget for THIS arm.
@@ -139,7 +146,8 @@ def run(args):
     print(f"=== TRAIN {tag} size={args.size} params={params} "
           f"(raw {pc['params_raw']}) epochs={args.epochs} lr={args.lr} "
           f"batch={args.batch_size} backbone_layers={args.backbone_layers} "
-          f"(effective {bb_effective}) dt_feature={dt_feature} ===",
+          f"(effective {bb_effective}) dt_feature={dt_feature} "
+          f"ode_unfolds={ode_unfolds} dt_scale={args.dt_scale} ===",
           flush=True)
 
     wandb_config = {
@@ -155,6 +163,8 @@ def run(args):
         "epochs": args.epochs,
         "backbone_layers": args.backbone_layers,
         "dt_feature": dt_feature,
+        "ode_unfolds": ode_unfolds,
+        "dt_scale": args.dt_scale,
         "split": data.split,
         "split_seed": data.split_seed,
         **pc,
@@ -206,6 +216,8 @@ def run(args):
         "backbone_layers": args.backbone_layers,
         "backbone_layers_effective": bb_effective,
         "dt_feature": dt_feature,
+        "ode_unfolds": ode_unfolds,
+        "dt_scale": args.dt_scale,
         **pc,
         **multi,
         "cell_kwargs": cell_kwargs,
@@ -283,6 +295,14 @@ def main():
                         "receives features; no-op for continuous-time cells. "
                         "Person Activity only: the LV / Duffing runners have "
                         "no such flag, dt is constant there.")
+    p.add_argument("--dt-scale", type=float, default=1.0,
+                   help="multiply the elapsed time by this factor before it "
+                        "reaches any cell (and the dt feature); task-level "
+                        "time unit, 1.0 = unchanged")
+    p.add_argument("--ode-unfolds", type=int, default=6,
+                   help="explicit Euler sub-steps per input step for the "
+                        "numerical ODE cells (ltc, lrc, lrc_pm, mm_ltc, "
+                        "mm_lrc); ignored for closed-form and discrete cells")
     p.add_argument("--outdir", default="results/person_activity")
     p.add_argument("--data-path", default=None,
                    help="override the ConfLongDemo_JSI.txt location")
