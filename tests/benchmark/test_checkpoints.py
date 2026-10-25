@@ -81,7 +81,8 @@ def test_lv_round_trip_reproduces_closed_loop_mse(tmp_path, monkeypatch):
     # the cluster pass rule: closed_loop_mse recomputed from the JSON alone
     data = load_lotka_volterra(n_trajectories=eff['n_trajectories'],
                                seq_len=eff['seq_len'], system=eff['system'],
-                               split=eff['split'], seed=eff['data_seed'])
+                               split=eff['split'], seed=eff['data_seed'],
+                               t_span=eff['t_span'])
     gen = lv_runner.closed_loop_rollout(rebuilt, data)
     truth = (data.test_traj - data.mean) / data.std
     assert abs(np.mean((gen[:, 1:] - truth[:, 1:]) ** 2)

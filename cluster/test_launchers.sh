@@ -36,6 +36,9 @@ check extra "$out" "LV_EXTRA='--columns 2 --partition same'" "LV_PARAM_BUDGET='0
 out="$(LV_SYSTEM=duffing ./cluster/submit_lotka_volterra.sh -n smoke 2>&1)"
 check duffing "$out" "02_duffing/runs/${today}_smoke"
 
+out="$(LV_SYSTEM=multitimescale LV_TSPAN="0 10" ./cluster/submit_lotka_volterra.sh -n smoke 2>&1)"
+check tspan "$out" "LV_SYSTEM='multitimescale' LV_TSPAN='0 10'"
+
 out="$(BENCH=00_canary ./cluster/submit_lotka_volterra.sh -n lv-smoke 2>&1)"
 check canary "$out" "00_canary/runs/${today}_lv-smoke"
 

@@ -5,6 +5,7 @@
 #
 #   ./cluster/submit_lotka_volterra.sh <label>              # periodic_predator_prey -> 01_lotka_volterra
 #   LV_SYSTEM=duffing ./cluster/submit_lotka_volterra.sh <label>   # -> 02_duffing
+#   LV_SYSTEM=multitimescale LV_TSPAN="0 10" ./cluster/submit_lotka_volterra.sh <label>   # t_span override
 #   LV_CELLS="cfc_lrc" LV_SEEDS="0" ./cluster/submit_lotka_volterra.sh -n smoke   # dry run
 #   BENCH=00_canary LV_EPOCHS=3 ./cluster/submit_lotka_volterra.sh lv-smoke
 #
@@ -19,7 +20,7 @@ run_parse_args "$@"
 # Forward any LV_* matrix overrides through the ssh environment to the sbatch.
 LV_ENV=""
 for v in LV_EPOCHS LV_CELLS LV_WIRINGS LV_SEEDS LV_MAXPAR LV_PLOT_CELL \
-         LV_SYSTEM LV_SEQLEN LV_WANDB LV_PARAM_BUDGET LV_LR LV_BACKBONE LV_EXTRA \
+         LV_SYSTEM LV_TSPAN LV_SEQLEN LV_WANDB LV_PARAM_BUDGET LV_LR LV_BACKBONE LV_EXTRA \
          LV_DATA_SEED_OFFSET; do
     if [[ -n "${!v:-}" ]]; then LV_ENV+="${v}='${!v}' "; fi
 done

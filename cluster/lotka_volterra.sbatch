@@ -67,6 +67,7 @@ PLOT_CELL="${LV_PLOT_CELL:-cfc_lrc}"
 # System / resolution; output dir is the run folder (duffing is a second launch
 # into 02_duffing).
 SYSTEM="${LV_SYSTEM:-periodic_predator_prey}"
+TSPAN="${LV_TSPAN:-}"   # "T0 T1" time-span override; empty = the system's own
 SEQLEN="${LV_SEQLEN:-128}"
 OUTDIR="$RUN_DIR/results"
 LR="${LV_LR:-1e-3}"
@@ -82,22 +83,23 @@ DATA_SEED_OFFSET="${LV_DATA_SEED_OFFSET:-}"
 # shellcheck disable=SC2086  # flag lists are split on purpose
 run_one() {
     local cell="$1" wiring="$2" seed="$3"
-    local wandb_flag="" bb_flag="" budget_flag="" ds_flag=""
+    local wandb_flag="" bb_flag="" budget_flag="" ds_flag="" tspan_flag=""
     [[ "${PARAM_BUDGET}" != "0" ]] && budget_flag="--param-budget ${PARAM_BUDGET}"
     [[ -n "${BACKBONE:-}" ]] && bb_flag="--backbone-layers ${BACKBONE}"
     [[ -n "${DATA_SEED_OFFSET:-}" ]] && ds_flag="--data-seed-offset ${DATA_SEED_OFFSET}"
+    [[ -n "${TSPAN:-}" ]] && tspan_flag="--t-span ${TSPAN}"
     [[ "${USE_WANDB:-0}" == "1" ]] && wandb_flag="--wandb"
     echo "[start] ${cell}_${wiring}_seed${seed} $(date -u +%FT%TZ)"
     uv run python experiments/run_lotka_volterra_benchmark.py \
         --wiring "$wiring" --cell "$cell" --seed "$seed" --epochs "$EPOCHS" \
-        --system "$SYSTEM" --seq-len "$SEQLEN" --outdir "$OUTDIR" \
+        --system "$SYSTEM" $tspan_flag --seq-len "$SEQLEN" --outdir "$OUTDIR" \
         $budget_flag --lr "$LR" $bb_flag $ds_flag $EXTRA $wandb_flag
     local rc=$?
     echo "[done ] ${cell}_${wiring}_seed${seed} (exit $rc)"
     return $rc
 }
 export -f run_one
-export EPOCHS SYSTEM SEQLEN OUTDIR USE_WANDB PARAM_BUDGET LR BACKBONE EXTRA DATA_SEED_OFFSET
+export EPOCHS SYSTEM TSPAN SEQLEN OUTDIR USE_WANDB PARAM_BUDGET LR BACKBONE EXTRA DATA_SEED_OFFSET
 
 JOBS=""
 for cell in $CELLS; do

@@ -249,6 +249,10 @@ def main():
     ap.add_argument("--cell", default="cfc_lrc")
     ap.add_argument("--system", default="periodic_predator_prey",
                     help="neural_ode 2D system (e.g. periodic_predator_prey, duffing)")
+    ap.add_argument("--t-span", type=float, nargs=2, default=None,
+                    metavar=("T0", "T1"),
+                    help="override the system's time span (dt = (T1-T0)/seq_len); "
+                         "default: the system's own")
     ap.add_argument("--seed", type=int, default=0)
     data_seed = ap.add_mutually_exclusive_group()
     data_seed.add_argument("--data-seed", type=int, default=None,
@@ -306,7 +310,7 @@ def main():
                  else DATA_SEED_BASE + args.data_seed_offset + args.seed)
     data = load_lotka_volterra(n_trajectories=args.n_trajectories,
                                seq_len=args.seq_len, seed=data_seed,
-                               system=args.system)
+                               system=args.system, t_span=args.t_span)
     split = [len(data.train_x), len(data.val_x), len(data.test_x)]
     print(f"[{args.system}] train/val/test {split} trajectories (data seed "
           f"{data_seed}), seq_len {data.seq_len}, dt {data.dt:.4f}, "
@@ -396,7 +400,7 @@ def main():
     os.makedirs(args.outdir, exist_ok=True)
     record = {
         "wiring": args.wiring, "cell": args.cell, "seed": args.seed,
-        "system": args.system,
+        "system": args.system, "t_span": list(data.t_span),
         "size": args.size, "param_budget": args.param_budget,
         "budget_deviation": budget_dev, "epochs": args.epochs, "lr": args.lr,
         "backbone_layers": args.backbone_layers,
@@ -419,6 +423,7 @@ def main():
         "training_diverged": not np.isfinite(hist.history["loss"][-1]),
         "config": {"effective": {
             "task": "lotka_volterra", "system": args.system,
+            "t_span": list(data.t_span),
             "n_trajectories": args.n_trajectories, "seq_len": args.seq_len,
             "data_seed": data_seed, "split": split,
             "param_budget": args.param_budget, "backbone_layers": bb_effective,
