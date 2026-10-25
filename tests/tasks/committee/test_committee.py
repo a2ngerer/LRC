@@ -1,4 +1,6 @@
 """Tests for the partial-view voting committee (Iteration 7)."""
+import json
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -7,14 +9,17 @@ import tensorflow as tf
 
 from src.tasks.committee.views import (partition_masks, masked_views,
                                        noisy_views, drop_features, add_noise,
-                                       make_views)
+                                       make_views, average_views)
 from src.tasks.committee.model import (build_committee_model, ChannelDropout,
                                        NoiseAugment, COMMITTEE_WIRINGS)
 from src.neurons import CfC_Cell, CfC_LRC_Cell
 from src.tasks.person_activity.model import (backbone_override,
                                              effective_backbone_layers)
 from src.wirings import effective_param_count, match_param_budget
-from experiments.run_committee_benchmark import result_filename
+from experiments import run_committee_benchmark as co_runner
+from experiments.run_committee_benchmark import (result_filename,
+                                                 position_metrics, steps_to)
+from src.evaluation.metrics import confusion_matrix, macro_f1
 from src.wirings.committee import CommitteeVotingCell
 from src.wirings.tbt_cncp import MultiColumnVotingCell
 
@@ -445,9 +450,83 @@ def test_result_filename_backbone_suffix():
     a = SimpleNamespace(cell="cfc_lrc", wiring="cncp", n_columns=4, size=48,
                         view_mode="partition", vote_lambda=None,
                         consensus="mean", dense_vote_units=None,
-                        view_average=False, train_drop=0.0, train_noise=0.0,
+                        view_average="off", train_drop=0.0, train_noise=0.0,
                         test_corruption="dropout", seed=0, backbone_layers=None)
     base = "cfc_lrc_cncp_K4_s48_partition_seed0"
     assert result_filename(a) == base + ".json"
     a.backbone_layers = 1
     assert result_filename(a) == base + "_bb1.json"
+    a.view_average = "median"
+    assert result_filename(a) == base[:-6] + "_viewmed_seed0_bb1.json"
+
+
+# --- H-d endpoints: median-input monolith, per-position curve (#33) ---
+
+@pytest.mark.parametrize("K, n_fail", [(4, 1), (5, 2), (30, 3), (30, 14)])
+def test_median_view_average_ignores_minority_column_failure(K, n_fail):
+    """n_fail of K identical views zeroed (column failure, rho = n_fail / K
+    < 0.5): the lower median returns the intact input, the mean shrinks it."""
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((5, 6, 7)).astype(np.float32)
+    v = noisy_views(X, K, noise=0.0)
+    v[:, :, rng.choice(K, n_fail, replace=False)] = 0.0
+    med = average_views(v, "median")
+    assert med.shape == (5, 6, 1, 7)
+    np.testing.assert_array_equal(med[:, :, 0], X)
+    np.testing.assert_allclose(average_views(v, "mean")[:, :, 0],
+                               (1 - n_fail / K) * X, atol=1e-6)
+    if K % 2 == 0:              # rho = 0.5: the LOWER median breaks down
+        v = noisy_views(X, K, noise=0.0)
+        v[:, :, :K // 2] = 0.0
+        np.testing.assert_array_equal(average_views(v, "median")[:, :, 0],
+                                      np.minimum(X, 0.0))
+    with pytest.raises(ValueError):
+        average_views(v, "max")
+
+
+def test_position_metrics_curves_and_window_scores():
+    rng = np.random.default_rng(0)
+    y = rng.integers(0, 7, (40, 32))
+    pred = np.where(rng.random((40, 32)) < 0.6, y, rng.integers(0, 7, (40, 32)))
+    acc, f1, f1_win = position_metrics(pred, y, 7)
+    assert acc.shape == f1.shape == (32,)
+    assert np.isclose(acc.mean(), (pred == y).mean())
+    assert np.isclose(f1[3], macro_f1(confusion_matrix(y[:, 3], pred[:, 3], 7)))
+    assert np.isclose(f1_win, macro_f1(confusion_matrix(y, pred, 7)))
+    assert steps_to([0.1, 0.5, 0.95, 0.9, 1.0]) == 3     # first reach of 0.9
+    assert steps_to([0.0, 0.0]) == 1
+
+
+def test_runner_writes_per_position_endpoints_and_view_average_mode(
+        tmp_path, monkeypatch):
+    """One-epoch fit on a stub data set: the per-position arrays have one
+    length-32 entry per corruption level, and their mean over positions is
+    the window accuracy of that level."""
+    rng = np.random.default_rng(0)
+    def split(n):
+        return (rng.standard_normal((n, 32, 7)).astype(np.float32),
+                np.ones((n, 32, 1), np.float32),
+                rng.integers(0, 7, (n, 32)).astype(np.int32))
+    (trx, trt, tr_y), (tex, tet, te_y) = split(16), split(12)
+    stub = SimpleNamespace(train_x=trx, train_t=trt, train_y=tr_y,
+                           test_x=tex, test_t=tet, test_y=te_y,
+                           feature_size=7, num_classes=7)
+    monkeypatch.setattr(co_runner, "load_person_activity",
+                        lambda seq_len: stub)
+    monkeypatch.setattr(sys, "argv", [
+        "run_committee_benchmark.py", "--wiring", "dense", "--n-columns", "3",
+        "--size", "4", "--epochs", "1", "--view-mode", "noisy",
+        "--view-average", "median", "--drop-fracs", "0.0,0.3",
+        "--drop-seeds", "0,1", "--batch-size", "16",
+        "--outdir", str(tmp_path)])
+    co_runner.main()
+    (path,) = tmp_path.glob("*.json")
+    assert path.name == "cfc_lrc_dense_K3_s4_noisy_viewmed_seed0.json"
+    r = json.loads(path.read_text())
+    assert r["view_average"] == "median" and r["model_columns"] == 1
+    for key in ("per_position_accuracy", "per_position_macro_f1"):
+        assert np.array(r[key]).shape == (2, 32)
+    np.testing.assert_allclose(np.mean(r["per_position_accuracy"], axis=1),
+                               r["drop_accs"], atol=1.5e-4)
+    assert all(1 <= s <= 32 for s in r["steps_to_90"])
+    assert len(r["per_position_macro_f1_auc"]) == len(r["drop_macro_f1"]) == 2
