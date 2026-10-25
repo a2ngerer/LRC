@@ -110,7 +110,7 @@ def backbone_override(cell, backbone_layers):
     ``{}`` when the flag is unset (every default unchanged) or when the cell has
     no backbone (gru, lstm, ltc, lrc, ... would reject the kwarg). Otherwise
     ``{'backbone_layers': N}``: ncp/cncp honour it through ``ncp_cell_kwargs``
-    (explicit value wins over the family default 0), dense/dense3/committee
+    (explicit value wins over the family default 1), dense/dense3/committee
     cells override the CfC constructor default of 1.
     """
     if backbone_layers is None:
@@ -126,7 +126,7 @@ def effective_backbone_layers(wiring, cell, cell_kwargs):
     """Backbone depth each sub-cell of this arm actually gets (None: no backbone).
 
     dense/dense3 take the cell constructor default (1) unless overridden; every
-    other wiring goes through ncp_cell_kwargs (family default 0, explicit wins).
+    other wiring goes through ncp_cell_kwargs (family default 1, explicit wins).
     """
     cell_cls = _resolve_cell_cls(cell)
     if not issubclass(cell_cls, CFC_NCP_CELLS):

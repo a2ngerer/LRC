@@ -209,7 +209,7 @@ def main():
                     help="forwarded to LRC-family cells (RQ2/RQ5 mechanism)")
     ap.add_argument("--backbone-layers", type=int, default=None,
                     help="CfC-family backbone depth for EVERY wiring (overrides "
-                         "the dense default 1 and the ncp/cncp family default 0); "
+                         "the default 1 of every wiring; 0 = no backbone); "
                          "default: unchanged per-wiring behaviour")
     ap.add_argument("--verbose", type=int, default=0)
     ap.add_argument("--probe-stability", action="store_true",

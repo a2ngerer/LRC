@@ -204,7 +204,7 @@ def main():
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--backbone-layers", type=int, default=None,
                    help="CfC-family backbone depth for EVERY wiring (overrides "
-                        "the dense default 1 and the ncp/cncp family default 0); "
+                        "the default 1 of every wiring; 0 = no backbone); "
                         "default: unchanged per-wiring behaviour")
     p.add_argument("--outdir", default="results/person_activity")
     p.add_argument("--data-path", default=None,

@@ -115,7 +115,7 @@ def main():
     ap.add_argument("--elastance-type", default="asymmetric")
     ap.add_argument("--backbone-layers", type=int, default=None,
                     help="CfC-family backbone depth for EVERY wiring (overrides "
-                         "the dense default 1 and the ncp/cncp family default 0); "
+                         "the default 1 of every wiring; 0 = no backbone); "
                          "default: unchanged per-wiring behaviour")
     ap.add_argument("--verbose", type=int, default=0)
     args = ap.parse_args()

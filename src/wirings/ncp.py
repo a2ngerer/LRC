@@ -6,9 +6,11 @@ from src.neurons.base_cell import BaseCell
 from src.neurons import (GRU_Cell, LSTM_Cell, CfC_Cell, CfC_LRC_Cell,
                          CfC_MM_LRC_Cell, CfC_MM_LTC_Cell)
 
-# CfC-family sub-cells under 'ncp' default to backbone_layers=0 (ncps
-# WiredCfCCell): the ff1/ff2/time_a/time_b heads act directly on the masked
-# [x, h] input, so there is no instantaneous lateral mixing inside a layer.
+# CfC-family sub-cells under 'ncp', 'cncp' and 'cncp2' default to
+# backbone_layers=1, as the dense arms (pilot decision 2026-10-21, issue #21).
+# An explicit backbone_layers=0 gives the ncps WiredCfCCell form: the
+# ff1/ff2/time_a/time_b heads act directly on the masked [x, h] input, so there
+# is no instantaneous lateral mixing inside a layer.
 CFC_NCP_CELLS = (CfC_Cell, CfC_LRC_Cell, CfC_MM_LRC_Cell, CfC_MM_LTC_Cell)
 
 
@@ -16,7 +18,7 @@ def ncp_cell_kwargs(cell_cls, cell_kwargs):
     """Effective sub-cell kwargs under 'ncp' (explicit values win)."""
     kw = dict(cell_kwargs)
     if issubclass(cell_cls, CFC_NCP_CELLS):
-        kw.setdefault('backbone_layers', 0)
+        kw.setdefault('backbone_layers', 1)
     return kw
 
 # Closed-form and discrete cells have no ODE sub-steps, so one synchronous
@@ -174,7 +176,7 @@ class NCPLayeredCell(BaseCell):
     is empty for inter and motor and the command <-> command synapses for
     command. Every layer receives the same ``elapsed_time``. Unlike ncps
     (``fully_recurrent=True`` default) the intra-layer recurrence is masked.
-    CfC-family sub-cells default to ``backbone_layers=0`` (see CFC_NCP_CELLS).
+    CfC-family sub-cells default to ``backbone_layers=1`` (see CFC_NCP_CELLS).
 
     The hidden state stays one concatenated vector per state slot in ncps
     order ``[motor | command | inter]``, so the motor slice, state handling and

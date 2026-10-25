@@ -242,17 +242,18 @@ def test_effective_param_count_excludes_sparse_linear_mask():
     assert effective_param_count(model) == model.count_params() - dead
 
 
-# --- CfC family under ncp: no lateral mixing (ncps WiredCfCCell) -----------
+# --- CfC family under ncp with backbone_layers=0: no lateral mixing ---------
 
 @pytest.mark.parametrize('cell', ['cfc', 'cfc_lrc', 'cfc_lrc_outer'])
 def test_cfc_ncp_subcells_have_no_lateral_kernel(cell):
-    """backbone_layers=0: every trainable kernel of an inter / motor sub-cell is
-    an (input_dim + units, units) map carrying the concat mask, whose recurrent
+    """Explicit backbone_layers=0 (ncps WiredCfCCell; the default is 1, issue
+    #21): every trainable kernel of an inter / motor sub-cell is an
+    (input_dim + units, units) map carrying the concat mask, whose recurrent
     rows (intra-layer adjacency) are all zero -- no weight connects two inter
     or two motor neurons."""
     from src.wirings import NCPLayeredCell
     w = NCPWiring(_CELL_REGISTRY[cell], INTER, COMMAND, MOTOR, seed=42,
-                  **cell_kwargs(cell))
+                  backbone_layers=0, **cell_kwargs(cell))
     model = w.build_model()
     model(tf.zeros([2, 3, INPUT_DIM]))
     layered = model.layers[0].cell

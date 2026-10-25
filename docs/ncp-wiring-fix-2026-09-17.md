@@ -170,6 +170,10 @@ the first size above the budget):
   `cfc` size 57 (4016), `cfc_lrc` 51 (3970); person_activity `cfc` 44 (4077),
   `cfc_lrc` 39 (3845); Lotka-Volterra `cfc` 48 (4170), `cfc_lrc` 43 (3984).
   Test: `tests/wirings/test_ncp_wiring.py::test_cfc_ncp_subcells_have_no_lateral_kernel`.
+  Superseded as the default by issue #21 (pilot decision 2026-10-21): every
+  closed-form sub-cell under `ncp`, `cncp` and `cncp2` now defaults to
+  `backbone_layers=1`; the backbone-free form above, and the sizes quoted
+  for it, need an explicit `backbone_layers=0` (`--backbone-layers 0`).
 * **Provenance.** `run_benchmark.build_model` attaches `effective_config`
   (effective `cell_kwargs` incl. injected `ode_unfolds` / `backbone_layers`,
   resolved `size`, `units`, `ncp` sizes, `lamina_units`) to the model;
