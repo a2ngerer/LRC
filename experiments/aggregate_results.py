@@ -5,17 +5,32 @@ Reads the per-run JSONs produced by experiments/run_benchmark.py and writes:
   - results/summary.csv     — one row per run (long format)
   - results/summary.md      — mean +/- std tables and statistical tests
 
-Statistics (per thesis protocol, see research-questions-hypotheses):
-  - Wilcoxon signed-rank tests, alpha = 0.05, paired over (system, seed)
-  - paired Cohen's d as effect size (mean(diff) / std(diff))
+Statistics (per thesis protocol, Chapter 5):
+  - Wilcoxon signed-rank tests, alpha = 0.05, paired over (system, seed), on the
+    finite pairs only (the excluded count is printed); Bonferroni over the
+    pre-registered family size (BONFERRONI_FAMILIES) or, for exploratory
+    blocks, over the block's tests
+  - paired Cohen's d_z (mean(diff) / std(diff)) on the same finite pairs
+  - P(A>B) over all pairs (diverged runs lose) with an exact Clopper-Pearson
+    interval, an effect size next to the Wilcoxon, not a decision rule
+
+Optional sections:
+  --hpo-dir DIR    HPO fragility per arm x task from every hpo_selection.json
+                   (lr at the grid edge, grid extended, sign of each core
+                   contrast under the second-best configuration of both arms)
+  --pa-runs DIR    Person Activity arm means with a percentile bootstrap over
+                   seeds (--bootstrap-units seed) or over seeds and test
+                   recordings (--bootstrap-units seed,recording)
 
 Usage:
     uv run python experiments/aggregate_results.py [--runs results/runs] [--out results]
+        [--hpo-dir DIR] [--pa-runs DIR [--bootstrap-units seed,recording]]
 """
 import argparse
 import json
 import os
 import sys
+from collections import defaultdict
 from glob import glob
 from itertools import combinations
 
@@ -23,8 +38,38 @@ import numpy as np
 import pandas as pd
 from scipy.stats import wilcoxon
 
+# Allow running as a plain script (``src`` is the installed package).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.evaluation.stats import bootstrap_mean_ci, p_a_gt_b  # noqa: E402
+
 ALPHA = 0.05
 METRIC = 'nrmse'   # primary comparison metric (proposal: MSE/NRMSE)
+HIGHER_IS_BETTER = False   # METRIC orientation for P(A>B); load_runs metrics are errors
+GAMMA = 0.75       # P(A>B) reference line, printed for orientation only
+
+# Pre-registered core contrasts (Chapter 5 decision rules; H-a as revised in
+# #31): family -> [(task, arm A, arm B)], arm = (cell, wiring), A the arm the
+# hypothesis predicts to be better, task = rollout system name or 'pa'.
+CORE_CONTRASTS = {
+    'H-a': [('duffing', ('cfc', 'ncp'), ('cfc_static', 'ncp')),
+            ('pa', ('cfc', 'dense'), ('cfc_static', 'dense')),
+            ('multitimescale', ('cfc', 'dense'), ('cfc_static', 'dense'))],
+    'H-b': [('duffing', ('cfc_lrc', 'ncp'), ('lrc', 'ncp')),
+            ('pa', ('cfc_lrc', 'ncp'), ('lrc', 'ncp'))],
+    'H-c': [(task, ('cfc_lrc', wiring), ('cfc_lrc', 'dense3'))
+            for wiring in ('ncp', 'cncp')
+            for task in ('periodic_predator_prey', 'duffing', 'pa')],
+}
+# Bonferroni family sizes, the one place they are defined.
+BONFERRONI_FAMILIES = {
+    'H-a': len(CORE_CONTRASTS['H-a']),
+    'H-b': len(CORE_CONTRASTS['H-b']),
+    # 2 wirings x 3 tasks, each also on the eval-only robustness endpoint (#34)
+    'H-c': 2 * len(CORE_CONTRASTS['H-c']),
+    # learned consensus vs input averaging at K=300, rho=0.5 (committee runner)
+    'H-d': 1,
+}
 
 
 def load_runs(runs_dirs) -> pd.DataFrame:
@@ -126,11 +171,15 @@ def summary_tables(df: pd.DataFrame) -> str:
 
 
 def _paired_vectors(df: pd.DataFrame, key_a: dict, key_b: dict):
-    """Metric vectors for two configs, paired on (system, seed)."""
+    """Metric vectors and divergence flags for two configs, paired on (system,
+    seed). A run is diverged if its metric is non-finite or a loader set the
+    optional 'diverged' column (e.g. the rollout class 'unbounded')."""
+    df = df.assign(_div=~np.isfinite(df[METRIC]) | df.get('diverged', False))
     a = df.loc[(df[list(key_a)] == pd.Series(key_a)).all(axis=1)]
     b = df.loc[(df[list(key_b)] == pd.Series(key_b)).all(axis=1)]
     merged = a.merge(b, on=['system', 'seed'], suffixes=('_a', '_b'))
-    return merged[f'{METRIC}_a'].to_numpy(), merged[f'{METRIC}_b'].to_numpy()
+    return (merged[f'{METRIC}_a'].to_numpy(), merged[f'{METRIC}_b'].to_numpy(),
+            merged['_div_a'].to_numpy(bool), merged['_div_b'].to_numpy(bool))
 
 
 def _cohens_d_paired(x: np.ndarray, y: np.ndarray) -> float:
@@ -139,31 +188,54 @@ def _cohens_d_paired(x: np.ndarray, y: np.ndarray) -> float:
     return float(diff.mean() / sd) if sd > 0 else float('nan')
 
 
-def _test_block(df, pairs, title) -> str:
-    """One comparison family; Bonferroni correction over the family's tests."""
-    n_tests = len(pairs)
+def _test_block(df, pairs, title, family=None) -> str:
+    """One comparison family; Bonferroni over the pre-registered family size
+    (BONFERRONI_FAMILIES[family]) or, without a family, over the block's tests.
+
+    Wilcoxon and d_z use the finite pairs only; P(A>B) uses every pair."""
+    n_tests = BONFERRONI_FAMILIES[family] if family else len(pairs)
+    alpha_adj = ALPHA / n_tests
+    sign = 1 if HIGHER_IS_BETTER else -1
     lines = [f'## {title} (Wilcoxon signed-rank, alpha={ALPHA}, metric={METRIC}, '
              f'Bonferroni m={n_tests})\n']
-    lines.append('| Comparison | n pairs | median diff | p raw | p Bonferroni '
-                 '| significant | Cohen\'s d |')
-    lines.append('|------------|---------|-------------|-------|--------------'
-                 '|-------------|-----------|')
+    lines.append('| Comparison | n pairs | excluded | median diff | p raw '
+                 '| p Bonferroni | alpha adj | significant | Cohen\'s d_z '
+                 '| P(A>B) [95% CI] |')
+    lines.append('|------------|---------|----------|-------------|-------'
+                 '|--------------|-----------|-------------|--------------'
+                 '|-----------------|')
     for label, key_a, key_b in pairs:
-        x, y = _paired_vectors(df, key_a, key_b)
+        x, y, dx, dy = _paired_vectors(df, key_a, key_b)
         if len(x) < 5:
-            lines.append(f'| {label} | {len(x)} | — | — | — | too few pairs | — |')
+            lines.append(f'| {label} | {len(x)} | — | — | — | — | {alpha_adj:.4g} '
+                         f'| too few pairs | — | — |')
+            continue
+        pw, lo, hi = p_a_gt_b(sign * x, sign * y, dx, dy)
+        win = f'{pw:.2f} [{lo:.3f}, {hi:.3f}]'
+        finite = np.isfinite(x) & np.isfinite(y)
+        excl = int((~finite).sum())
+        x, y = x[finite], y[finite]
+        if len(x) < 5:
+            lines.append(f'| {label} | {len(x) + excl} | {excl} | — | — | — '
+                         f'| {alpha_adj:.4g} | too few finite pairs | — | {win} |')
             continue
         try:
             stat, p = wilcoxon(x, y)
         except ValueError:   # all differences zero
-            lines.append(f'| {label} | {len(x)} | 0 | 1.0 | 1.0 | no | 0 |')
+            lines.append(f'| {label} | {len(x) + excl} | {excl} | 0 | 1.0 | 1.0 '
+                         f'| {alpha_adj:.4g} | no | 0 | {win} |')
             continue
         p_adj = min(1.0, p * n_tests)
         d = _cohens_d_paired(x, y)
         sig = 'YES' if p_adj < ALPHA else 'no'
-        lines.append(f'| {label} | {len(x)} | {np.median(x - y):+.4f} '
-                     f'| {p:.4g} | {p_adj:.4g} | {sig} | {d:+.3f} |')
+        lines.append(f'| {label} | {len(x) + excl} | {excl} | {np.median(x - y):+.4f} '
+                     f'| {p:.4g} | {p_adj:.4g} | {alpha_adj:.4g} | {sig} | {d:+.3f} '
+                     f'| {win} |')
     lines.append('')
+    lines.append(f'P(A>B): paired win fraction of A ({"higher" if HIGHER_IS_BETTER else "lower"} '
+                 f'{METRIC} wins, ties 0.5, a diverged run loses, two diverged runs tie), '
+                 f'exact Clopper-Pearson 95% CI; reference gamma = {GAMMA} for '
+                 f'orientation only (the decision is the Wilcoxon).\n')
     return '\n'.join(lines)
 
 
@@ -189,6 +261,74 @@ def statistics(df: pd.DataFrame) -> str:
     return '\n'.join(out)
 
 
+def load_hpo_selections(hpo_dir) -> dict:
+    """{(task, cell, wiring): selection} from every hpo_selection.json below hpo_dir.
+
+    Keys read: task, system (rollouts; used as the task label), cell, wiring,
+    lr_at_grid_edge, grid_extended, and ranking = the stage-2 configs best
+    first, each with its lr and its validation selection 'score'.
+    """
+    sel = {}
+    for path in sorted(glob(os.path.join(hpo_dir, '**', 'hpo_selection.json'),
+                            recursive=True)):
+        with open(path, encoding='utf-8') as f:
+            r = json.load(f)
+        sel[(r.get('system') or r['task'], r['cell'], r['wiring'])] = r
+    return sel
+
+
+def hpo_fragility(hpo_dir) -> str:
+    """Grid-edge flags per arm x task and, per core contrast, whether the sign
+    of the validation-score difference A - B under the best configurations
+    holds under the second-best configuration of both arms."""
+    sel = load_hpo_selections(hpo_dir)
+    lines = ['## HPO fragility (hpo_selection.json)\n',
+             '| Task | Arm | lr | lr_at_grid_edge | grid_extended |',
+             '|------|-----|----|-----------------|---------------|']
+    for (task, cell, wiring), r in sorted(sel.items()):
+        lines.append(f"| {task} | {cell}/{wiring} | {r['ranking'][0]['lr']:g} "
+                     f"| {r['lr_at_grid_edge']} | {r['grid_extended']} |")
+    lines += ['', '| Family | Task | A | B | sign best | sign 2nd | sign_stable_2nd |',
+              '|--------|------|---|---|-----------|----------|-----------------|']
+    for family, contrasts in CORE_CONTRASTS.items():
+        for task, a, b in contrasts:
+            ra, rb = sel.get((task, *a)), sel.get((task, *b))
+            if ra is None or rb is None:
+                continue
+            s1, s2 = (np.sign(ra['ranking'][i]['score'] - rb['ranking'][i]['score'])
+                      for i in (0, 1))
+            lines.append(f"| {family} | {task} | {'/'.join(a)} | {'/'.join(b)} "
+                         f"| {s1:+.0f} | {s2:+.0f} | {'yes' if s1 == s2 else 'NO'} |")
+    lines.append('')
+    return '\n'.join(lines)
+
+
+def pa_arm_means(pa_dir, units='seed') -> str:
+    """Person Activity arm means (test macro-F1) with a percentile bootstrap
+    over seeds, or over seeds and test recordings ('seed,recording', reads
+    test_macro_f1_per_recording). Files without the key are skipped."""
+    by_rec = 'recording' in units
+    key = 'test_macro_f1_per_recording' if by_rec else 'test_macro_f1'
+    arms, skipped = defaultdict(list), 0
+    for path in sorted(glob(os.path.join(pa_dir, '*.json'))):
+        with open(path, encoding='utf-8') as f:
+            r = json.load(f)
+        if key not in r:
+            skipped += 1
+            continue
+        v = r[key]
+        # arm = result tag without the seed (keeps backbone/multi-column suffixes)
+        arm = os.path.basename(path)[:-len('.json')].replace(f"_seed{r['seed']}", '')
+        arms[arm].append([v[k] for k in sorted(v)] if isinstance(v, dict) else v)
+    lines = [f'## Person Activity arm means (test macro-F1, bootstrap over {units})\n',
+             '| Arm | n seeds | mean | 95% CI |', '|-----|---------|------|--------|']
+    for arm, rows in sorted(arms.items()):
+        mean, lo, hi = bootstrap_mean_ci(rows, resample_cols=by_rec)
+        lines.append(f'| {arm} | {len(rows)} | {mean:.4f} | [{lo:.4f}, {hi:.4f}] |')
+    lines.append(f'\nSkipped {skipped} result file(s) without {key}.\n' if skipped else '')
+    return '\n'.join(lines)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument('--runs', nargs='+', default=['results/runs'])
@@ -196,32 +336,46 @@ def main(argv=None) -> int:
     p.add_argument('--cells', default=None,
                    help='comma-separated cell-variant subset, e.g. '
                         '"ltc,mm_ltc,ltc+clip"')
+    p.add_argument('--hpo-dir', default=None,
+                   help='folder searched recursively for hpo_selection.json '
+                        '(HPO-fragility flags)')
+    p.add_argument('--pa-runs', default=None,
+                   help='Person Activity result JSON folder (arm means with '
+                        'bootstrap interval)')
+    p.add_argument('--bootstrap-units', default='seed',
+                   choices=('seed', 'seed,recording'),
+                   help='resampling units for the --pa-runs arm means')
     args = p.parse_args(argv)
 
     df = load_runs(args.runs)
-    if args.cells:
+    if args.cells and not df.empty:
         df = df[df['cell'].isin(args.cells.split(','))]
-    if df.empty:
+    if df.empty and not (args.hpo_dir or args.pa_runs):
         print(f'No run JSONs found in {args.runs}', file=sys.stderr)
         return 1
 
     os.makedirs(args.out, exist_ok=True)
-    df.to_csv(os.path.join(args.out, 'summary.csv'), index=False)
-
-    report = '\n'.join([
-        '# Benchmark Summary\n',
-        f'Runs: {len(df)} | Cells: {sorted(df.cell.unique())} | '
-        f'Wirings: {sorted(df.wiring.unique())} | Seeds/config: '
-        f'{df.groupby(["cell", "wiring", "system"]).size().min()}-'
-        f'{df.groupby(["cell", "wiring", "system"]).size().max()}\n',
-        summary_tables(df),
-        statistics(df),
-    ])
+    parts = ['# Benchmark Summary\n']
+    if not df.empty:
+        df.to_csv(os.path.join(args.out, 'summary.csv'), index=False)
+        parts += [
+            f'Runs: {len(df)} | Cells: {sorted(df.cell.unique())} | '
+            f'Wirings: {sorted(df.wiring.unique())} | Seeds/config: '
+            f'{df.groupby(["cell", "wiring", "system"]).size().min()}-'
+            f'{df.groupby(["cell", "wiring", "system"]).size().max()}\n',
+            summary_tables(df),
+            statistics(df),
+        ]
+    if args.hpo_dir:
+        parts.append(hpo_fragility(args.hpo_dir))
+    if args.pa_runs:
+        parts.append(pa_arm_means(args.pa_runs, args.bootstrap_units))
+    report = '\n'.join(parts)
     md_path = os.path.join(args.out, 'summary.md')
     with open(md_path, 'w', encoding='utf-8') as f:
         f.write(report)
     print(report)
-    print(f'\nWritten: {md_path} and summary.csv')
+    print(f'\nWritten: {md_path}' + (' and summary.csv' if not df.empty else ''))
     return 0
 
 
