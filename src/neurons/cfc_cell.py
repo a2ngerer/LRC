@@ -14,9 +14,16 @@ def _lecun_tanh(x):
     return 1.7159 * tf.math.tanh(0.666 * x)
 
 
+def _check_head_activation(head_activation):
+    if head_activation not in (None, 'tanh'):
+        raise ValueError(
+            f"head_activation must be None or 'tanh', got {head_activation!r}.")
+    return head_activation
+
+
 class CfC_Cell(BaseCell):
     def __init__(self, units, backbone_units=None, backbone_layers=1,
-                 dt=1.0, **kwargs):
+                 dt=1.0, head_activation=None, **kwargs):
         """
         Closed-form Continuous-time (CfC) <https://arxiv.org/abs/2106.13898> cell.
 
@@ -34,11 +41,17 @@ class CfC_Cell(BaseCell):
             backbone_units:  width of the shared backbone (default: units)
             backbone_layers: number of backbone Dense layers (default 1)
             dt:              default elapsed time for regularly sampled mode
+            head_activation: None (default): linear ff1/ff2 heads, as in the
+                             ncps TF reference. 'tanh': tanh on ff1/ff2, as in
+                             the ncps Torch reference (bounds the state
+                             candidates without a backbone). The time-gate
+                             heads stay linear either way.
         """
         super().__init__(units, **kwargs)
         self._backbone_units = backbone_units or units
         self._backbone_layers = backbone_layers
         self._dt = dt
+        self._head_activation = _check_head_activation(head_activation)
 
     def build(self, input_shape):
         # Nested tuple -> first item is the feature tensor shape (same
@@ -67,13 +80,14 @@ class CfC_Cell(BaseCell):
             width = self._backbone_units
             self._backbone.append(layer)
 
-        def _head(name):
-            head = tf.keras.layers.Dense(self.units, name=name)
+        def _head(name, activation=None):
+            head = tf.keras.layers.Dense(self.units, activation=activation,
+                                         name=name)
             head.build((None, width))
             return head
 
-        self._ff1 = _head('ff1')
-        self._ff2 = _head('ff2')
+        self._ff1 = _head('ff1', self._head_activation)
+        self._ff2 = _head('ff2', self._head_activation)
         self._time_a = _head('time_a')
         self._time_b = _head('time_b')
         self.built = True
