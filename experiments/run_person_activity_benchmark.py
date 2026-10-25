@@ -36,7 +36,8 @@ import numpy as np
 # Allow running as a plain script (``src`` is the installed package).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.tasks.person_activity.model import WIRINGS  # noqa: E402
+from src.tasks.person_activity.model import (  # noqa: E402
+    WIRINGS, backbone_override, backbone_suffix, effective_backbone_layers)
 
 DEFAULT_SIZE = 64
 BUDGET_TOLERANCE = 0.05
@@ -50,6 +51,12 @@ CELL_KWARGS = {
     "lrc_pm": dict(elastance_type="asymmetric"),
     "cfc_lrc": dict(elastance_type="asymmetric"),
 }
+
+
+def result_tag(args):
+    """Run tag (log, wandb name, result JSON stem); --backbone-layers adds `_bb{N}`."""
+    return (f"{args.cell}_{args.wiring}_seed{args.seed}"
+            f"{backbone_suffix(args.backbone_layers)}")
 
 
 def run(args):
@@ -69,6 +76,8 @@ def run(args):
     majority_baseline = float(counts.max() / counts.sum())
 
     cell_kwargs = dict(CELL_KWARGS.get(args.cell, {}))
+    cell_kwargs.update(backbone_override(args.cell, args.backbone_layers))
+    bb_effective = effective_backbone_layers(args.wiring, args.cell, cell_kwargs)
 
     def build(size):
         return build_person_activity_model(
@@ -90,10 +99,11 @@ def run(args):
     pc = param_counts(model)
     params = pc['params_effective']
 
-    tag = f"{args.cell}_{args.wiring}_seed{args.seed}"
+    tag = result_tag(args)
     print(f"=== TRAIN {tag} size={args.size} params={params} "
           f"(raw {pc['params_raw']}) epochs={args.epochs} lr={args.lr} "
-          f"batch={args.batch_size} ===", flush=True)
+          f"batch={args.batch_size} backbone_layers={args.backbone_layers} "
+          f"(effective {bb_effective}) ===", flush=True)
 
     wandb_config = {
         "task": "person_activity",
@@ -106,6 +116,7 @@ def run(args):
         "lr": args.lr,
         "batch_size": args.batch_size,
         "epochs": args.epochs,
+        "backbone_layers": args.backbone_layers,
         **pc,
     }
 
@@ -138,6 +149,8 @@ def run(args):
         "budget_deviation": budget_dev,
         "lr": args.lr,
         "batch_size": args.batch_size,
+        "backbone_layers": args.backbone_layers,
+        "backbone_layers_effective": bb_effective,
         **pc,
         "cell_kwargs": cell_kwargs,
         "train_sequences": int(data.train_x.shape[0]),
@@ -183,6 +196,10 @@ def main():
                           "(closest size on the arm's own knob)")
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--batch-size", type=int, default=128)
+    p.add_argument("--backbone-layers", type=int, default=None,
+                   help="CfC-family backbone depth for EVERY wiring (overrides "
+                        "the dense default 1 and the ncp/cncp family default 0); "
+                        "default: unchanged per-wiring behaviour")
     p.add_argument("--outdir", default="results/person_activity")
     p.add_argument("--data-path", default=None,
                    help="override the ConfLongDemo_JSI.txt location")

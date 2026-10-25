@@ -30,6 +30,8 @@ from src.wirings import param_counts, size_for_budget
 from src.tasks.person_activity.datasets import load_person_activity
 from src.tasks.committee.views import make_views, drop_features, add_noise
 from src.tasks.committee.model import build_committee_model, COMMITTEE_WIRINGS
+from src.tasks.person_activity.model import (
+    backbone_override, backbone_suffix, effective_backbone_layers)
 
 
 DEFAULT_SIZE = 48
@@ -39,6 +41,20 @@ BUDGET_TOLERANCE = 0.05
 def per_step_accuracy(model, views, t, y):
     logits = model.predict([views, t], verbose=0)          # (N,T,C)
     return float((logits.argmax(-1) == y).mean())
+
+
+def result_filename(args):
+    """Result JSON name; a set --backbone-layers adds `_bb{N}` (V2 vs V2s)."""
+    td = f"_td{args.train_drop}" if args.train_drop > 0.0 else ""
+    tn = f"_tn{args.train_noise}" if args.train_noise > 0.0 else ""
+    tc = "_tcnoise" if args.test_corruption == "noise" else ""
+    lam = "" if args.vote_lambda is None else f"_lam{args.vote_lambda:g}"
+    med = "_median" if args.consensus == "median" else ""
+    dvu = f"_dvu{args.dense_vote_units}" if args.dense_vote_units else ""
+    avg = "_viewavg" if args.view_average else ""
+    return (f"{args.cell}_{args.wiring}_K{args.n_columns}_s{args.size}_"
+            f"{args.view_mode}{lam}{med}{dvu}{avg}{td}{tn}{tc}_seed{args.seed}"
+            f"{backbone_suffix(args.backbone_layers)}.json")
 
 
 def main():
@@ -96,6 +112,10 @@ def main():
                          "seeds (F is small, so WHICH channel fails dominates)")
     ap.add_argument("--outdir", default="results/committee")
     ap.add_argument("--elastance-type", default="asymmetric")
+    ap.add_argument("--backbone-layers", type=int, default=None,
+                    help="CfC-family backbone depth for EVERY wiring (overrides "
+                         "the dense default 1 and the ncp/cncp family default 0); "
+                         "default: unchanged per-wiring behaviour")
     ap.add_argument("--verbose", type=int, default=0)
     args = ap.parse_args()
     if args.size is None and args.param_budget is None:
@@ -104,6 +124,8 @@ def main():
     cell_kwargs = {}
     if args.cell in ("cfc_lrc", "lrc", "lrc_ar"):
         cell_kwargs["elastance_type"] = args.elastance_type
+    cell_kwargs.update(backbone_override(args.cell, args.backbone_layers))
+    bb_effective = effective_backbone_layers(args.wiring, args.cell, cell_kwargs)
 
     d = load_person_activity(seq_len=args.seq_len)
     F, C = d.feature_size, d.num_classes
@@ -122,7 +144,8 @@ def main():
     print(f"committee {args.wiring} K={args.n_columns} size={args.size} "
           f"lambda={'learned' if args.vote_lambda is None else args.vote_lambda} "
           f"consensus={args.consensus}"
-          f"{' view-average' if args.view_average else ''}: "
+          f"{' view-average' if args.view_average else ''} "
+          f"backbone_layers={args.backbone_layers} (effective {bb_effective}): "
           f"train {d.train_x.shape[0]} / test {d.test_x.shape[0]}, "
           f"F={F} C={C} mode={args.view_mode}")
 
@@ -182,20 +205,13 @@ def main():
         "vote_lambda": args.vote_lambda, "consensus": args.consensus,
         "dense_vote_units": args.dense_vote_units,
         "view_average": bool(args.view_average), "model_columns": n_cols,
+        "backbone_layers": args.backbone_layers,
+        "backbone_layers_effective": bb_effective,
         "clean_accuracy": clean,
         "drop_fracs": levels, "drop_accs": [round(a, 4) for a in accs],
         "drop_stds": [round(s, 4) for s in stds], "drop_seeds": drop_seeds,
     }
-    td = f"_td{args.train_drop}" if args.train_drop > 0.0 else ""
-    tn = f"_tn{args.train_noise}" if args.train_noise > 0.0 else ""
-    tc = "_tcnoise" if args.test_corruption == "noise" else ""
-    lam = "" if args.vote_lambda is None else f"_lam{args.vote_lambda:g}"
-    med = "_median" if args.consensus == "median" else ""
-    dvu = f"_dvu{args.dense_vote_units}" if args.dense_vote_units else ""
-    avg = "_viewavg" if args.view_average else ""
-    fname = (f"{args.cell}_{args.wiring}_K{args.n_columns}_s{args.size}_"
-             f"{args.view_mode}{lam}{med}{dvu}{avg}{td}{tn}{tc}_seed{args.seed}.json")
-    path = os.path.join(args.outdir, fname)
+    path = os.path.join(args.outdir, result_filename(args))
     with open(path, "w") as f:
         json.dump(record, f)
     print(f"wrote {path}")

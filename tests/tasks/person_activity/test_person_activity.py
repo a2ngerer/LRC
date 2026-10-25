@@ -8,6 +8,7 @@
 #   - the dataset loader returns the documented shapes (skipped when the
 #     data file has not been downloaded).
 import os
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -18,6 +19,7 @@ from src.tasks.person_activity import (build_person_activity_model,
                                        load_person_activity,
                                        DEFAULT_DATA_PATH)
 from src.tasks.person_activity.model import WIRINGS
+from experiments.run_person_activity_benchmark import result_tag
 
 SEQ_LEN = 32
 NUM_CLASSES = 7
@@ -161,3 +163,11 @@ def test_load_person_activity_shapes():
     # PersonData for comparability, so they are not clamped.
     assert np.isfinite(data.train_t).all()
     assert (data.train_t > 0).mean() > 0.99
+
+
+def test_result_tag_backbone_suffix():
+    a = SimpleNamespace(cell="cfc_lrc", wiring="ncp", seed=2,
+                        backbone_layers=None)
+    assert result_tag(a) == "cfc_lrc_ncp_seed2"
+    a.backbone_layers = 1
+    assert result_tag(a) == "cfc_lrc_ncp_seed2_bb1"

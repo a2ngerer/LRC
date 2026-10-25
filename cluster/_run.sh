@@ -79,6 +79,15 @@ run_rsync() {
         ./ "${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/"
 }
 
+# run_count <list> <list> ...: product of the word counts; sets RUN_COUNT (fits)
+# so LAUNCH.md and the work-log carry the expected number of result JSONs.
+run_count() {
+    local n=1 l
+    for l in "$@"; do n=$(( n * $(wc -w <<<"$l") )); done
+    RUN_COUNT="$n"
+    echo "fits: ${RUN_COUNT}"
+}
+
 # Local provenance for LAUNCH.md.
 _run_git_sha() {
     local sha dirty=""
@@ -123,6 +132,7 @@ _run_launch_md() {
 - Env: ${RUN_ENV:-<none>}
 - SLURM job IDs: <pending>
 - Arms / seeds / epochs / budget: ${RUN_MATRIX:-<see Env>}
+- Expected result files: ${RUN_COUNT:-<unknown>}
 - Started / finished: $(date -u +%FT%TZ) / <pending>
 - Outcome: <pending>
 EOF
@@ -135,7 +145,7 @@ run_sbatch() {
     local sbatch_file="$1" env_assign="${2:-}"
     local cmd="cd ${CLUSTER_REPO_DIR} && export PATH=\$HOME/.local/bin:\$PATH && \
 ${env_assign}RUN_DIR=${RUN_DIR} sbatch --export=ALL \
---output=${RUN_DIR}/logs/%x-%j.out --error=${RUN_DIR}/logs/%x-%j.err ${sbatch_file}"
+${SBATCH_EXTRA:+${SBATCH_EXTRA} }--output=${RUN_DIR}/logs/%x-%j.out --error=${RUN_DIR}/logs/%x-%j.err ${sbatch_file}"
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
         echo "[dry-run] ssh ${CLUSTER_HOST} \"${cmd}\""
         return 0

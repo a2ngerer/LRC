@@ -28,7 +28,10 @@ out="$(LV_CELLS=cfc_lrc LV_SEEDS=0 ./cluster/submit_lotka_volterra.sh -n smoke 2
 check lv "$out" "run folder: ${CLUSTER_HOST}:wk/benchmarks/01_lotka_volterra/runs/${today}_smoke" \
     "RUN_DIR=\$HOME/wk/benchmarks/01_lotka_volterra/runs/${today}_smoke sbatch" \
     "--output=\$HOME/wk/benchmarks/01_lotka_volterra/runs/${today}_smoke/logs/%x-%j.out" \
-    "LV_CELLS='cfc_lrc' LV_SEEDS='0'" "cluster/lotka_volterra.sbatch"
+    "LV_CELLS='cfc_lrc' LV_SEEDS='0'" "cluster/lotka_volterra.sbatch" "fits: 6"
+
+out="$(LV_EXTRA="--columns 2 --partition same" LV_PARAM_BUDGET=0 SBATCH_EXTRA="--time=00:10:00" ./cluster/submit_lotka_volterra.sh -n smoke 2>&1)"
+check extra "$out" "LV_EXTRA='--columns 2 --partition same'" "LV_PARAM_BUDGET='0'" "--export=ALL --time=00:10:00"
 
 out="$(LV_SYSTEM=duffing ./cluster/submit_lotka_volterra.sh -n smoke 2>&1)"
 check duffing "$out" "02_duffing/runs/${today}_smoke"
