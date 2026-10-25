@@ -80,6 +80,8 @@ def run(args):
 
     cell_kwargs = dict(CELL_KWARGS.get(args.cell, {}))
     cell_kwargs.update(backbone_override(args.cell, args.backbone_layers))
+    if args.head_activation != "none":     # non-CfC cells reject the kwarg
+        cell_kwargs["head_activation"] = args.head_activation
     bb_effective = effective_backbone_layers(args.wiring, args.cell, cell_kwargs)
     multi = multi_column_config(args)
 
@@ -121,6 +123,7 @@ def run(args):
         "batch_size": args.batch_size,
         "epochs": args.epochs,
         "backbone_layers": args.backbone_layers,
+        "head_activation": args.head_activation,
         **pc,
         **multi,
     }
@@ -156,6 +159,7 @@ def run(args):
         "batch_size": args.batch_size,
         "backbone_layers": args.backbone_layers,
         "backbone_layers_effective": bb_effective,
+        "head_activation": args.head_activation,
         **pc,
         **multi,
         "cell_kwargs": cell_kwargs,
@@ -206,6 +210,9 @@ def main():
                    help="CfC-family backbone depth for EVERY wiring (overrides "
                         "the dense default 1 and the ncp/cncp family default 0); "
                         "default: unchanged per-wiring behaviour")
+    p.add_argument("--head-activation", default="none", choices=("none", "tanh"),
+                   help="activation on the ff1/ff2 heads of the CfC-family cells "
+                        "(bb0 attribution control); default: linear heads")
     p.add_argument("--outdir", default="results/person_activity")
     p.add_argument("--data-path", default=None,
                    help="override the ConfLongDemo_JSI.txt location")
