@@ -37,7 +37,10 @@ NCP_WIRING_SEED = 42
 # that 'ncp' used to mean (see docs/ncp-wiring-fix-2026-09-17.md). It is kept
 # as an explicit key so old runs can be reproduced; no frozen legacy profile
 # enumerates it, so the equivalence lock is untouched.
-WIRINGS = ('dense', 'ncp', 'ncp_stacked', 'cncp')
+# 'cncp2' is the four-node cNCP v2 column (src/wirings/cncp2.py, spec
+# docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md Part B); the run
+# path builds it with width u = the arm's size knob.
+WIRINGS = ('dense', 'ncp', 'ncp_stacked', 'cncp', 'cncp2')
 
 # Base ODE systems (legacy SYSTEMS) plus the eps-ablation task suite
 # (multitimescale + the stiff_linear kappa sweep). The kappa is encoded in the

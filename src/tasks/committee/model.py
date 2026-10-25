@@ -16,6 +16,9 @@ is shared (src/wirings/committee.py::VotingMixin):
                     no representation: motor neurons have no outgoing synapses in
                     the NCP graph, so a mixed motor state only feeds the motor
                     neurons' own leak term and never reaches command or inter.
+  wiring 'cncp2' -> MultiColumnV2VotingCell: K weight-shared four-node cNCP v2
+                    columns (width u = size) voting on S, output = consensus
+                    of the mixed S states (spec 2026-10-21 B.6 (iv)).
   wiring 'dense' -> CommitteeVotingCell: K weight-shared plain cells voting on
                     their hidden state (or, with dense_vote_units, on a leading
                     subspace of it, which is read out as well -- the control that
@@ -30,14 +33,14 @@ in K.
 """
 import tensorflow as tf
 
-from src.wirings import NCPWiring
+from src.wirings import MultiColumnV2VotingCell, NCPWiring
 from src.wirings.tbt_cncp import MultiColumnVotingCell
 from src.wirings.committee import CommitteeVotingCell
 from src.tasks.person_activity.model import (
     scaled_lamina_units, ncp_layer_sizes, _resolve_cell_cls,
     _reject_multi_state)
 
-COMMITTEE_WIRINGS = ("cncp", "ncp", "dense")
+COMMITTEE_WIRINGS = ("cncp", "ncp", "dense", "cncp2")
 
 
 class ChannelDropout(tf.keras.layers.Layer):
@@ -100,13 +103,14 @@ def build_committee_model(wiring, n_columns, cell="cfc_lrc", size=64, seed=42,
 
     Args:
         wiring:       'cncp' (cortical columns, L2/3 vote), 'ncp' (NCP cell,
-                      command-slice vote, motor readout) or 'dense' (plain
-                      cells, hidden-state vote).
+                      command-slice vote, motor readout), 'dense' (plain
+                      cells, hidden-state vote) or 'cncp2' (four-node
+                      columns, S vote).
         n_columns:    committee size K (K=1 -> single model, no voting).
         cell:         _CELL_REGISTRY key or BaseCell subclass; single-state only.
         size:         width knob. cncp: lamina widths scaled by size/16; ncp:
                       inter=size, command=motor=size//2; dense: per-column
-                      units. Sized per arm to the same effective parameter
+                      units; cncp2: column width u. Sized per arm to the same effective parameter
                       budget by the runner (--param-budget).
         task:         'classification' (Dense(num_classes)+SCCE, per-step acc) or
                       'regression' (Dense(feature_size)+MSE).
@@ -156,6 +160,11 @@ def build_committee_model(wiring, n_columns, cell="cfc_lrc", size=64, seed=42,
             use_location=False, **vote, **cell_kwargs)
         h = tf.keras.layers.RNN(cellobj, return_sequences=True)(
             (feat_in, time, loc))
+    elif wiring == "cncp2":
+        cellobj = MultiColumnV2VotingCell(
+            n_columns=n_columns, cell_cls=cell_cls, units=size, seed=seed,
+            **vote, **cell_kwargs)
+        h = tf.keras.layers.RNN(cellobj, return_sequences=True)((feat_in, time))
     elif wiring == "ncp":
         # NCP committee: one masked NCP cell shared by the K columns. ncps orders
         # the state [motor | command | inter]; the recurrent command slice is

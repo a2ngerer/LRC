@@ -71,7 +71,7 @@ run_rsync() {
         return 0
     fi
     echo "rsync $(pwd) -> ${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/"
-    rsync -avz --delete \
+    rsync -avz --delete --copy-links \
         --exclude='.git/' --exclude='.venv/' --exclude='results/' \
         --exclude='outputs/' --exclude='__pycache__/' --exclude='*.pyc' \
         --exclude='.DS_Store' --exclude='.pytest_cache/' --exclude='datasets/' \
@@ -109,15 +109,15 @@ run_prepare() {
     RUN_BENCH="${bench}"
     echo "run folder: ${CLUSTER_HOST}:${RUN_REL}"
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then return 0; fi
-    # shellcheck disable=SC2029
-    if ssh "${CLUSTER_HOST}" "test -e ${RUN_DIR}"; then
-        echo "FATAL: run folder already exists: ${RUN_REL} (run folders are never reused; pick a new label)" >&2
-        exit 1
-    fi
     local launch_md
     launch_md="$(_run_launch_md "${RUN_NAME}")"
+    # Reserve the folder atomically: a plain mkdir fails if it exists (run
+    # folders are never reused), so two launches cannot share one folder.
     # shellcheck disable=SC2029
-    ssh "${CLUSTER_HOST}" "mkdir -p ${RUN_DIR}/results ${RUN_DIR}/logs ${RUN_DIR}/figures ${RUN_DIR}/wandb && cat > ${RUN_DIR}/LAUNCH.md" <<<"${launch_md}"
+    if ! ssh "${CLUSTER_HOST}" "mkdir -p $(dirname "${RUN_DIR}") && mkdir ${RUN_DIR} && mkdir ${RUN_DIR}/results ${RUN_DIR}/logs ${RUN_DIR}/figures ${RUN_DIR}/wandb && cat > ${RUN_DIR}/LAUNCH.md" <<<"${launch_md}"; then
+        echo "FATAL: could not reserve run folder ${RUN_REL} (exists already? run folders are never reused; pick a new label)" >&2
+        exit 1
+    fi
     echo "LAUNCH.md written (job id is appended after sbatch)."
 }
 

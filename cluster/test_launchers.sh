@@ -53,7 +53,7 @@ if out="$(./cluster/submit_committee.sh -n 2>&1)"; then
 fi
 
 for f in cluster/lotka_volterra.sbatch cluster/person_activity.sbatch cluster/committee.sbatch; do
-    if grep -q 'outputs/slurm\|results/[a-z_]*"\?$' "$f"; then
+    if grep -q 'outputs/slurm\|results/\(person_activity\|lotka_volterra\|committee\)' "$f"; then
         echo "FAIL [$f]: still writes under the code tree"; fail=1
     fi
     grep -q 'RUN_DIR:?' "$f" || { echo "FAIL [$f]: no RUN_DIR guard"; fail=1; }

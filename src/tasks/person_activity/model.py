@@ -19,7 +19,7 @@
 import tensorflow as tf
 
 from src.neurons.base_cell import BaseCell
-from src.wirings import CorticalColumnCell, NCPWiring
+from src.wirings import CorticalColumnCell, CorticalColumnV2Cell, NCPWiring
 from src.wirings.cncp import DEFAULT_LAMINA_UNITS
 from src.wirings.ncp import CFC_NCP_CELLS, ncp_cell_kwargs
 
@@ -28,7 +28,10 @@ from src.wirings.ncp import CFC_NCP_CELLS, ncp_cell_kwargs
 #         depth control that reproduces the NCP's three-hop path without sparsity
 # ncp:    one masked NCP cell (inter, command, motor), output = motor slice
 # cncp:   one composite cortical-column cell, output = L5ET
-WIRINGS = ("cncp", "ncp", "dense", "dense3")
+# cncp2:  one four-node cNCP v2 column (width u = size), output = D
+WIRINGS = ("cncp", "ncp", "dense", "dense3", "cncp2")
+# Wirings whose composite state holds one slot per graph node.
+COMPOSITE_WIRINGS = ("cncp", "cncp2")
 
 # cNCP lamina widths are scaled from DEFAULT_LAMINA_UNITS (44 units at the
 # reference size), so the proportions between the nodes are fixed and only the
@@ -144,12 +147,13 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
     """Build and compile a person-activity model for one (wiring, cell).
 
     Args:
-        wiring:       'cncp', 'ncp', 'dense' or 'dense3'.
+        wiring:       'cncp', 'ncp', 'dense', 'dense3' or 'cncp2'.
         cell:         _CELL_REGISTRY key (e.g. 'cfc_lrc', 'gru', 'lstm') or
                       BaseCell subclass; cncp takes single-state cells only.
         size:         the arm's width knob. dense/dense3: RNN units per layer;
                       ncp: inter=size, command=motor=size//2; cncp: lamina
-                      widths scaled by size/16 (see scaled_lamina_units).
+                      widths scaled by size/16 (see scaled_lamina_units);
+                      cncp2: column width u = size.
                       Derive it per arm from the parameter budget
                       (src.wirings.size_for_budget).
         seed:         seeds tf/numpy/python RNGs (weight init) and the
@@ -170,7 +174,7 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
     if wiring not in WIRINGS:
         raise ValueError(f"wiring must be one of {WIRINGS}, got {wiring!r}")
     cell_cls = _resolve_cell_cls(cell)
-    if wiring == "cncp":
+    if wiring in COMPOSITE_WIRINGS:
         _reject_multi_state(cell_cls, cell_kwargs)
 
     # Reproducibility: seeds python/numpy/tf in one call.
@@ -188,6 +192,10 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
             seed=seed, timescale_prior=timescale_prior, **cell_kwargs)
         h = tf.keras.layers.RNN(cncp_cell, return_sequences=True)(
             (features, time))
+    elif wiring == "cncp2":
+        col = CorticalColumnV2Cell(cell_cls=cell_cls, units=size, seed=seed,
+                                   **cell_kwargs)
+        h = tf.keras.layers.RNN(col, return_sequences=True)((features, time))
     elif wiring == "ncp":
         # One NCP cell: the sparse circuit lives inside a single recurrent
         # cell, so it consumes (features, time) directly and every neuron

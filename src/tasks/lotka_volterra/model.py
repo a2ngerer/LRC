@@ -17,11 +17,11 @@
 
 import tensorflow as tf
 
-from src.wirings import CorticalColumnCell, NCPWiring
+from src.wirings import CorticalColumnCell, CorticalColumnV2Cell, NCPWiring
 from src.wirings.tbt_cncp import TbtCorticalColumnCell
 from src.tasks.person_activity.model import (
-    WIRINGS, DENSE3_LAYERS, ncp_layer_sizes, scaled_lamina_units,
-    stacked_dense, _resolve_cell_cls, _reject_multi_state)
+    WIRINGS, COMPOSITE_WIRINGS, DENSE3_LAYERS, ncp_layer_sizes,
+    scaled_lamina_units, stacked_dense, _resolve_cell_cls, _reject_multi_state)
 from src.tasks.active_sensing.model import TBT_MODES
 
 # The Lotka-Volterra / duffing trajectory task compares the thesis-core topology
@@ -40,7 +40,8 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
     """Build and compile a next-step trajectory model for one (wiring, cell).
 
     Args:
-        wiring:       one of LV_WIRINGS: 'dense', 'dense3', 'ncp', 'cncp'
+        wiring:       one of LV_WIRINGS: 'dense', 'dense3', 'ncp', 'cncp',
+                      'cncp2'
                       (2-input, no reference frame) or a tbt_cncp* mode
                       (3-input, with the phase-space location signal).
         cell:         _CELL_REGISTRY key (e.g. 'cfc_lrc', 'gru', 'lstm') or
@@ -49,7 +50,8 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
         size:         the arm's width knob. dense/dense3: RNN units per layer;
                       ncp: inter=size, command=motor=size//2; cncp/tbt: lamina
                       widths scaled by size/16 (person_activity.
-                      scaled_lamina_units). Derive it per arm from the budget
+                      scaled_lamina_units); cncp2: column width u = size.
+                      Derive it per arm from the budget
                       (src.wirings.size_for_budget).
         seed:         seeds tf/numpy/python RNGs (weight init) and the wiring
                       mask generation.
@@ -69,7 +71,7 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
     if wiring not in LV_WIRINGS:
         raise ValueError(f"wiring must be one of {LV_WIRINGS}, got {wiring!r}")
     cell_cls = _resolve_cell_cls(cell)
-    if wiring == "cncp" or wiring in TBT_MODES:
+    if wiring in COMPOSITE_WIRINGS or wiring in TBT_MODES:
         _reject_multi_state(cell_cls, cell_kwargs)
 
     tf.keras.utils.set_random_seed(seed)
@@ -94,6 +96,11 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
             seed=seed, **cell_kwargs)
         h = tf.keras.layers.RNN(cncp_cell, return_sequences=True)(
             (state, time))
+        inputs = [state, time]
+    elif wiring == "cncp2":
+        col = CorticalColumnV2Cell(cell_cls=cell_cls, units=size, seed=seed,
+                                   **cell_kwargs)
+        h = tf.keras.layers.RNN(col, return_sequences=True)((state, time))
         inputs = [state, time]
     elif wiring == "ncp":
         inter, command, motor = ncp_layer_sizes(size)

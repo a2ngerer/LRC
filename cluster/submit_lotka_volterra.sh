@@ -32,6 +32,6 @@ case "${LV_SYSTEM:-periodic_predator_prey}" in
     *)       BENCH_DEFAULT="01_lotka_volterra" ;;
 esac
 
+run_prepare "${BENCH_DEFAULT}"   # reserve the run folder first, then touch the shared code tree
 run_rsync
-run_prepare "${BENCH_DEFAULT}"
 run_sbatch cluster/lotka_volterra.sbatch "${LV_ENV}"
