@@ -126,6 +126,13 @@ def run(args):
         **multi,
     }
 
+    diag = None
+    if args.diagnostics:
+        from src.evaluation.gradient_flow import RQ4Diagnostics
+        b = args.batch_size
+        diag = RQ4Diagnostics(model, (data.train_x[:b], data.train_t[:b]),
+                              data.train_y[:b])
+
     t0 = time.time()
     with track(args.wandb, group=args.cell, job_type=args.wiring, name=tag,
                config=wandb_config) as run_:
@@ -136,7 +143,7 @@ def run(args):
             epochs=args.epochs,
             validation_data=((data.test_x, data.test_t), data.test_y),
             verbose=2,
-            callbacks=keras_callbacks(run_),
+            callbacks=keras_callbacks(run_) + ([diag] if diag else []),
         )
     wall = time.time() - t0
 
@@ -183,6 +190,9 @@ def run(args):
             "cell_kwargs": cell_kwargs}},
     }
 
+    if diag is not None:
+        result["diagnostics"] = diag.result
+
     os.makedirs(args.outdir, exist_ok=True)
     out_path = os.path.join(args.outdir, f"{tag}.json")
     result["weights_path"] = save_weights(model, out_path, args.save_weights)
@@ -223,6 +233,10 @@ def main():
     p.add_argument("--wandb", action="store_true",
                    help="log this run to Weights & Biases (needs the "
                         "'tracking' extra; use WANDB_MODE=offline on cluster)")
+    p.add_argument("--diagnostics", action="store_true",
+                   help="RQ4 diagnostics on one fixed training batch per epoch "
+                        "(result key 'diagnostics', see src/evaluation/"
+                        "gradient_flow.py RQ4Diagnostics, #30)")
     p.add_argument("--no-save-weights", dest="save_weights",
                    action="store_false",
                    help="do not write <stem>.weights.h5 next to the result JSON")
