@@ -70,6 +70,11 @@ SYSTEM="${LV_SYSTEM:-periodic_predator_prey}"
 SEQLEN="${LV_SEQLEN:-128}"
 OUTDIR="$RUN_DIR/results"
 LR="${LV_LR:-1e-3}"
+# Training protocol(s) (#25): a list runs every arm under each, e.g.
+# LV_FORCING="teacher mixed" (mixed results get a _mixed filename suffix);
+# LV_ALPHA_MIN empty = runner default (0.2).
+FORCINGS="${LV_FORCING:-teacher}"
+ALPHA_MIN="${LV_ALPHA_MIN:-}"
 # CfC-family backbone depth for every arm (V2s control: LV_BACKBONE=1); empty = flag
 # not passed, per-wiring defaults unchanged; results get a _bb<N> filename suffix.
 BACKBONE="${LV_BACKBONE:-}"
@@ -81,45 +86,55 @@ DATA_SEED_OFFSET="${LV_DATA_SEED_OFFSET:-}"
 
 # shellcheck disable=SC2086  # flag lists are split on purpose
 run_one() {
-    local cell="$1" wiring="$2" seed="$3"
-    local wandb_flag="" bb_flag="" budget_flag="" ds_flag=""
+    local cell="$1" wiring="$2" seed="$3" forcing="$4"
+    local wandb_flag="" bb_flag="" budget_flag="" ds_flag="" am_flag=""
     [[ "${PARAM_BUDGET}" != "0" ]] && budget_flag="--param-budget ${PARAM_BUDGET}"
     [[ -n "${BACKBONE:-}" ]] && bb_flag="--backbone-layers ${BACKBONE}"
     [[ -n "${DATA_SEED_OFFSET:-}" ]] && ds_flag="--data-seed-offset ${DATA_SEED_OFFSET}"
     [[ "${USE_WANDB:-0}" == "1" ]] && wandb_flag="--wandb"
-    echo "[start] ${cell}_${wiring}_seed${seed} $(date -u +%FT%TZ)"
+    [[ -n "${ALPHA_MIN:-}" ]] && am_flag="--alpha-min ${ALPHA_MIN}"
+    echo "[start] ${cell}_${wiring}_seed${seed} ${forcing} $(date -u +%FT%TZ)"
     uv run python experiments/run_lotka_volterra_benchmark.py \
         --wiring "$wiring" --cell "$cell" --seed "$seed" --epochs "$EPOCHS" \
         --system "$SYSTEM" --seq-len "$SEQLEN" --outdir "$OUTDIR" \
-        $budget_flag --lr "$LR" $bb_flag $ds_flag $EXTRA $wandb_flag
+        $budget_flag --lr "$LR" --forcing "$forcing" $am_flag $bb_flag $ds_flag \
+        $EXTRA $wandb_flag
     local rc=$?
-    echo "[done ] ${cell}_${wiring}_seed${seed} (exit $rc)"
+    echo "[done ] ${cell}_${wiring}_seed${seed} ${forcing} (exit $rc)"
     return $rc
 }
 export -f run_one
-export EPOCHS SYSTEM SEQLEN OUTDIR USE_WANDB PARAM_BUDGET LR BACKBONE EXTRA DATA_SEED_OFFSET
+export EPOCHS SYSTEM SEQLEN OUTDIR USE_WANDB PARAM_BUDGET LR BACKBONE EXTRA DATA_SEED_OFFSET \
+       ALPHA_MIN
 
 JOBS=""
 for cell in $CELLS; do
     for wiring in $WIRINGS; do
         for seed in $SEEDS; do
-            JOBS+="${cell} ${wiring} ${seed}"$'\n'
+            for forcing in $FORCINGS; do
+                JOBS+="${cell} ${wiring} ${seed} ${forcing}"$'\n'
+            done
         done
     done
 done
 
 echo "=== ${SYSTEM} topology-vs-tbt: $(printf '%s' "$JOBS" | grep -c .) runs, par ${MAXPAR}, ${EPOCHS} epochs, seq_len ${SEQLEN}, -> ${OUTDIR}, on $(hostname) ==="
 N_FITS=$(printf '%s' "$JOBS" | grep -c .)
-printf '%s' "$JOBS" | grep . | xargs -P "$MAXPAR" -n 3 bash -c 'run_one "$1" "$2" "$3"' _ || echo "WARNING: at least one fit exited non-zero (xargs exit $?)"
+printf '%s' "$JOBS" | grep . | xargs -P "$MAXPAR" -n 4 bash -c 'run_one "$1" "$2" "$3" "$4"' _ || echo "WARNING: at least one fit exited non-zero (xargs exit $?)"
 echo "=== all runs done $(date -u +%FT%TZ) ==="
 N_JSON=$(find "$OUTDIR" -maxdepth 1 -name '*.json' | wc -l)
 echo "result files: ${N_JSON} of ${N_FITS} expected"
 ls -la "$OUTDIR"/*.json
 
-echo "=== rendering plots (cell ${PLOT_CELL}, ${SYSTEM}) ==="
-uv run python experiments/plot_lotka_volterra.py \
-    --indir "$OUTDIR" --cell "$PLOT_CELL" --seed 0 --n-examples 4
-mv "$OUTDIR"/*.png "$RUN_DIR/figures/" 2>/dev/null || true
-ls -la "$RUN_DIR/figures"
+for forcing in $FORCINGS; do
+    # teacher figures stay in figures/, other protocols get figures/<forcing>/
+    FIGDIR="$RUN_DIR/figures"; [[ "$forcing" != "teacher" ]] && FIGDIR+="/$forcing"
+    mkdir -p "$FIGDIR"
+    echo "=== rendering plots (cell ${PLOT_CELL}, ${SYSTEM}, ${forcing}) ==="
+    uv run python experiments/plot_lotka_volterra.py --indir "$OUTDIR" \
+        --outdir "$FIGDIR" --forcing "$forcing" --cell "$PLOT_CELL" --seed 0 \
+        --n-examples 4
+done
+ls -laR "$RUN_DIR/figures"
 echo "=== plots done $(date -u +%FT%TZ) ==="
 [[ "$N_JSON" -ge "$N_FITS" ]] || { echo "FATAL: ${N_FITS} fits expected, ${N_JSON} result files written" >&2; exit 1; }
