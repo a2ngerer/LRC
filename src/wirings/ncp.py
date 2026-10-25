@@ -95,6 +95,8 @@ class NCPWiring(BaseWiring):
     (command <-> command); inter neurons never feed back into themselves and
     motor neurons receive only from command neurons. There is ONE synchronous
     state update per step, so ``elapsed_time`` reaches every neuron.
+    Closed-form sub-cells run NCPLayeredCell instead and get a self-loop per
+    neuron by default (``self_recurrent``, issue #23).
 
     The model output is the motor slice of the hidden state — ncps orders the
     neurons ``[motor | command | inter]``, so that is the leading
@@ -110,11 +112,13 @@ class NCPWiring(BaseWiring):
         command_neurons:  number of command neurons
         motor_neurons:    number of motor neurons (= model output size)
         seed:             random seed for NCP wiring generation (default 42)
+        self_recurrent:   diagonal self-recurrence for CFC_NCP_CELLS sub-cells
+                          (see NCPLayeredCell; default True, issue #23)
         **cell_kwargs:    forwarded to the cell constructor
     """
 
     def __init__(self, cell_cls, inter_neurons, command_neurons, motor_neurons,
-                 seed=42, **cell_kwargs):
+                 seed=42, self_recurrent=True, **cell_kwargs):
         super().__init__(cell=None)
         self.cell_cls = cell_cls
         self.inter_neurons = inter_neurons
@@ -122,6 +126,7 @@ class NCPWiring(BaseWiring):
         self.motor_neurons = motor_neurons
         self.units = inter_neurons + command_neurons + motor_neurons
         self.seed = seed
+        self.self_recurrent = self_recurrent
         self.cell_kwargs = cell_kwargs
         self._graphs = {}
 
@@ -147,7 +152,7 @@ class NCPWiring(BaseWiring):
         """One cell holding the whole circuit (layered for closed-form/discrete
         cells, see SEQUENTIAL_NCP_CELLS)."""
         if issubclass(self.cell_cls, SEQUENTIAL_NCP_CELLS):
-            return NCPLayeredCell(self)
+            return NCPLayeredCell(self, self_recurrent=self.self_recurrent)
         return self.cell_cls(units=self.units,
                              sparsity_mask=self.adjacency_mask,
                              sensory_mask=self.sensory_mask,
@@ -178,14 +183,22 @@ class NCPLayeredCell(BaseCell):
     (``fully_recurrent=True`` default) the intra-layer recurrence is masked.
     CfC-family sub-cells default to ``backbone_layers=1`` (see CFC_NCP_CELLS).
 
+    ``self_recurrent`` (default True, issue #23) sets the diagonal of every
+    layer's recurrent mask for CFC_NCP_CELLS sub-cells: the CfC update keeps no
+    copy of the previous state, so with the empty inter / motor mask those
+    units would be memoryless. Diagonal only (own previous state, the analogue
+    of the LTC/LRC leak term); lateral NCP structure is unchanged. GRU/LSTM
+    keep memory through their gates and are not affected.
+
     The hidden state stays one concatenated vector per state slot in ncps
     order ``[motor | command | inter]``, so the motor slice, state handling and
     ``effective_param_count`` see the same layout as the synchronous cell.
     """
 
-    def __init__(self, wiring, **kwargs):
+    def __init__(self, wiring, self_recurrent=True, **kwargs):
         super().__init__(wiring.units, **kwargs)
         self._wiring = wiring
+        self._self_recurrent = self_recurrent
         self._n_states = len(np.atleast_1d(
             wiring.cell_cls(units=1, **wiring.cell_kwargs).state_size))
 
@@ -207,6 +220,8 @@ class NCPLayeredCell(BaseCell):
         sens = (np.abs(g.sensory_adjacency_matrix) > 0).astype(np.float32)
         w = self._wiring
         kw = ncp_cell_kwargs(w.cell_cls, w.cell_kwargs)
+        self_loops = (self._self_recurrent
+                      and issubclass(w.cell_cls, CFC_NCP_CELLS))
         self._slices, self._cells = [], []    # compute order: inter, command, motor
         prev = None
         for idx in (g._inter_neurons, g._command_neurons, g._motor_neurons):
@@ -214,8 +229,10 @@ class NCPLayeredCell(BaseCell):
             assert np.array_equal(idx, np.arange(idx[0], idx[-1] + 1)), \
                 'ncps neuron ids per layer are expected to be contiguous'
             in_mask = sens[:, idx] if prev is None else adj[np.ix_(prev, idx)]
-            cell = w.cell_cls(units=len(idx),
-                              sparsity_mask=adj[np.ix_(idx, idx)],
+            rec_mask = adj[np.ix_(idx, idx)]              # a copy
+            if self_loops:
+                np.fill_diagonal(rec_mask, 1.0)
+            cell = w.cell_cls(units=len(idx), sparsity_mask=rec_mask,
                               sensory_mask=in_mask, **kw)
             self._slices.append(slice(int(idx[0]), int(idx[-1]) + 1))
             self._cells.append(cell)

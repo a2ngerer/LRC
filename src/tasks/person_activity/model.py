@@ -136,6 +136,15 @@ def effective_backbone_layers(wiring, cell, cell_kwargs):
     return ncp_cell_kwargs(cell_cls, cell_kwargs)["backbone_layers"]
 
 
+def effective_self_recurrent(wiring, cell, self_recurrent=True):
+    """Diagonal NCP self-recurrence this arm actually gets (None: not
+    applicable). Only the closed-form sub-cells under 'ncp' have it (issue #23,
+    NCPLayeredCell); the runners' --no-self-recurrence passes False."""
+    if wiring != "ncp" or not issubclass(_resolve_cell_cls(cell), CFC_NCP_CELLS):
+        return None
+    return bool(self_recurrent)
+
+
 def backbone_suffix(backbone_layers):
     """Result-filename suffix: '' when unset, '_bb{N}' otherwise."""
     return "" if backbone_layers is None else f"_bb{backbone_layers}"
@@ -209,7 +218,8 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
                                 lr=1e-3, timescale_prior=None, columns=MULTI_COLUMN_DEFAULTS["columns"],
                                 partition=MULTI_COLUMN_DEFAULTS["partition"],
                                 coupling=MULTI_COLUMN_DEFAULTS["coupling"],
-                                readout=None, **cell_kwargs):
+                                readout=None, self_recurrent=True,
+                                **cell_kwargs):
     """Build and compile a person-activity model for one (wiring, cell).
 
     Args:
@@ -231,6 +241,7 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
         timescale_prior: optional per-lamina timescale prior (cncp only).
         columns, partition, coupling, readout: cncp2_multi only (spec B.7);
                       partition='region' uses the four sensor tags.
+        self_recurrent: ncp only, see NCPWiring (issue #23).
         **cell_kwargs: forwarded to every cell constructor.
 
     Returns:
@@ -278,7 +289,7 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
         # integrates the true elapsed time (docs/ncp-wiring-fix-2026-09-17.md).
         inter, command, motor = ncp_layer_sizes(size)
         ncp = NCPWiring(cell_cls, inter, command, motor, seed=seed,
-                        **cell_kwargs)
+                        self_recurrent=self_recurrent, **cell_kwargs)
         h = tf.keras.layers.RNN(ncp.make_cell(), return_sequences=True)(
             (features, time))
         h = ncp.motor_slice()(h)

@@ -24,7 +24,8 @@ from src.tasks.lotka_volterra import (build_lotka_volterra_model,
                                       reference_frame, RF_DIM, LV_WIRINGS)
 from src.tasks.active_sensing.model import TBT_MODES
 from src.tasks.person_activity.model import (backbone_override,
-                                             effective_backbone_layers)
+                                             effective_backbone_layers,
+                                             effective_self_recurrent)
 from experiments.run_lotka_volterra_benchmark import (closed_loop_rollout,
                                                       result_filename)
 from experiments import run_lotka_volterra_benchmark as lv_runner
@@ -318,3 +319,28 @@ def test_runner_records_backbone_end_to_end(tmp_path, monkeypatch):
     rec = json.loads((tmp_path / "cfc_lrc_cncp_seed0_bb1.json").read_text())
     assert rec["backbone_layers"] == 1
     assert rec["backbone_layers_effective"] == 1
+
+
+# --- --no-self-recurrence (issue #23 stability pilot) ---
+
+def test_effective_self_recurrent_only_for_closed_form_ncp():
+    assert effective_self_recurrent("ncp", "cfc_lrc") is True
+    assert effective_self_recurrent("ncp", "cfc_lrc", False) is False
+    assert effective_self_recurrent("ncp", "gru") is None
+    assert effective_self_recurrent("ncp", "ltc") is None
+    assert effective_self_recurrent("dense", "cfc_lrc") is None
+
+
+def test_runner_records_self_recurrence_end_to_end(tmp_path, monkeypatch):
+    """--no-self-recurrence reaches the NCP sub-cells (fewer effective params
+    at the same size) and the JSON."""
+    def run(*flags):
+        monkeypatch.setattr(sys, "argv", [
+            "run_lotka_volterra_benchmark.py", "--wiring", "ncp", "--cell",
+            "cfc_lrc", "--epochs", "1", "--n-trajectories", "6", "--seq-len",
+            "6", "--size", "8", "--outdir", str(tmp_path), *flags])
+        lv_runner.main()
+        return json.loads((tmp_path / "cfc_lrc_ncp_seed0.json").read_text())
+    on, off = run(), run("--no-self-recurrence")
+    assert on["self_recurrent"] is True and off["self_recurrent"] is False
+    assert on["params_effective"] > off["params_effective"]

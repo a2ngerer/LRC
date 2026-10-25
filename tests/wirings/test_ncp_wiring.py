@@ -244,16 +244,20 @@ def test_effective_param_count_excludes_sparse_linear_mask():
 
 # --- CfC family under ncp with backbone_layers=0: no lateral mixing ---------
 
+@pytest.mark.parametrize('self_recurrent', [True, False])
 @pytest.mark.parametrize('cell', ['cfc', 'cfc_lrc', 'cfc_lrc_outer'])
-def test_cfc_ncp_subcells_have_no_lateral_kernel(cell):
+def test_cfc_ncp_subcells_have_no_off_diagonal_lateral_kernel(cell,
+                                                             self_recurrent):
     """Explicit backbone_layers=0 (ncps WiredCfCCell; the default is 1, issue
     #21): every trainable kernel of an inter / motor sub-cell is an
     (input_dim + units, units) map carrying the concat mask, whose recurrent
-    rows (intra-layer adjacency) are all zero -- no weight connects two inter
-    or two motor neurons."""
+    rows (intra-layer adjacency) are zero off the diagonal -- no weight
+    connects two inter or two motor neurons. The diagonal is the
+    self-recurrence (issue #23)."""
     from src.wirings import NCPLayeredCell
     w = NCPWiring(_CELL_REGISTRY[cell], INTER, COMMAND, MOTOR, seed=42,
-                  backbone_layers=0, **cell_kwargs(cell))
+                  backbone_layers=0, self_recurrent=self_recurrent,
+                  **cell_kwargs(cell))
     model = w.build_model()
     model(tf.zeros([2, 3, INPUT_DIM]))
     layered = model.layers[0].cell
@@ -266,7 +270,72 @@ def test_cfc_ncp_subcells_have_no_lateral_kernel(cell):
         for k in kernels:
             assert tuple(k.shape) == (n_in + sub.units, sub.units)
             mask = np.asarray(sub._masked_vars[k.ref()])
-            assert mask[n_in:].sum() == 0
+            np.testing.assert_array_equal(
+                mask[n_in:], np.eye(sub.units) * self_recurrent)
+
+
+# --- issue #23: diagonal self-recurrence of the closed-form NCP layers --------
+
+def _layer_outputs(cell, states):
+    """Per-layer (inter, command, motor) outputs of one NCPLayeredCell call."""
+    out, _ = cell(tf.constant([[0.5, -1.0, 2.0]]), states)
+    return [out[:, sl].numpy() for sl in cell._slices]
+
+
+@pytest.mark.parametrize('self_recurrent', [True, False])
+@pytest.mark.parametrize('cell', ['cfc', 'cfc_lrc', 'cfc_lrc_outer'])
+def test_cfc_ncp_unit_depends_on_its_previous_state(cell, self_recurrent):
+    """Same input, two initial states that differ only in one layer's own
+    slice: the inter and motor outputs change iff self_recurrent (without it
+    the CfC update keeps no copy of the state and the intra-layer mask is
+    empty, so those units are memoryless)."""
+    w = NCPWiring(_CELL_REGISTRY[cell], INTER, COMMAND, MOTOR, seed=42,
+                  self_recurrent=self_recurrent, **cell_kwargs(cell))
+    layered = w.make_cell()
+    layered.build((None, INPUT_DIM))
+    zero = tf.zeros([1, UNITS])
+    for layer in (0, 2):                                   # inter, motor
+        sl = layered._slices[layer]
+        bumped = np.zeros([1, UNITS], np.float32)
+        bumped[:, sl] = np.linspace(-1.0, 1.0, sl.stop - sl.start)
+        a = _layer_outputs(layered, [zero])[layer]
+        b = _layer_outputs(layered, [tf.constant(bumped)])[layer]
+        assert np.allclose(a, b) != self_recurrent, (cell, layer)
+
+
+@pytest.mark.parametrize('cell,backbone_layers,masked_maps',
+                         [('cfc', 1, 1), ('cfc_lrc', 1, 2), ('cfc', 0, 4)])
+def test_self_recurrence_adds_one_weight_per_unit_and_masked_map(
+        cell, backbone_layers, masked_maps):
+    """Effective params rise by the newly opened diagonal entries (all inter
+    and motor units, the command units without an NCP self-loop) times the
+    number of [x, h] -> units maps that carry the concat mask."""
+    def count(self_recurrent):
+        model = NCPWiring(_CELL_REGISTRY[cell], INTER, COMMAND, MOTOR, seed=42,
+                          backbone_layers=backbone_layers,
+                          self_recurrent=self_recurrent,
+                          **cell_kwargs(cell)).build_model()
+        model(tf.zeros([1, 2, INPUT_DIM]))
+        return effective_param_count(model)
+    w = NCPWiring(_CELL_REGISTRY[cell], INTER, COMMAND, MOTOR, seed=42)
+    _, command, _ = _index_sets(w)
+    adj = w.adjacency_mask(INPUT_DIM)
+    opened = UNITS - int(np.trace(adj[np.ix_(command, command)]))
+    assert count(True) - count(False) == masked_maps * opened
+
+
+@pytest.mark.parametrize('cell_cls', [LTC_Cell, LRC_Cell])
+def test_ode_cells_under_ncp_keep_the_ncp_mask(cell_cls):
+    """ODE cells keep the synchronous single cell with the plain NCP
+    adjacency (their leak term is the memory), whatever self_recurrent says."""
+    from src.wirings import NCPLayeredCell
+    w = NCPWiring(cell_cls, INTER, COMMAND, MOTOR, seed=42, self_recurrent=True)
+    model = w.build_model()
+    model(tf.zeros([1, 2, INPUT_DIM]))
+    cell = model.layers[0].cell
+    assert not isinstance(cell, NCPLayeredCell)
+    np.testing.assert_array_equal(cell.sparsity_mask.numpy(),
+                                  w.adjacency_mask(INPUT_DIM))
 
 
 def test_cfc_dense_keeps_backbone():

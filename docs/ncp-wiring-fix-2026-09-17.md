@@ -169,11 +169,21 @@ the first size above the budget):
   `param_budget=4000` (effective params): ODE task (`run_benchmark.budget_size`)
   `cfc` size 57 (4016), `cfc_lrc` 51 (3970); person_activity `cfc` 44 (4077),
   `cfc_lrc` 39 (3845); Lotka-Volterra `cfc` 48 (4170), `cfc_lrc` 43 (3984).
-  Test: `tests/wirings/test_ncp_wiring.py::test_cfc_ncp_subcells_have_no_lateral_kernel`.
+  Test: `tests/wirings/test_ncp_wiring.py::test_cfc_ncp_subcells_have_no_off_diagonal_lateral_kernel`.
   Superseded as the default by issue #21 (pilot decision 2026-10-21): every
   closed-form sub-cell under `ncp`, `cncp` and `cncp2` now defaults to
   `backbone_layers=1`; the backbone-free form above, and the sizes quoted
   for it, need an explicit `backbone_layers=0` (`--backbone-layers 0`).
+* **Self-recurrence of closed-form NCP layers (issue #23).** The intra-layer
+  mask of inter and motor is empty and the CfC update keeps no copy of the
+  previous state, so those units were memoryless. `NCPLayeredCell` now sets
+  the diagonal of every layer's recurrent mask for the CfC-family sub-cells
+  (`self_recurrent=True`, the default; diagonal only, lateral NCP structure
+  unchanged). This adds one effective weight per newly opened diagonal entry
+  and masked `[x, h]` map. GRU/LSTM sub-cells, the synchronous ODE cells and
+  cNCP / cNCP2 are untouched. The LV and PA runners take
+  `--no-self-recurrence` for the stability pilot and record `self_recurrent`
+  in the result JSON (`None` where it does not apply).
 * **Provenance.** `run_benchmark.build_model` attaches `effective_config`
   (effective `cell_kwargs` incl. injected `ode_unfolds` / `backbone_layers`,
   resolved `size`, `units`, `ncp` sizes, `lamina_units`) to the model;

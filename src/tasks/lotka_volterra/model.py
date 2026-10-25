@@ -42,7 +42,8 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
                                loc_dim=12, lr=1e-3, columns=MULTI_COLUMN_DEFAULTS["columns"],
                                partition=MULTI_COLUMN_DEFAULTS["partition"],
                                coupling=MULTI_COLUMN_DEFAULTS["coupling"],
-                               readout=None, **cell_kwargs):
+                               readout=None, self_recurrent=True,
+                               **cell_kwargs):
     """Build and compile a next-step trajectory model for one (wiring, cell).
 
     Args:
@@ -69,6 +70,7 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
         columns, partition, coupling, readout: cncp2_multi only (spec B.7);
                       the 2-D state has no sensor structure, so
                       partition='region' splits the state axis (warning).
+        self_recurrent: ncp only, see NCPWiring (issue #23).
         **cell_kwargs: forwarded to every cell constructor.
 
     Returns:
@@ -123,7 +125,7 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
     elif wiring == "ncp":
         inter, command, motor = ncp_layer_sizes(size)
         ncp = NCPWiring(cell_cls, inter, command, motor, seed=seed,
-                        **cell_kwargs)
+                        self_recurrent=self_recurrent, **cell_kwargs)
         h = tf.keras.layers.RNN(ncp.make_cell(), return_sequences=True)(
             (state, time))
         h = ncp.motor_slice()(h)
