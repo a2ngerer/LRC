@@ -273,6 +273,7 @@ def test_runner_writes_val_and_test_metrics(stub, tmp_path, monkeypatch):
     assert record["split"] == "grouped" and record["split_seed"] == 0
     assert record["n_recordings"] == 25 and record["n_negative_dt"] == 1
     assert "best_test_accuracy" not in record
+    assert record["dt_feature"] is True          # gru, default --dt-feature on
     curve = record["val_macro_f1_curve"]
     assert len(curve) == 2
     assert record["best_val_epoch"] == int(np.argmax(curve)) + 1

@@ -8,6 +8,9 @@
 # its recurrent part (so continuous-time cells integrate the true elapsed
 # time, in every layer), and ends in the SAME Dense(num_classes) logits head
 # with output (B, T, num_classes). Only the wiring in between differs.
+# Discrete cells (DISCRETE_CELLS) discard the time input, so by default they
+# get the same elapsed-time tensor concatenated to their feature input instead
+# (dt_feature, issue #27).
 #
 # Capacity: the arms are compared at the same EFFECTIVE parameter budget
 # (masked-off weights excluded, src/wirings/ncp.py::effective_param_count).
@@ -52,6 +55,9 @@ MULTI_COLUMN_DEFAULTS = dict(columns=2, partition="same", coupling="lateral")
 # overall width moves with the size knob.
 _LAMINA_REFERENCE_SIZE = 16
 DENSE3_LAYERS = 3
+
+# Discrete-time cells: they ignore the elapsed time of the (x, dt) input tuple.
+DISCRETE_CELLS = ("lstm", "gru")
 
 
 def scaled_lamina_units(size):
@@ -102,6 +108,13 @@ def _reject_multi_state(cell_cls, cell_kwargs):
             f"(state_size == units); {cell_cls.__name__} has state_size "
             f"{probe.state_size}. Multi-state cells (lstm, mm_*) do not fit "
             "the composite state; run them on dense, dense3 or ncp.")
+
+
+def dt_feature_applies(cell, dt_feature=True):
+    """True when the builder concatenates dt to the feature input: the flag is
+    on and the cell is discrete (continuous-time cells already integrate dt)."""
+    discrete = tuple(_resolve_cell_cls(c) for c in DISCRETE_CELLS)
+    return bool(dt_feature) and issubclass(_resolve_cell_cls(cell), discrete)
 
 
 def backbone_override(cell, backbone_layers):
@@ -190,15 +203,19 @@ def multi_column_suffix(cfg):
             f"{cfg['readout']}")
 
 
-def stacked_dense(cell_cls, size, features, time, n_layers=1, **cell_kwargs):
+def stacked_dense(cell_cls, size, features, time, n_layers=1, dt_feature=False,
+                  **cell_kwargs):
     """n_layers stacked recurrent layers of cell_cls(units=size).
 
     Every layer receives the (sequence, time) tuple, so continuous-time cells
     integrate the true elapsed time in every layer (the single-layer 'dense'
-    arm is n_layers=1, the depth control 'dense3' is n_layers=3).
+    arm is n_layers=1, the depth control 'dense3' is n_layers=3). With
+    dt_feature, time is also concatenated to every layer's sequence input.
     """
     h = features
     for _ in range(n_layers):
+        if dt_feature:
+            h = tf.keras.layers.Concatenate()([h, time])
         h = tf.keras.layers.RNN(cell_cls(units=size, **cell_kwargs),
                                 return_sequences=True)((h, time))
     return h
@@ -209,7 +226,7 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
                                 lr=1e-3, timescale_prior=None, columns=MULTI_COLUMN_DEFAULTS["columns"],
                                 partition=MULTI_COLUMN_DEFAULTS["partition"],
                                 coupling=MULTI_COLUMN_DEFAULTS["coupling"],
-                                readout=None, **cell_kwargs):
+                                readout=None, dt_feature=True, **cell_kwargs):
     """Build and compile a person-activity model for one (wiring, cell).
 
     Args:
@@ -231,6 +248,11 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
         timescale_prior: optional per-lamina timescale prior (cncp only).
         columns, partition, coupling, readout: cncp2_multi only (spec B.7);
                       partition='region' uses the four sensor tags.
+        dt_feature:   discrete cells (DISCRETE_CELLS) only: concatenate the
+                      time input (the tensor the continuous-time cells
+                      integrate, unscaled) to the features of every layer
+                      that receives them -- each dense3 layer, the input of
+                      every other wiring. No-op for continuous-time cells.
         **cell_kwargs: forwarded to every cell constructor.
 
     Returns:
@@ -250,11 +272,15 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
 
     features = tf.keras.Input(shape=(seq_len, feature_size), name="features")
     time = tf.keras.Input(shape=(seq_len, 1), name="time")
+    dt_feature = dt_feature_applies(cell_cls, dt_feature)
+    # dense / dense3 concatenate per layer (stacked_dense).
+    x = (tf.keras.layers.Concatenate()([features, time])
+         if dt_feature and wiring not in ("dense", "dense3") else features)
 
     logits = None
     if wiring == "cncp2_multi":
         logits = multi_column_head(
-            (features, time), num_classes, "logits", columns=columns,
+            (x, time), num_classes, "logits", columns=columns,
             cell_cls=cell_cls, units=size, seed=seed, partition=partition,
             coupling=coupling, readout=readout or default_readout(partition),
             region_tags=PA_SENSOR_TAGS,
@@ -266,12 +292,11 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
         cncp_cell = CorticalColumnCell(
             cell_cls=cell_cls, lamina_units=scaled_lamina_units(size),
             seed=seed, timescale_prior=timescale_prior, **cell_kwargs)
-        h = tf.keras.layers.RNN(cncp_cell, return_sequences=True)(
-            (features, time))
+        h = tf.keras.layers.RNN(cncp_cell, return_sequences=True)((x, time))
     elif wiring == "cncp2":
         col = CorticalColumnV2Cell(cell_cls=cell_cls, units=size, seed=seed,
                                    **cell_kwargs)
-        h = tf.keras.layers.RNN(col, return_sequences=True)((features, time))
+        h = tf.keras.layers.RNN(col, return_sequences=True)((x, time))
     elif wiring == "ncp":
         # One NCP cell: the sparse circuit lives inside a single recurrent
         # cell, so it consumes (features, time) directly and every neuron
@@ -280,12 +305,12 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
         ncp = NCPWiring(cell_cls, inter, command, motor, seed=seed,
                         **cell_kwargs)
         h = tf.keras.layers.RNN(ncp.make_cell(), return_sequences=True)(
-            (features, time))
+            (x, time))
         h = ncp.motor_slice()(h)
     else:  # dense / dense3
         h = stacked_dense(cell_cls, size, features, time,
                           n_layers=DENSE3_LAYERS if wiring == "dense3" else 1,
-                          **cell_kwargs)
+                          dt_feature=dt_feature, **cell_kwargs)
 
     # Shared per-timestep logits head. A plain Dense on a (B, T, units)
     # tensor applies to the last axis, i.e. it is equivalent to

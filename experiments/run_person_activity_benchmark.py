@@ -17,6 +17,9 @@ the original window-level split (literature anchor only, val = test).
 Metrics: per-step macro-F1 (primary) and accuracy; the epoch with the best
 val macro-F1 is selected and the test values are read at that epoch.
 
+Elapsed time: the discrete cells (gru, lstm) ignore the time input, so with
+--dt-feature on (default) they get dt as an extra input feature (issue #27).
+
 Mirrors the run + JSON-result-file structure of run_mujoco_benchmark.py /
 run_campaign.py: one JSON per run under --outdir, containing the config,
 the parameter counts, val/test macro-F1 and accuracy at the best-val epoch,
@@ -45,8 +48,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.evaluation.metrics import confusion_matrix, macro_f1  # noqa: E402
 from src.tasks.person_activity.datasets import SPLITS  # noqa: E402
 from src.tasks.person_activity.model import (  # noqa: E402
-    WIRINGS, backbone_override, backbone_suffix, effective_backbone_layers,
-    add_multi_column_args, multi_column_config, multi_column_suffix)
+    WIRINGS, backbone_override, backbone_suffix, dt_feature_applies,
+    effective_backbone_layers, add_multi_column_args, multi_column_config,
+    multi_column_suffix)
 
 DEFAULT_SIZE = 64
 BUDGET_TOLERANCE = 0.05
@@ -108,12 +112,14 @@ def run(args):
     cell_kwargs.update(backbone_override(args.cell, args.backbone_layers))
     bb_effective = effective_backbone_layers(args.wiring, args.cell, cell_kwargs)
     multi = multi_column_config(args)
+    dt_feature = dt_feature_applies(args.cell, args.dt_feature == "on")
 
     def build(size):
         return build_person_activity_model(
             args.wiring, args.cell, size=size, seed=args.seed,
             num_classes=data.num_classes, feature_size=data.feature_size,
-            seq_len=data.seq_len, lr=args.lr, **multi, **cell_kwargs)
+            seq_len=data.seq_len, lr=args.lr, dt_feature=dt_feature, **multi,
+            **cell_kwargs)
 
     # Capacity: either a fixed width knob or the knob that lands closest to the
     # effective parameter budget for THIS arm.
@@ -133,7 +139,8 @@ def run(args):
     print(f"=== TRAIN {tag} size={args.size} params={params} "
           f"(raw {pc['params_raw']}) epochs={args.epochs} lr={args.lr} "
           f"batch={args.batch_size} backbone_layers={args.backbone_layers} "
-          f"(effective {bb_effective}) ===", flush=True)
+          f"(effective {bb_effective}) dt_feature={dt_feature} ===",
+          flush=True)
 
     wandb_config = {
         "task": "person_activity",
@@ -147,6 +154,7 @@ def run(args):
         "batch_size": args.batch_size,
         "epochs": args.epochs,
         "backbone_layers": args.backbone_layers,
+        "dt_feature": dt_feature,
         "split": data.split,
         "split_seed": data.split_seed,
         **pc,
@@ -197,6 +205,7 @@ def run(args):
         "batch_size": args.batch_size,
         "backbone_layers": args.backbone_layers,
         "backbone_layers_effective": bb_effective,
+        "dt_feature": dt_feature,
         **pc,
         **multi,
         "cell_kwargs": cell_kwargs,
@@ -267,6 +276,13 @@ def main():
                    help="CfC-family backbone depth for EVERY wiring (overrides "
                         "the dense default 1 and the ncp/cncp family default 0); "
                         "default: unchanged per-wiring behaviour")
+    p.add_argument("--dt-feature", default="on", choices=("on", "off"),
+                   help="discrete cells (gru, lstm): concatenate the elapsed "
+                        "time dt (the tensor the continuous-time cells "
+                        "integrate) to the feature input of every layer that "
+                        "receives features; no-op for continuous-time cells. "
+                        "Person Activity only: the LV / Duffing runners have "
+                        "no such flag, dt is constant there.")
     p.add_argument("--outdir", default="results/person_activity")
     p.add_argument("--data-path", default=None,
                    help="override the ConfLongDemo_JSI.txt location")
