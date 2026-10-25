@@ -22,7 +22,7 @@ from glob import glob
 
 from src.evaluation.rollout_metrics import make_norm_stats, rollout_metrics
 
-ID_KEYS = ("system", "cell", "wiring", "seed", "param_budget",
+ID_KEYS = ("system", "cell", "wiring", "seed", "forcing", "param_budget",
            "backbone_layers", "epochs")
 
 

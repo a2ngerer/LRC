@@ -21,6 +21,16 @@ src/evaluation/rollout_metrics dict of the closed-loop rollouts (VPT(0.5) as the
 primary endpoint, NRMSE@16/32/128, orbit error, invariant drift, divergence
 class rates); norm_stats lets experiments/rollout_metrics.py recompute it.
 
+Forcing (#25): --forcing teacher (default) trains the plain model on the true
+state at every step, as before. --forcing mixed trains the same weights through
+a ForcedRolloutCell, input alpha * y_t + (1 - alpha) * yhat_{t-1}, with alpha
+following AlphaSchedule (1 -> --alpha-min over the first half of the epochs;
+the per-epoch values are stored as alpha_curve; loss and val_loss_curve are at
+that epoch's alpha). Teacher-forced metrics always use the plain model; the
+closed-loop rollout of every protocol is the wrapper at alpha = 0 (one O(T)
+pass), closed_loop_rollout stays the reference for the tbt_cncp* and
+cncp2_multi wirings. Mixed-forcing results get a `_mixed` filename suffix.
+
 Data: 48/16/16 whole trajectories at the default 80, drawn with data seed
 DATA_SEED_BASE + --seed (+ --data-seed-offset for tuning runs), so all arms of
 one replicate share a draw and every replicate gets a fresh one.
@@ -54,7 +64,10 @@ BUDGET_TOLERANCE = 0.05
 from src.tasks.lotka_volterra.datasets import (DATA_SEED_BASE,
                                                load_lotka_volterra,
                                                reference_frame)
-from src.tasks.lotka_volterra.model import build_lotka_volterra_model, LV_WIRINGS
+from src.tasks.lotka_volterra.model import (
+    build_lotka_volterra_model, forced_rollout_model, FORCEABLE_WIRINGS,
+    LV_WIRINGS)
+from src.neurons.forced_rollout_cell import AlphaSchedule
 from src.tasks.person_activity.model import (
     backbone_override, backbone_suffix, effective_backbone_layers,
     add_multi_column_args, multi_column_config, multi_column_suffix)
@@ -98,6 +111,16 @@ def closed_loop_rollout(model, data, needs_loc: bool = False,
     return np.stack(history, axis=1)                       # (N, seq_len+1, 2)
 
 
+def forced_closed_loop(view, data, split: str = "test") -> np.ndarray:
+    """closed_loop_rollout via a forced_rollout_model view at alpha = 0: one
+    pass over the true inputs, of which only y_0 enters (same (N, seq_len+1,
+    2) normalised layout)."""
+    x = getattr(data, f"{split}_x")
+    pred = view((tf.constant(x), tf.constant(getattr(data, f"{split}_t"))),
+                training=False).numpy()
+    return np.concatenate([x[:, :1], pred], axis=1).astype(np.float32)
+
+
 def split_inputs(data, split, needs_loc):
     """Keras inputs of one split; tbt_cncp* wirings take the reference-frame code
     as a 3rd input, the topology arms (dense/ncp/cncp) only (state, time)."""
@@ -105,13 +128,16 @@ def split_inputs(data, split, needs_loc):
     return (x, t, getattr(data, f"{split}_loc")) if needs_loc else (x, t)
 
 
-def evaluate_split(model, data, split, needs_loc):
+def evaluate_split(model, data, split, needs_loc, view=None):
     """Teacher-forced and closed-loop metrics on 'val' or 'test' (normalised
-    units; NRMSE = sqrt of the pooled MSE). Returns (metrics, rollout)."""
+    units; NRMSE = sqrt of the pooled MSE). The rollout runs the alpha = 0
+    ``view`` (forced_rollout_model) when given, else closed_loop_rollout.
+    Returns (metrics, rollout)."""
     y = getattr(data, f"{split}_y")
     tf_mse, tf_mae = model.evaluate(split_inputs(data, split, needs_loc), y,
                                     verbose=0)
-    gen_norm = closed_loop_rollout(model, data, needs_loc, split)  # (N,T+1,2)
+    gen_norm = (closed_loop_rollout(model, data, needs_loc, split)
+                if view is None else forced_closed_loop(view, data, split))
     truth_norm = (getattr(data, f"{split}_traj") - data.mean) / data.std
     sq_err = (gen_norm[:, 1:] - truth_norm[:, 1:]) ** 2
     cl_mse = float(np.mean(sq_err))
@@ -129,10 +155,12 @@ def evaluate_split(model, data, split, needs_loc):
 
 def result_filename(args, multi=None):
     """Result JSON name; a set --backbone-layers adds `_bb{N}` (V2 vs V2s),
-    cncp2_multi adds `_K{K}_{partition}_{coupling}_{readout}`."""
+    cncp2_multi adds `_K{K}_{partition}_{coupling}_{readout}`, --forcing mixed
+    adds `_mixed`."""
     return (f"{args.cell}_{args.wiring}_seed{args.seed}"
             f"{backbone_suffix(args.backbone_layers)}"
-            f"{multi_column_suffix(multi or {})}.json")
+            f"{multi_column_suffix(multi or {})}"
+            f"{'_mixed' if args.forcing == 'mixed' else ''}.json")
 
 
 class _StateTap(tf.keras.layers.AbstractRNNCell):
@@ -260,6 +288,13 @@ def main():
                                 "pass it (bare flag = 1000) so their draws are "
                                 "disjoint from the final replicates' (offset 0)")
     ap.add_argument("--epochs", type=int, default=300)
+    ap.add_argument("--forcing", choices=("teacher", "mixed"), default="teacher",
+                    help="training protocol (#25): teacher = true state at "
+                         "every step (unchanged); mixed = alpha * y_t + "
+                         "(1 - alpha) * yhat_{t-1}, alpha 1 -> --alpha-min "
+                         "over the first half of the epochs (FORCEABLE_WIRINGS)")
+    ap.add_argument("--alpha-min", type=float, default=0.2,
+                    help="final alpha of --forcing mixed")
     cap = ap.add_mutually_exclusive_group()
     cap.add_argument("--size", type=int, default=None,
                      help="the arm's width knob (see build_lotka_volterra_model); "
@@ -293,6 +328,11 @@ def main():
     args = ap.parse_args()
     if args.size is None and args.param_budget is None:
         args.size = DEFAULT_SIZE
+    mixed = args.forcing == "mixed"
+    if mixed and args.wiring not in FORCEABLE_WIRINGS:
+        ap.error(f"--forcing mixed needs one of {FORCEABLE_WIRINGS}")
+    if not 0.0 <= args.alpha_min <= 1.0:
+        ap.error("--alpha-min must lie in [0, 1]")
 
     cell_kwargs = {}
     if args.cell in ("cfc_lrc", "lrc", "lrc_ar"):
@@ -345,7 +385,7 @@ def main():
         "budget_deviation": budget_dev, "lr": args.lr,
         "batch_size": args.batch_size, "epochs": args.epochs,
         "backbone_layers": args.backbone_layers, "data_seed": data_seed,
-        **pc, **multi,
+        "forcing": args.forcing, **pc, **multi,
     }
     tag = result_filename(args, multi)[:-len(".json")]
     probe = None
@@ -360,20 +400,31 @@ def main():
     test_tap = tf.keras.callbacks.LambdaCallback(
         on_epoch_end=lambda epoch, logs: test_curve.append(
             model.evaluate(test_in, data.test_y, verbose=0)[0]))
+    # --forcing mixed trains a weight-sharing view of `model`; everything else
+    # (teacher-forced metrics, probe, weights) keeps reading the plain model.
+    schedule = None
+    train_model = model
+    if mixed:
+        alpha = tf.Variable(1.0, trainable=False, name="alpha")
+        schedule = AlphaSchedule(alpha, args.epochs, args.alpha_min)
+        train_model = forced_rollout_model(model, alpha)
     with track(args.wandb, group=args.cell, job_type=args.wiring, name=tag,
                config=wandb_config) as run_:
-        hist = model.fit(
+        hist = train_model.fit(
             train_in, data.train_y,
             batch_size=args.batch_size, epochs=args.epochs,
             validation_data=(val_in, data.val_y),
             verbose=args.verbose,
-            callbacks=keras_callbacks(run_) + [test_tap]
-            + ([probe] if probe else []))
+            callbacks=([schedule] if schedule else []) + keras_callbacks(run_)
+            + [test_tap] + ([probe] if probe else []))
     val_curve = hist.history["val_loss"]
     best = int(np.argmin(np.nan_to_num(val_curve, nan=np.inf)))  # NaN never wins
 
-    val_metrics, val_gen = evaluate_split(model, data, "val", needs_loc)
-    test_metrics, gen_norm = evaluate_split(model, data, "test", needs_loc)
+    view = (forced_rollout_model(model, tf.Variable(0.0, trainable=False))
+            if args.wiring in FORCEABLE_WIRINGS else None)
+    val_metrics, val_gen = evaluate_split(model, data, "val", needs_loc, view)
+    test_metrics, gen_norm = evaluate_split(model, data, "test", needs_loc,
+                                            view)
     tf_pred_norm = model.predict(test_in, verbose=0)                    # (N,T,2)
 
     # De-normalised trajectories aligned with the ground truth for plotting.
@@ -417,11 +468,16 @@ def main():
         "teacher_forced_traj": _round(tf_traj),
         "closed_loop_traj": _round(cl_traj),
         "training_diverged": not np.isfinite(hist.history["loss"][-1]),
+        "forcing": args.forcing,
+        "alpha_min": args.alpha_min if mixed else None,
+        "alpha_curve": _round(schedule.curve, 6) if mixed else None,
         "config": {"effective": {
             "task": "lotka_volterra", "system": args.system,
             "n_trajectories": args.n_trajectories, "seq_len": args.seq_len,
             "data_seed": data_seed, "split": split,
             "param_budget": args.param_budget, "backbone_layers": bb_effective,
+            "forcing": args.forcing,
+            "alpha_min": args.alpha_min if mixed else None,
             "build": dict(wiring=args.wiring, cell=args.cell, size=args.size,
                           seed=args.seed, feature_size=data.feature_size,
                           loc_dim=data.loc_dim, lr=args.lr, **multi),

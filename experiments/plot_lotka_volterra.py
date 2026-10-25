@@ -63,14 +63,16 @@ def sys_axes(run: dict) -> tuple[str, str, str]:
     return _SYS_AXES.get(system, ("state y0", "state y1", system))
 
 
-def load_runs(indir: Path) -> list[dict]:
+def load_runs(indir: Path, forcing: str = "teacher") -> list[dict]:
+    """Result JSONs of one training protocol (#25; files without the key are
+    teacher-forced)."""
     runs = []
     for p in sorted(indir.glob("*.json")):
         try:
             runs.append(json.loads(p.read_text()))
         except (json.JSONDecodeError, OSError):
             continue
-    return runs
+    return [r for r in runs if r.get("forcing", "teacher") == forcing]
 
 
 def pick(runs, cell, wiring, seed):
@@ -296,12 +298,14 @@ def main():
     ap.add_argument("--cell", default="cfc_lrc")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--n-examples", type=int, default=4)
+    ap.add_argument("--forcing", default="teacher",
+                    help="plot only runs of this training protocol")
     args = ap.parse_args()
 
     indir = Path(args.indir)
     outdir = Path(args.outdir) if args.outdir else indir
     outdir.mkdir(parents=True, exist_ok=True)
-    runs = load_runs(indir)
+    runs = load_runs(indir, args.forcing)
     if not runs:
         raise SystemExit(f"no result JSONs found in {indir}")
     print(f"Loaded {len(runs)} runs from {indir}")
