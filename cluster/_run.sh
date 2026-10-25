@@ -12,7 +12,7 @@
 # A run folder is never reused: an existing folder aborts the launch.
 #
 # Contract for a launcher that sources this file:
-#   run_parse_args "$@"        -> sets LABEL, DRY_RUN (-n), BENCH (env override)
+#   run_parse_args "$@"        -> sets LABEL, DRY_RUN (-n / --dry-run), BENCH (env override)
 #   run_prepare <NN_benchmark> -> sets RUN_DIR (cluster path), creates the folder
 #                                 and LAUNCH.md (skipped on DRY_RUN)
 #   run_rsync                  -> rsync the code tree (skipped on DRY_RUN)
@@ -27,7 +27,7 @@ _run_usage() {
     cat >&2 <<EOF
 usage: $0 [-n] <label> [setup]
   <label>   run label; the run folder is <date>_<label> (letters, digits, - _ .)
-  -n        dry run: resolve paths and print the sbatch command, do nothing
+  -n, --dry-run  dry run: resolve paths and print the sbatch command, do nothing
   setup     one-time venv setup on the login node (person_activity launcher)
 env:  BENCH=<NN_benchmark>  override the target benchmark folder (e.g. 00_canary)
       CLUSTER_HOST, CLUSTER_REPO_DIR, CLUSTER_BENCH_DIR  (cluster/config.sh)
@@ -39,7 +39,7 @@ run_parse_args() {
     DRY_RUN=0; LABEL=""; SETUP=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -n) DRY_RUN=1 ;;
+            -n|--dry-run) DRY_RUN=1 ;;
             setup) SETUP=1 ;;
             -h|--help) _run_usage ;;
             -*) echo "unknown flag $1" >&2; _run_usage ;;
