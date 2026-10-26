@@ -35,6 +35,7 @@ import numpy as np
 from src.evaluation.metrics import confusion_matrix, macro_f1
 from src.wirings import param_counts, size_for_budget
 from src.benchmark.checkpoints import save_weights
+from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
 from src.tasks.person_activity.datasets import load_person_activity
 from src.tasks.committee.views import (make_views, average_views,
                                        drop_features, add_noise)
@@ -135,7 +136,9 @@ def main():
                     help="average each dropout frac over these channel-choice "
                          "seeds (F is small, so WHICH channel fails dominates)")
     ap.add_argument("--outdir", default="results/committee")
-    ap.add_argument("--elastance-type", default="asymmetric")
+    ap.add_argument("--elastance-type", default=None,
+                    help="override the registry elastance_type of the "
+                         "LRC-family cells; default: the registry value")
     ap.add_argument("--backbone-layers", type=int, default=None,
                     help="CfC-family backbone depth for EVERY wiring (overrides "
                          "the default 1 of every wiring; 0 = no backbone); "
@@ -160,9 +163,7 @@ def main():
                       "owned by fewer than half of the columns has median 0; "
                       "use --view-mode noisy")
 
-    cell_kwargs = {}
-    if args.cell in ("cfc_lrc", "lrc", "lrc_ar"):
-        cell_kwargs["elastance_type"] = args.elastance_type
+    cell_kwargs = registry_cell_kwargs(args.cell, args.elastance_type)
     cell_kwargs.update(backbone_override(args.cell, args.backbone_layers))
     bb_effective = effective_backbone_layers(args.wiring, args.cell, cell_kwargs)
 
@@ -288,6 +289,7 @@ def main():
                           train_drop=args.train_drop,
                           train_noise=args.train_noise,
                           column_loop=args.column_loop),
+            "elastance_type": cell_kwargs.get("elastance_type"),
             "cell_kwargs": cell_kwargs}},
     }
     path = os.path.join(args.outdir, result_filename(args))

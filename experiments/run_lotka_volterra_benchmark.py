@@ -73,6 +73,7 @@ from src.tasks.person_activity.model import (
     effective_self_recurrent, add_multi_column_args, multi_column_config,
     multi_column_suffix, ode_unfolds_override)
 from src.tasks.active_sensing.model import TBT_MODES
+from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
 from src.benchmark.tracking import keras_callbacks, track
 from src.benchmark.checkpoints import save_weights
 from src.evaluation.rollout_metrics import make_norm_stats, rollout_metrics
@@ -317,8 +318,10 @@ def main():
     ap.add_argument("--n-trajectories", type=int, default=80)
     ap.add_argument("--seq-len", type=int, default=128)
     ap.add_argument("--outdir", default="results/lotka_volterra")
-    ap.add_argument("--elastance-type", default="asymmetric",
-                    help="forwarded to LRC-family cells (RQ2/RQ5 mechanism)")
+    ap.add_argument("--elastance-type", default=None,
+                    help="override the registry elastance_type of the "
+                         "LRC-family cells (RQ2/RQ5 mechanism); default: the "
+                         "registry value ('asymmetric')")
     ap.add_argument("--ode-unfolds", type=int, default=6,
                     help="explicit Euler sub-steps per input step for the "
                          "numerical ODE cells (ltc, lrc, lrc_pm, mm_ltc, "
@@ -362,9 +365,7 @@ def main():
     if not 0.0 <= args.alpha_min <= 1.0:
         ap.error("--alpha-min must lie in [0, 1]")
 
-    cell_kwargs = {}
-    if args.cell in ("cfc_lrc", "lrc", "lrc_ar"):
-        cell_kwargs["elastance_type"] = args.elastance_type
+    cell_kwargs = registry_cell_kwargs(args.cell, args.elastance_type)
     cell_kwargs.update(backbone_override(args.cell, args.backbone_layers))
     if args.head_activation != "none":     # non-CfC cells reject the kwarg
         cell_kwargs["head_activation"] = args.head_activation
@@ -528,6 +529,7 @@ def main():
                           loc_dim=data.loc_dim, lr=args.lr,
                           self_recurrent=args.self_recurrent,
                           dt_scale=args.dt_scale, **multi),
+            "elastance_type": cell_kwargs.get("elastance_type"),
             "cell_kwargs": cell_kwargs}},
     }
     if probe is not None:
