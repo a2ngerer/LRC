@@ -76,6 +76,7 @@ from src.tasks.active_sensing.model import TBT_MODES
 from src.benchmark.tracking import keras_callbacks, track
 from src.benchmark.checkpoints import save_weights
 from src.evaluation.rollout_metrics import make_norm_stats, rollout_metrics
+from src.evaluation.gradient_flow import RQ4Diagnostics
 
 
 def closed_loop_rollout(model, data, needs_loc: bool = False,
@@ -337,6 +338,10 @@ def main():
                     help="record per-state norms at init, after one step and "
                          "after epoch 1, plus the epoch-1 train loss "
                          "(result key 'stability', spec 2026-10-21 R6)")
+    ap.add_argument("--diagnostics", action="store_true",
+                    help="RQ4 diagnostics on one fixed training batch per epoch: "
+                         "per-group gradient norm and effective lr, state norms, "
+                         "ctrnn Euler rate (result key 'diagnostics', #30)")
     ap.add_argument("--no-save-weights", dest="save_weights",
                     action="store_false",
                     help="do not write <stem>.weights.h5 next to the result JSON")
@@ -424,6 +429,9 @@ def main():
         tr_b, val_b, te_b = (tuple(a[:args.batch_size] for a in inputs)
                              for inputs in (train_in, val_in, test_in))
         probe = StabilityProbe(model, tr_b, {"val": val_b, "test": te_b})
+    diag = (RQ4Diagnostics(model, tuple(a[:args.batch_size] for a in train_in),
+                           data.train_y[:args.batch_size])
+            if args.diagnostics else None)
     # Test teacher-forced loss per epoch, read only at the best-val epoch.
     test_curve = []
     test_tap = tf.keras.callbacks.LambdaCallback(
@@ -445,7 +453,7 @@ def main():
             validation_data=(val_in, data.val_y),
             verbose=args.verbose,
             callbacks=([schedule] if schedule else []) + keras_callbacks(run_)
-            + [test_tap] + ([probe] if probe else []))
+            + [test_tap] + ([probe] if probe else []) + ([diag] if diag else []))
     val_curve = hist.history["val_loss"]
     best = int(np.argmin(np.nan_to_num(val_curve, nan=np.inf)))  # NaN never wins
 
@@ -519,6 +527,8 @@ def main():
     }
     if probe is not None:
         record["stability"] = probe.result
+    if diag is not None:
+        record["diagnostics"] = diag.result
     path = os.path.join(args.outdir, result_filename(args, multi))
     record["weights_path"] = save_weights(model, path, args.save_weights)
     with open(path, "w") as f:

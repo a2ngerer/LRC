@@ -193,6 +193,13 @@ def run(args):
         test_cms.append(split_confusions(model, data, "test", args.batch_size))
         logs["val_macro_f1"] = val_f1[-1]
 
+    diag = None
+    if args.diagnostics:
+        from src.evaluation.gradient_flow import RQ4Diagnostics
+        b = args.batch_size
+        diag = RQ4Diagnostics(model, (data.train_x[:b], data.train_t[:b]),
+                              data.train_y[:b])
+
     t0 = time.time()
     with track(args.wandb, group=args.cell, job_type=args.wiring, name=tag,
                config=wandb_config) as run_:
@@ -204,7 +211,7 @@ def run(args):
             validation_data=((data.val_x, data.val_t), data.val_y),
             verbose=2,
             callbacks=[tf.keras.callbacks.LambdaCallback(on_epoch_end=evaluate),
-                       *keras_callbacks(run_)],
+                       *keras_callbacks(run_)] + ([diag] if diag else []),
         )
     wall = time.time() - t0
 
@@ -277,6 +284,9 @@ def run(args):
                           self_recurrent=args.self_recurrent, **multi),
             "cell_kwargs": cell_kwargs}},
     }
+
+    if diag is not None:
+        result["diagnostics"] = diag.result
 
     os.makedirs(args.outdir, exist_ok=True)
     out_path = os.path.join(args.outdir, f"{tag}.json")
@@ -352,6 +362,10 @@ def main():
     p.add_argument("--wandb", action="store_true",
                    help="log this run to Weights & Biases (needs the "
                         "'tracking' extra; use WANDB_MODE=offline on cluster)")
+    p.add_argument("--diagnostics", action="store_true",
+                   help="RQ4 diagnostics on one fixed training batch per epoch "
+                        "(result key 'diagnostics', see src/evaluation/"
+                        "gradient_flow.py RQ4Diagnostics, #30)")
     p.add_argument("--no-save-weights", dest="save_weights",
                    action="store_false",
                    help="do not write <stem>.weights.h5 next to the result JSON")
