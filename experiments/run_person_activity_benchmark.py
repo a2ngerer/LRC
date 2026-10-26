@@ -98,6 +98,7 @@ def run(args):
     from src.tasks.person_activity import (build_person_activity_model,
                                            load_person_activity)
     from src.benchmark.tracking import keras_callbacks, track
+    from src.benchmark.checkpoints import save_weights
     from src.wirings import param_counts, size_for_budget
 
     data = load_person_activity(data_path=args.data_path, split=args.split,
@@ -144,6 +145,7 @@ def run(args):
               f"params_effective={n_eff} (dev {budget_dev:.1%}){flag}",
               flush=True)
     model = build(args.size)
+    model.optimizer.clipnorm = args.clipnorm      # None = no clipping
     pc = param_counts(model)
     params = pc['params_effective']
 
@@ -164,6 +166,7 @@ def run(args):
         "param_budget": args.param_budget,
         "budget_deviation": budget_dev,
         "lr": args.lr,
+        "clipnorm": args.clipnorm,
         "batch_size": args.batch_size,
         "epochs": args.epochs,
         "backbone_layers": args.backbone_layers,
@@ -219,6 +222,7 @@ def run(args):
         "param_budget": args.param_budget,
         "budget_deviation": budget_dev,
         "lr": args.lr,
+        "clipnorm": args.clipnorm,
         "batch_size": args.batch_size,
         "backbone_layers": args.backbone_layers,
         "backbone_layers_effective": bb_effective,
@@ -261,10 +265,22 @@ def run(args):
         "wallclock_s": round(wall, 1),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "hostname": socket.gethostname(),
+        "training_diverged": not np.isfinite(hist.history["loss"][-1]),
+        "config": {"effective": {
+            "task": "person_activity", "param_budget": args.param_budget,
+            "backbone_layers": bb_effective,
+            "build": dict(wiring=args.wiring, cell=args.cell, size=args.size,
+                          seed=args.seed, num_classes=data.num_classes,
+                          feature_size=data.feature_size,
+                          seq_len=data.seq_len, lr=args.lr,
+                          dt_feature=dt_feature, dt_scale=args.dt_scale,
+                          self_recurrent=args.self_recurrent, **multi),
+            "cell_kwargs": cell_kwargs}},
     }
 
     os.makedirs(args.outdir, exist_ok=True)
     out_path = os.path.join(args.outdir, f"{tag}.json")
+    result["weights_path"] = save_weights(model, out_path, args.save_weights)
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
     print(f"[{tag}] done in {wall:.0f}s  best_val_epoch={best + 1}  "
@@ -292,6 +308,9 @@ def main():
                      help="size the arm to this EFFECTIVE parameter budget "
                           "(closest size on the arm's own knob)")
     p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--clipnorm", type=float, default=None,
+                   help="clip every gradient tensor to this L2 norm (the "
+                        "optimizer's clipnorm); default: no clipping")
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--backbone-layers", type=int, default=None,
                    help="CfC-family backbone depth for EVERY wiring (overrides "
@@ -333,6 +352,9 @@ def main():
     p.add_argument("--wandb", action="store_true",
                    help="log this run to Weights & Biases (needs the "
                         "'tracking' extra; use WANDB_MODE=offline on cluster)")
+    p.add_argument("--no-save-weights", dest="save_weights",
+                   action="store_false",
+                   help="do not write <stem>.weights.h5 next to the result JSON")
     add_multi_column_args(p)
     args = p.parse_args()
     if args.size is None and args.param_budget is None:

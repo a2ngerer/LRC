@@ -128,6 +128,26 @@ rsync -a datalab:thesis-benchmark/papers/.extracted/ papers/.extracted/
 `sync_to_cluster.sh` currently rsyncs the code tree; extend it to include
 `papers/`, or push them once with `rsync -a papers/ datalab:thesis-benchmark/papers/`.
 
+## Fixed-grid HPO (Chapter 5 protocol)
+
+`./cluster/submit_grid_hpo.sh <label>` submits `experiments/run_grid_hpo.py` for
+ONE (task, cell, wiring) as one job (`cluster/grid_hpo.sbatch`): grid lr
+{1e-4, 1e-3, 3e-3, 1e-2} x clipnorm {off, 1.0} on tuning seed s1, the top 2 on
+s2, the better mean wins; a winner at 1e-4 / 1e-2 extends the grid once by
+3e-5 / 3e-2. The fits run sequentially on one GPU, each into its own folder
+under `results/`, next to `results/hpo_selection.json`; a requeued job reuses
+the finished fits.
+
+```bash
+GH_TASK=lv GH_CELL=cfc_lrc GH_WIRING=ncp GH_SYSTEM=duffing ./cluster/submit_grid_hpo.sh <label>
+GH_TASK=pa GH_CELL=gru GH_WIRING=ncp ./cluster/submit_grid_hpo.sh --dry-run <label>
+```
+
+`GH_TUNING_SEEDS` (default `0 1`), `GH_PARAM_BUDGET` (default 4000 lv / 30000
+pa) and `GH_EXTRA` (driver flags such as `--grid-lr`, `--grid-clip`, and runner
+flags such as `--epochs`, forwarded) are optional. `run_lotka_volterra_hpo.py`
+(Optuna) is exploratory and not part of the final suite.
+
 ## Run folders (task launchers, since 2026-10-21)
 
 The cluster workspace is one code tree (`CLUSTER_REPO_DIR`, rsync'd with

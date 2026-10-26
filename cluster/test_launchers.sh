@@ -45,6 +45,13 @@ check pa "$out" "03_person_activity/runs/${today}_smoke" "PA_EPOCHS='1'" "cluste
 out="$(CO_KS='1 4' ./cluster/submit_committee.sh -n smoke 2>&1)"
 check committee "$out" "04_column_voting/runs/${today}_smoke" "CO_KS='1 4'" "cluster/committee.sbatch"
 
+out="$(BENCH=00_canary GH_TASK=lv GH_CELL=cfc_lrc GH_WIRING=dense3 GH_EXTRA="--epochs 2 --grid-lr 1e-3 3e-3 --grid-clip off" ./cluster/submit_grid_hpo.sh --dry-run canary 2>&1)"
+check grid_hpo "$out" "00_canary/runs/${today}_canary" "GH_TASK='lv'" \
+    "GH_EXTRA='--epochs 2 --grid-lr 1e-3 3e-3 --grid-clip off'" "cluster/grid_hpo.sbatch"
+
+out="$(GH_TASK=pa GH_CELL=gru GH_WIRING=ncp ./cluster/submit_grid_hpo.sh -n smoke 2>&1)"
+check grid_hpo_pa "$out" "03_person_activity/runs/${today}_smoke"
+
 if out="$(./cluster/submit_committee.sh -n 'bad label' 2>&1)"; then
     echo "FAIL [label]: accepted a label with a space"; fail=1
 fi
@@ -52,7 +59,8 @@ if out="$(./cluster/submit_committee.sh -n 2>&1)"; then
     echo "FAIL [usage]: accepted a missing label"; fail=1
 fi
 
-for f in cluster/lotka_volterra.sbatch cluster/person_activity.sbatch cluster/committee.sbatch; do
+for f in cluster/lotka_volterra.sbatch cluster/person_activity.sbatch cluster/committee.sbatch \
+         cluster/grid_hpo.sbatch; do
     if grep -q 'outputs/slurm\|results/\(person_activity\|lotka_volterra\|committee\)' "$f"; then
         echo "FAIL [$f]: still writes under the code tree"; fail=1
     fi
