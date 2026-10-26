@@ -40,7 +40,8 @@ from src.tasks.committee.views import (make_views, average_views,
                                        drop_features, add_noise)
 from src.tasks.committee.model import build_committee_model, COMMITTEE_WIRINGS
 from src.tasks.person_activity.model import (
-    backbone_override, backbone_suffix, effective_backbone_layers)
+    backbone_override, backbone_suffix, effective_backbone_layers,
+    effective_ode_unfolds)
 
 
 DEFAULT_SIZE = 48
@@ -275,6 +276,8 @@ def main():
         "config": {"effective": {
             "task": "committee", "param_budget": args.param_budget,
             "backbone_layers": bb_effective,
+            # no --ode-unfolds here: the cell constructor default applies
+            "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
             "views": dict(n_columns=args.n_columns, mode=args.view_mode,
                           overlap=args.overlap, noise=args.noise,
                           seed=args.view_seed,

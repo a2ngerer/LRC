@@ -80,7 +80,15 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
         self_recurrent: ncp only, see NCPWiring (issue #23).
         dt_scale:     multiplies the time input before it reaches any cell
                       (task-level time unit, issue #28); 1.0 adds no layer.
-        **cell_kwargs: forwarded to every cell constructor.
+        **cell_kwargs: forwarded to every cell constructor. ode_unfolds
+                      (solver cells, ODE_UNFOLD_CELLS: ltc, lrc, ctrnn, mm_*)
+                      is the number of Euler sub-steps per input step; the
+                      LV and PA runners pass --ode-unfolds (default
+                      DEFAULT_ODE_UNFOLDS = 6) on every wiring (dense,
+                      dense3, ncp, cncp, ...).
+                      Under 'ncp' fewer than 3 never let the motor slice see
+                      the current input. Unset, the constructor default
+                      applies (ltc 6; lrc, ctrnn 1).
 
     Returns:
         Compiled tf.keras.Model. Inputs are [state (B,None,feature_size),

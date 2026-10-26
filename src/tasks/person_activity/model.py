@@ -20,11 +20,13 @@
 # does NOT give comparable capacity (at size 64 with cfc_lrc the four arms
 # differ by more than a factor of four in effective parameters).
 
+import inspect
 import warnings
 
 import tensorflow as tf
 
-from src.neurons import LRC_Cell, LTC_Cell, MM_LRC_Cell, MM_LTC_Cell
+from src.neurons import (CTRNN_Cell, LRC_Cell, LTC_Cell, MM_LRC_Cell,
+                         MM_LTC_Cell)
 from src.neurons.base_cell import BaseCell
 from src.wirings import (CorticalColumnCell, CorticalColumnV2Cell, NCPWiring,
                          PARTITIONS, COUPLINGS, READOUTS, multi_column_head)
@@ -62,9 +64,12 @@ DENSE3_LAYERS = 3
 DISCRETE_CELLS = ("lstm", "gru")
 
 # Numerical ODE cells: explicit Euler sub-steps per input step (ode_unfolds).
-# ltc, lrc (and its LRC_Cell variants such as lrc_pm), mm_ltc, mm_lrc; the
-# cfc_mm_* inner cells are closed-form and take no sub-steps (issue #28).
-ODE_UNFOLD_CELLS = (LTC_Cell, LRC_Cell, MM_LTC_Cell, MM_LRC_Cell)
+# ltc, lrc (and its LRC_Cell variants such as lrc_pm), ctrnn, mm_ltc, mm_lrc;
+# the cfc_mm_* inner cells are closed-form and take no sub-steps (issue #28).
+# The LV / PA runners pass --ode-unfolds (default DEFAULT_ODE_UNFOLDS) to these
+# cells on every wiring, so ctrnn integrates like lrc (issue #56).
+ODE_UNFOLD_CELLS = (LTC_Cell, LRC_Cell, CTRNN_Cell, MM_LTC_Cell, MM_LRC_Cell)
+DEFAULT_ODE_UNFOLDS = 6
 
 
 def scaled_lamina_units(size):
@@ -181,6 +186,20 @@ def ode_unfolds_override(cell, ode_unfolds):
     if not issubclass(_resolve_cell_cls(cell), ODE_UNFOLD_CELLS):
         return {}
     return {"ode_unfolds": int(ode_unfolds)}
+
+
+def effective_ode_unfolds(cell, cell_kwargs):
+    """Euler sub-steps per input step this arm's cells actually run (None:
+    closed-form or discrete cell). An explicit cell_kwargs value wins, else the
+    cell constructor default (mm_* take their inner cell's)."""
+    cell_cls = _resolve_cell_cls(cell)
+    if not issubclass(cell_cls, ODE_UNFOLD_CELLS):
+        return None
+    if "ode_unfolds" in cell_kwargs:
+        return int(cell_kwargs["ode_unfolds"])
+    cell_cls = {MM_LTC_Cell: LTC_Cell,
+                MM_LRC_Cell: LRC_Cell}.get(cell_cls, cell_cls)
+    return inspect.signature(cell_cls).parameters["ode_unfolds"].default
 
 
 def scaled_time(time, dt_scale=1.0):
@@ -301,7 +320,15 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
         dt_scale:     multiplies the time input before it reaches any cell
                       and the dt feature (task-level time unit, issue #28);
                       1.0 adds no layer.
-        **cell_kwargs: forwarded to every cell constructor.
+        **cell_kwargs: forwarded to every cell constructor. ode_unfolds
+                      (solver cells, ODE_UNFOLD_CELLS: ltc, lrc, ctrnn, mm_*)
+                      is the number of Euler sub-steps per input step; the
+                      LV and PA runners pass --ode-unfolds (default
+                      DEFAULT_ODE_UNFOLDS = 6) on every wiring (dense,
+                      dense3, ncp, cncp, ...).
+                      Under 'ncp' fewer than 3 never let the motor slice see
+                      the current input. Unset, the constructor default
+                      applies (ltc 6; lrc, ctrnn 1).
 
     Returns:
         Compiled tf.keras.Model with inputs [features (B, seq_len,

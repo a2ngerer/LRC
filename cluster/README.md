@@ -87,6 +87,13 @@ hour on an A40; one timing run locally first is recommended
 With the %8 throttle the full 240-run matrix completes in a few hours of
 wall-clock time without ever exceeding the GPU quota.
 
+The solver cells (`ltc`, `lrc` and its variants, `ctrnn`, `mm_ltc`, `mm_lrc`)
+run `--ode-unfolds` explicit Euler sub-steps per input step (default 6 in the
+Lotka-Volterra and Person Activity runners, on every wiring), so their wall
+time scales with the sub-step count. Since `ctrnn` follows this rule (issue
+#56) instead of its former single step, a `ctrnn` arm under `ncp` takes about
+3x the wall time it used to; size the walltime accordingly.
+
 ## Benchmark v2 (fixed cells)
 
 `./cluster/submit_benchmark_v2.sh` submits the 480-run v2 matrix
