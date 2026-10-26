@@ -11,7 +11,7 @@
 #       ./cluster/submit_grid_hpo.sh grid-hpo-canary
 #
 # Env: GH_TASK, GH_CELL, GH_WIRING (required), GH_SYSTEM (lv), GH_PARAM_BUDGET
-# (default 4000 lv / 30000 pa), GH_TUNING_SEEDS (default "0 1"), GH_EXTRA
+# (default 4000 lv / 30000 pa), GH_TUNING_SEEDS (default "100 101"), GH_EXTRA
 # (driver + runner flags). Prereqs: VPN + the cluster venv (cluster/README.md).
 set -euo pipefail
 cd "$(dirname "$0")/.."
