@@ -41,7 +41,8 @@ from src.tasks.lotka_volterra.datasets import load_lotka_volterra, reference_fra
 from src.tasks.lotka_volterra.model import build_lotka_volterra_model, LV_WIRINGS
 from src.tasks.person_activity.model import (
     backbone_override, backbone_suffix, effective_backbone_layers,
-    add_multi_column_args, multi_column_config, multi_column_suffix)
+    effective_self_recurrent, add_multi_column_args, multi_column_config,
+    multi_column_suffix)
 from src.tasks.active_sensing.model import TBT_MODES
 from src.benchmark.tracking import keras_callbacks, track
 
@@ -209,11 +210,15 @@ def main():
                     help="forwarded to LRC-family cells (RQ2/RQ5 mechanism)")
     ap.add_argument("--backbone-layers", type=int, default=None,
                     help="CfC-family backbone depth for EVERY wiring (overrides "
-                         "the dense default 1 and the ncp/cncp family default 0); "
+                         "the default 1 of every wiring; 0 = no backbone); "
                          "default: unchanged per-wiring behaviour")
     ap.add_argument("--head-activation", default="none", choices=("none", "tanh"),
                     help="activation on the ff1/ff2 heads of the CfC-family cells "
                          "(bb0 attribution control); default: linear heads")
+    ap.add_argument("--no-self-recurrence", dest="self_recurrent",
+                    action="store_false",
+                    help="ncp x CfC family: drop the diagonal self-recurrence "
+                         "of the NCP layers (issue #23 stability pilot)")
     ap.add_argument("--verbose", type=int, default=0)
     ap.add_argument("--probe-stability", action="store_true",
                     help="record per-state norms at init, after one step and "
@@ -234,6 +239,8 @@ def main():
     if args.head_activation != "none":     # non-CfC cells reject the kwarg
         cell_kwargs["head_activation"] = args.head_activation
     bb_effective = effective_backbone_layers(args.wiring, args.cell, cell_kwargs)
+    self_rec = effective_self_recurrent(args.wiring, args.cell,
+                                        args.self_recurrent)
     multi = multi_column_config(args)
 
     needs_loc = args.wiring in TBT_MODES
@@ -247,7 +254,7 @@ def main():
         return build_lotka_volterra_model(
             args.wiring, args.cell, size=size, seed=args.seed,
             feature_size=data.feature_size, loc_dim=data.loc_dim, lr=args.lr,
-            **multi, **cell_kwargs)
+            self_recurrent=args.self_recurrent, **multi, **cell_kwargs)
 
     # Capacity: a fixed width knob, or the knob closest to the effective
     # parameter budget for THIS arm.
@@ -279,7 +286,7 @@ def main():
         "size": args.size, "param_budget": args.param_budget,
         "budget_deviation": budget_dev, "lr": args.lr,
         "batch_size": args.batch_size, "epochs": args.epochs,
-        "backbone_layers": args.backbone_layers,
+        "backbone_layers": args.backbone_layers, "self_recurrent": self_rec,
         "head_activation": args.head_activation, **pc, **multi,
     }
     tag = result_filename(args, multi)[:-len(".json")]
@@ -327,7 +334,7 @@ def main():
         "size": args.size, "param_budget": args.param_budget,
         "budget_deviation": budget_dev, "epochs": args.epochs, "lr": args.lr,
         "backbone_layers": args.backbone_layers,
-        "backbone_layers_effective": bb_effective,
+        "backbone_layers_effective": bb_effective, "self_recurrent": self_rec,
         "head_activation": args.head_activation,
         **pc, **multi, "dt": data.dt, "seq_len": data.seq_len,
         "n_test": int(data.test_x.shape[0]),

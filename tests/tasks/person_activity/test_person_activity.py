@@ -7,7 +7,9 @@
 #   - multi-state cells are rejected;
 #   - the dataset loader returns the documented shapes (skipped when the
 #     data file has not been downloaded).
+import json
 import os
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -19,6 +21,7 @@ from src.tasks.person_activity import (build_person_activity_model,
                                        load_person_activity,
                                        DEFAULT_DATA_PATH)
 from src.tasks.person_activity.model import WIRINGS
+from experiments import run_person_activity_benchmark as pa_runner
 from experiments.run_person_activity_benchmark import result_tag
 
 SEQ_LEN = 32
@@ -171,3 +174,26 @@ def test_result_tag_backbone_suffix():
     assert result_tag(a) == "cfc_lrc_ncp_seed2"
     a.backbone_layers = 1
     assert result_tag(a) == "cfc_lrc_ncp_seed2_bb1"
+
+
+# --- --no-self-recurrence (issue #23 stability pilot) ---
+
+def test_runner_passes_no_self_recurrence_to_the_ncp(tmp_path, monkeypatch):
+    """Flag -> builder -> NCP sub-cells (fewer effective params at the same
+    size) -> JSON, on dummy data so the dataset file is not needed."""
+    x, t, y = _dummy_batch(batch=4)
+    data = SimpleNamespace(train_x=x, train_t=t, train_y=y, test_x=x,
+                           test_t=t, test_y=y, feature_size=FEATURES,
+                           num_classes=NUM_CLASSES, seq_len=SEQ_LEN)
+    monkeypatch.setattr("src.tasks.person_activity.load_person_activity",
+                        lambda data_path=None: data)
+    def run(*flags):
+        monkeypatch.setattr(sys, "argv", [
+            "run_person_activity_benchmark.py", "--wiring", "ncp", "--cell",
+            "cfc_lrc", "--epochs", "1", "--size", "8", "--outdir",
+            str(tmp_path), *flags])
+        pa_runner.main()
+        return json.loads((tmp_path / "cfc_lrc_ncp_seed0.json").read_text())
+    on, off = run(), run("--no-self-recurrence")
+    assert on["self_recurrent"] is True and off["self_recurrent"] is False
+    assert on["params_effective"] > off["params_effective"]

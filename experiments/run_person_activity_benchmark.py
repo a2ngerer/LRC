@@ -38,7 +38,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.tasks.person_activity.model import (  # noqa: E402
     WIRINGS, backbone_override, backbone_suffix, effective_backbone_layers,
-    add_multi_column_args, multi_column_config, multi_column_suffix)
+    effective_self_recurrent, add_multi_column_args, multi_column_config,
+    multi_column_suffix)
 
 DEFAULT_SIZE = 64
 BUDGET_TOLERANCE = 0.05
@@ -83,13 +84,16 @@ def run(args):
     if args.head_activation != "none":     # non-CfC cells reject the kwarg
         cell_kwargs["head_activation"] = args.head_activation
     bb_effective = effective_backbone_layers(args.wiring, args.cell, cell_kwargs)
+    self_rec = effective_self_recurrent(args.wiring, args.cell,
+                                        args.self_recurrent)
     multi = multi_column_config(args)
 
     def build(size):
         return build_person_activity_model(
             args.wiring, args.cell, size=size, seed=args.seed,
             num_classes=data.num_classes, feature_size=data.feature_size,
-            seq_len=data.seq_len, lr=args.lr, **multi, **cell_kwargs)
+            seq_len=data.seq_len, lr=args.lr,
+            self_recurrent=args.self_recurrent, **multi, **cell_kwargs)
 
     # Capacity: either a fixed width knob or the knob that lands closest to the
     # effective parameter budget for THIS arm.
@@ -124,6 +128,7 @@ def run(args):
         "epochs": args.epochs,
         "backbone_layers": args.backbone_layers,
         "head_activation": args.head_activation,
+        "self_recurrent": self_rec,
         **pc,
         **multi,
     }
@@ -160,6 +165,7 @@ def run(args):
         "backbone_layers": args.backbone_layers,
         "backbone_layers_effective": bb_effective,
         "head_activation": args.head_activation,
+        "self_recurrent": self_rec,
         **pc,
         **multi,
         "cell_kwargs": cell_kwargs,
@@ -208,11 +214,15 @@ def main():
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--backbone-layers", type=int, default=None,
                    help="CfC-family backbone depth for EVERY wiring (overrides "
-                        "the dense default 1 and the ncp/cncp family default 0); "
+                        "the default 1 of every wiring; 0 = no backbone); "
                         "default: unchanged per-wiring behaviour")
     p.add_argument("--head-activation", default="none", choices=("none", "tanh"),
                    help="activation on the ff1/ff2 heads of the CfC-family cells "
                         "(bb0 attribution control); default: linear heads")
+    p.add_argument("--no-self-recurrence", dest="self_recurrent",
+                   action="store_false",
+                   help="ncp x CfC family: drop the diagonal self-recurrence "
+                        "of the NCP layers (issue #23 stability pilot)")
     p.add_argument("--outdir", default="results/person_activity")
     p.add_argument("--data-path", default=None,
                    help="override the ConfLongDemo_JSI.txt location")

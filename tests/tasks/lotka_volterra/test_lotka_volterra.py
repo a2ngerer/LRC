@@ -24,7 +24,8 @@ from src.tasks.lotka_volterra import (build_lotka_volterra_model,
                                       reference_frame, RF_DIM, LV_WIRINGS)
 from src.tasks.active_sensing.model import TBT_MODES
 from src.tasks.person_activity.model import (backbone_override,
-                                             effective_backbone_layers)
+                                             effective_backbone_layers,
+                                             effective_self_recurrent)
 from experiments.run_lotka_volterra_benchmark import (closed_loop_rollout,
                                                       result_filename)
 from experiments import run_lotka_volterra_benchmark as lv_runner
@@ -237,12 +238,13 @@ def _depths(wiring, backbone_layers, cell="cfc_lrc"):
 
 
 def test_cncp_backbone_override_reaches_every_subcell():
-    """cncp defaults to backbone-free sub-cells; backbone_layers=1 gives every
-    RNN sub-cell (L4, L23, L5IT, L5ET, L6CC, L6CT; Thal/TRN are relays) a
-    backbone layer and changes the parameter count. The direction is NOT 'more':
-    a cNCP sub-cell sees [x, h] of width 2*units, so the shared backbone layer
-    plus four units-wide heads (6u^2) is smaller than four 2u-wide heads (8u^2);
-    hence the budget matcher must be given the override."""
+    """backbone_layers=0 gives backbone-free cncp sub-cells; 1 (the default
+    since issue #21) gives every RNN sub-cell (L4, L23, L5IT, L5ET, L6CC,
+    L6CT; Thal/TRN are relays) a backbone layer and changes the parameter
+    count. The direction is NOT 'more': a cNCP sub-cell sees [x, h] of width
+    2*units, so the shared backbone layer plus four units-wide heads (6u^2) is
+    smaller than four 2u-wide heads (8u^2); hence the budget matcher must be
+    given the override."""
     m0, d0 = _depths("cncp", 0)
     m1, d1 = _depths("cncp", 1)
     assert d0 == [0] * 6
@@ -254,7 +256,7 @@ def test_dense_backbone_zero_has_none_and_default_is_unchanged():
     assert _depths("dense", 0)[1] == [0]
     assert _depths("dense3", 0)[1] == [0, 0, 0]
     assert _depths("dense", None)[1] == [1]          # builder default untouched
-    assert _depths("ncp", None)[1] == [0, 0, 0]      # family default untouched
+    assert _depths("ncp", None)[1] == [1, 1, 1]      # family default (#21)
 
 
 @pytest.mark.parametrize("backbone_layers", [None, 0, 2])
@@ -265,6 +267,18 @@ def test_effective_backbone_matches_the_built_cells(wiring, backbone_layers):
     kw = backbone_override("cfc_lrc", backbone_layers)
     effective = effective_backbone_layers(wiring, "cfc_lrc", kw)
     assert set(_depths(wiring, backbone_layers)[1]) == {effective}
+
+
+@pytest.mark.parametrize("cell", ["cfc", "cfc_lrc", "cfc_lrc_outer"])
+@pytest.mark.parametrize("wiring", ["ncp", "cncp", "cncp2", "cncp2_multi"])
+def test_closed_form_subcells_default_to_one_backbone_layer(wiring, cell):
+    """Issue #21: without --backbone-layers every closed-form sub-cell gets one
+    backbone layer (pilot decision 2026-10-21); 0 stays reachable."""
+    assert effective_backbone_layers(wiring, cell, {}) == 1
+    assert set(_depths(wiring, None, cell)[1]) == {1}
+    assert effective_backbone_layers(wiring, cell,
+                                     backbone_override(cell, 0)) == 0
+    assert set(_depths(wiring, 0, cell)[1]) == {0}
 
 
 def test_backbone_override_skips_cells_without_backbone():
@@ -330,3 +344,28 @@ def test_runner_head_activation_reaches_every_subcell(tmp_path, monkeypatch):
     assert {c._time_a.activation.__name__ for c in cells} == {"linear"}
     rec = json.loads((tmp_path / "cfc_lrc_cncp_seed0_bb0.json").read_text())
     assert rec["head_activation"] == "tanh"
+
+
+# --- --no-self-recurrence (issue #23 stability pilot) ---
+
+def test_effective_self_recurrent_only_for_closed_form_ncp():
+    assert effective_self_recurrent("ncp", "cfc_lrc") is True
+    assert effective_self_recurrent("ncp", "cfc_lrc", False) is False
+    assert effective_self_recurrent("ncp", "gru") is None
+    assert effective_self_recurrent("ncp", "ltc") is None
+    assert effective_self_recurrent("dense", "cfc_lrc") is None
+
+
+def test_runner_records_self_recurrence_end_to_end(tmp_path, monkeypatch):
+    """--no-self-recurrence reaches the NCP sub-cells (fewer effective params
+    at the same size) and the JSON."""
+    def run(*flags):
+        monkeypatch.setattr(sys, "argv", [
+            "run_lotka_volterra_benchmark.py", "--wiring", "ncp", "--cell",
+            "cfc_lrc", "--epochs", "1", "--n-trajectories", "6", "--seq-len",
+            "6", "--size", "8", "--outdir", str(tmp_path), *flags])
+        lv_runner.main()
+        return json.loads((tmp_path / "cfc_lrc_ncp_seed0.json").read_text())
+    on, off = run(), run("--no-self-recurrence")
+    assert on["self_recurrent"] is True and off["self_recurrent"] is False
+    assert on["params_effective"] > off["params_effective"]

@@ -22,7 +22,7 @@
 #
 # Revision 2026-10-04 (design review, see the spec section 13):
 #   * sub-cells are built with the same per-family defaults as the NCP layers
-#     (ncp_cell_kwargs: CfC-family cells run without a backbone), so NCP and
+#     (ncp_cell_kwargs: CfC-family cells get one backbone layer), so NCP and
 #     cNCP differ in the graph only;
 #   * the relay nodes integrate the elapsed time (leaky integrators with a
 #     learnable rate), so the per-lamina timescale prior reaches them too;
@@ -193,7 +193,7 @@ class CorticalColumnCell(BaseCell):
     is invoked as subcell((basal, elapsed_time), [prev_node]) so
     continuous-time cells receive dt; discrete cells (gru) ignore it. The
     sub-cells are constructed with the same per-family defaults as the NCP
-    layers (ncp_cell_kwargs: CfC-family cells default to backbone_layers=0),
+    layers (ncp_cell_kwargs: CfC-family cells default to backbone_layers=1),
     so an NCP-vs-cNCP contrast differs in the graph, not in the sub-cell
     computation. An explicit backbone_layers in cell_kwargs wins.
 
@@ -425,7 +425,8 @@ class CorticalColumnCell(BaseCell):
         # Six RNN sub-cells (four in the feedforward reduction: the deep
         # readout nodes would be unobservable sinks there, see class doc).
         # The family defaults are the ones the NCP layers use (CfC family:
-        # no backbone), so the two sparse wirings share the sub-cell maths.
+        # one backbone layer), so the two sparse wirings share the sub-cell
+        # maths.
         subcell_nodes = ['L4', 'L23', 'L5IT', 'L5ET']
         if not self._feedforward_only:
             subcell_nodes += ['L6CC', 'L6CT']
