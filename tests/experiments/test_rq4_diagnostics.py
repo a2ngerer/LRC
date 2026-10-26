@@ -46,8 +46,11 @@ def test_lv_diagnostics_keys_and_training_unchanged(tmp_path, monkeypatch):
         assert g['eff_lr_mean'][-1] > 0
     (layer,) = diag['state_norm'].values()
     assert len(layer['mean']) == 3 and layer['max'][0] >= layer['mean'][0] > 0
-    # tau starts at 1 and ode_unfolds is 1: rate = dt at step 0
-    assert diag['ctrnn_rate']['max_rate'][0] == pytest.approx(on['dt'])
+    # tau starts at 1 and the runner passes --ode-unfolds to ctrnn (#56):
+    # rate = dt / ode_unfolds at step 0
+    assert on['ode_unfolds'] == 6
+    assert diag['ctrnn_rate']['max_rate'][0] == pytest.approx(
+        on['dt'] / on['ode_unfolds'])
     assert diag['ctrnn_rate']['n_above_1'] == [0, 0, 0]
 
 
