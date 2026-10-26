@@ -211,6 +211,9 @@ def main():
                     help="CfC-family backbone depth for EVERY wiring (overrides "
                          "the dense default 1 and the ncp/cncp family default 0); "
                          "default: unchanged per-wiring behaviour")
+    ap.add_argument("--head-activation", default="none", choices=("none", "tanh"),
+                    help="activation on the ff1/ff2 heads of the CfC-family cells "
+                         "(bb0 attribution control); default: linear heads")
     ap.add_argument("--verbose", type=int, default=0)
     ap.add_argument("--probe-stability", action="store_true",
                     help="record per-state norms at init, after one step and "
@@ -228,6 +231,8 @@ def main():
     if args.cell in ("cfc_lrc", "lrc", "lrc_ar"):
         cell_kwargs["elastance_type"] = args.elastance_type
     cell_kwargs.update(backbone_override(args.cell, args.backbone_layers))
+    if args.head_activation != "none":     # non-CfC cells reject the kwarg
+        cell_kwargs["head_activation"] = args.head_activation
     bb_effective = effective_backbone_layers(args.wiring, args.cell, cell_kwargs)
     multi = multi_column_config(args)
 
@@ -274,7 +279,8 @@ def main():
         "size": args.size, "param_budget": args.param_budget,
         "budget_deviation": budget_dev, "lr": args.lr,
         "batch_size": args.batch_size, "epochs": args.epochs,
-        "backbone_layers": args.backbone_layers, **pc, **multi,
+        "backbone_layers": args.backbone_layers,
+        "head_activation": args.head_activation, **pc, **multi,
     }
     tag = result_filename(args, multi)[:-len(".json")]
     probe = None
@@ -322,6 +328,7 @@ def main():
         "budget_deviation": budget_dev, "epochs": args.epochs, "lr": args.lr,
         "backbone_layers": args.backbone_layers,
         "backbone_layers_effective": bb_effective,
+        "head_activation": args.head_activation,
         **pc, **multi, "dt": data.dt, "seq_len": data.seq_len,
         "n_test": int(data.test_x.shape[0]),
         "teacher_forced_mse": float(tf_mse), "teacher_forced_mae": float(tf_mae),

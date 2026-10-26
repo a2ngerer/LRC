@@ -35,13 +35,13 @@
 import tensorflow as tf
 
 from .base_cell import BaseCell
-from .cfc_cell import _lecun_tanh
+from .cfc_cell import _check_head_activation, _lecun_tanh
 
 
 class CfC_LRC_Cell(BaseCell):
     def __init__(self, units, backbone_units=None, backbone_layers=1, dt=1.0,
                  elastance_type='asymmetric', elastance_init_bias=1.0,
-                 elastance_gate='inner', **kwargs):
+                 elastance_gate='inner', head_activation=None, **kwargs):
         """Closed-form LRC cell: a CfC whose time-gate is modulated by a liquid
         elastance head.
 
@@ -65,6 +65,8 @@ class CfC_LRC_Cell(BaseCell):
                                  gate amplitude. Both recover CfC as eps -> 1; the two
                                  are benchmarked head-to-head (identical parameter
                                  count -- eps only changes position, not head size).
+            head_activation:     None (default, linear ff1/ff2) or 'tanh'; see
+                                 CfC_Cell. Gate and elastance heads unchanged.
         """
         super().__init__(units, **kwargs)
         if elastance_type not in ('asymmetric', 'symmetric'):
@@ -84,6 +86,7 @@ class CfC_LRC_Cell(BaseCell):
         self._elastance_type = elastance_type
         self._elastance_init_bias = elastance_init_bias
         self._elastance_gate = elastance_gate
+        self._head_activation = _check_head_activation(head_activation)
 
     def build(self, input_shape):
         # Nested tuple -> first item is the feature tensor shape (same convention as
@@ -115,13 +118,14 @@ class CfC_LRC_Cell(BaseCell):
             width = self._backbone_units
             self._backbone.append(layer)
 
-        def _head(name):
-            head = tf.keras.layers.Dense(self.units, name=name)
+        def _head(name, activation=None):
+            head = tf.keras.layers.Dense(self.units, activation=activation,
+                                         name=name)
             head.build((None, width))
             return head
 
-        self._ff1 = _head('ff1')
-        self._ff2 = _head('ff2')
+        self._ff1 = _head('ff1', self._head_activation)
+        self._ff2 = _head('ff2', self._head_activation)
         self._time_a = _head('time_a')
         self._time_b = _head('time_b')
 

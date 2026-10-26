@@ -305,3 +305,28 @@ def test_runner_records_backbone_end_to_end(tmp_path, monkeypatch):
     rec = json.loads((tmp_path / "cfc_lrc_cncp_seed0_bb1.json").read_text())
     assert rec["backbone_layers"] == 1
     assert rec["backbone_layers_effective"] == 1
+
+
+def test_runner_head_activation_reaches_every_subcell(tmp_path, monkeypatch):
+    """Tiny real run of the #24 pilot arm (cncp, bb0, tanh): the flag reaches
+    ff1/ff2 of every sub-cell (gate heads stay linear) and the JSON."""
+    built = []
+
+    def spy(*args, **kwargs):
+        built.append(build_lotka_volterra_model(*args, **kwargs))
+        return built[-1]
+
+    monkeypatch.setattr(lv_runner, "build_lotka_volterra_model", spy)
+    monkeypatch.setattr(sys, "argv", [
+        "run_lotka_volterra_benchmark.py", "--wiring", "cncp", "--cell",
+        "cfc_lrc", "--epochs", "1", "--n-trajectories", "6", "--seq-len", "6",
+        "--size", "8", "--backbone-layers", "0", "--head-activation", "tanh",
+        "--outdir", str(tmp_path)])
+    lv_runner.main()
+    cells = _cfc_cells(built[-1])
+    assert cells
+    assert {c._ff1.activation.__name__ for c in cells} == {"tanh"}
+    assert {c._ff2.activation.__name__ for c in cells} == {"tanh"}
+    assert {c._time_a.activation.__name__ for c in cells} == {"linear"}
+    rec = json.loads((tmp_path / "cfc_lrc_cncp_seed0_bb0.json").read_text())
+    assert rec["head_activation"] == "tanh"
