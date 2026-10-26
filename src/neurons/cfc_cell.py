@@ -112,8 +112,12 @@ class CfC_Cell(BaseCell):
                 else (lambda l: l(x)))
         ff1 = head(self._ff1)
         ff2 = head(self._ff2)
-        t_a = head(self._time_a)
-        t_b = head(self._time_b)
+        t_a, t_b = self._time_constants(head)
         t_interp = tf.nn.sigmoid(t_a * elapsed_time + t_b)
         new_state = ff1 * (1.0 - t_interp) + t_interp * ff2
         return new_state, [new_state]
+
+    def _time_constants(self, head):
+        """Gate time-rate t_a and bias t_b: input-dependent heads here,
+        per-unit vectors in CfCStaticCell."""
+        return head(self._time_a), head(self._time_b)

@@ -88,6 +88,7 @@ class LotkaVolterraData:
         *_traj:   (N, T+1, 2) float32  the full (prey, predator) trajectory
     Normalisation (per feature dim, z-score fit on TRAIN inputs):
         mean, std: (2,) float32   x_norm = (x_raw - mean) / std
+    t_span: the (t0, t1) the trajectories cover (system default or override).
     """
     train_x: np.ndarray
     train_t: np.ndarray
@@ -111,6 +112,7 @@ class LotkaVolterraData:
     seq_len: int
     loc_dim: int
     system: str
+    t_span: tuple
 
     def denormalise(self, x_norm: np.ndarray) -> np.ndarray:
         """Invert the z-score: (..., 2) normalised -> raw (prey, predator)."""
@@ -135,7 +137,9 @@ def _sample_initial_conditions(n: int, rng, base=BASE_Y0, spread=0.4) -> np.ndar
 def load_lotka_volterra(n_trajectories: int = 80, seq_len: int = 128,
                         split: tuple[int, int, int] | None = None,
                         spread: float = 0.4, seed: int = DATA_SEED_BASE,
-                        system: str = SYSTEM) -> LotkaVolterraData:
+                        system: str = SYSTEM,
+                        t_span: tuple[float, float] | None = None
+                        ) -> LotkaVolterraData:
     """Generate the next-step-prediction dataset for a 2D dynamical system.
 
     Args:
@@ -155,12 +159,19 @@ def load_lotka_volterra(n_trajectories: int = 80, seq_len: int = 128,
         system:         neural_ode system name (default periodic_predator_prey;
                         'duffing' is the second trajectory benchmark). The initial
                         conditions jitter around the system's canonical y0.
+        t_span:         (t0, t1) override of the system's time span (default:
+                        its _SYSTEMS entry, which stays unchanged); with seq_len
+                        it sets dt = (t1 - t0) / seq_len.
 
     Returns:
         LotkaVolterraData.
     """
     if system not in _SYSTEMS:
         raise ValueError(f"unknown system {system!r}, valid: {list(_SYSTEMS)}")
+    t_span = tuple(float(v) for v in
+                   (_SYSTEMS[system]["t_span"] if t_span is None else t_span))
+    if len(t_span) != 2 or not t_span[1] > t_span[0]:
+        raise ValueError(f"t_span {t_span} must be (t0, t1) with t1 > t0")
     if split is None:
         n_held = max(1, int(round(0.2 * n_trajectories)))
         split = (n_trajectories - 2 * n_held, n_held, n_held)
@@ -177,7 +188,8 @@ def load_lotka_volterra(n_trajectories: int = 80, seq_len: int = 128,
     trajs = np.empty((n_trajectories, data_size, 2), dtype=np.float32)
     t_grid = None
     for i, y0 in enumerate(y0s):
-        t, y = generate_dataset(system, data_size=data_size, y0=y0.tolist())
+        t, y = generate_dataset(system, data_size=data_size, y0=y0.tolist(),
+                                t_span=t_span)
         trajs[i] = y.astype(np.float32)
         t_grid = t
     dt = float(t_grid[1] - t_grid[0])
@@ -214,5 +226,5 @@ def load_lotka_volterra(n_trajectories: int = 80, seq_len: int = 128,
         train_traj=trajs[train_idx], val_traj=trajs[val_idx],
         test_traj=trajs[test_idx],
         mean=mean, std=std, dt=dt, feature_size=2, seq_len=seq_len,
-        loc_dim=RF_DIM, system=system,
+        loc_dim=RF_DIM, system=system, t_span=t_span,
     )

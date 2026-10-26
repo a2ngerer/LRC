@@ -107,7 +107,7 @@ EPS_JITTER_KAPPA_FRAC = 0.02
 
 
 def generate_dataset(name: str, data_size: int = 1000,
-                     y0=None, seed=None, jitter: bool = False
+                     y0=None, seed=None, jitter: bool = False, t_span=None
                      ) -> tuple[np.ndarray, np.ndarray]:
     """Generate a trajectory for the named ODE system.
 
@@ -130,6 +130,8 @@ def generate_dataset(name: str, data_size: int = 1000,
               kappa perturbation (sigma_kappa = 0.02*kappa). Default False keeps
               the deterministic single-trajectory path (jitter-OFF mode, also
               used for the optimizer-scatter decomposition, spec section 3.0.4).
+        t_span: optional (t0, t1) override of the system's time span (the
+              _SYSTEMS entry stays unchanged).
 
     Returns:
         t: np.ndarray, shape (data_size,)
@@ -142,6 +144,7 @@ def generate_dataset(name: str, data_size: int = 1000,
         raise ValueError(f"Unknown system '{name}'. Valid: {list(_SYSTEMS.keys())}")
 
     params = _SYSTEMS[name]
+    t_span = params['t_span'] if t_span is None else tuple(t_span)
     y0 = list(params['y0']) if y0 is None else list(y0)
     ode_func = _ODE_FUNCS[name]
 
@@ -157,11 +160,11 @@ def generate_dataset(name: str, data_size: int = 1000,
             kappa_j = kappa + rng.normal(0.0, 1.0) * (EPS_JITTER_KAPPA_FRAC * kappa)
             ode_func = _make_stiff_linear(kappa_j)
 
-    t_eval = np.linspace(params['t_span'][0], params['t_span'][1], data_size)
+    t_eval = np.linspace(t_span[0], t_span[1], data_size)
 
     sol = solve_ivp(
         ode_func,
-        params['t_span'],
+        t_span,
         y0,
         method='DOP853',
         t_eval=t_eval,
