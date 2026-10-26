@@ -20,6 +20,7 @@ import tensorflow as tf
 from src.wirings import (CorticalColumnCell, CorticalColumnV2Cell, NCPWiring,
                          multi_column_head)
 from src.wirings.tbt_cncp import TbtCorticalColumnCell
+from src.neurons.forced_rollout_cell import ForcedRolloutCell, StackedCell
 from src.tasks.person_activity.model import (
     WIRINGS, COMPOSITE_WIRINGS, DENSE3_LAYERS, MULTI_COLUMN_DEFAULTS,
     default_readout,
@@ -37,6 +38,11 @@ from src.tasks.active_sensing.model import TBT_MODES
 #   tbt_cncp        gate-only     tbt_cncp_concat  concat-only (strongest arm)
 #   tbt_cncp_noloc  no location   tbt_cncp_both    gate + concat
 LV_WIRINGS = WIRINGS + tuple(TBT_MODES)
+# Wirings whose model is (state, time) -> RNN layer(s) -> [motor slice] -> Dense
+# head and can therefore be wrapped in a ForcedRolloutCell (issue #25). The
+# tbt_cncp* arms recompute the location code from the state and cncp2_multi has
+# its own multi-column head; both keep closed_loop_rollout.
+FORCEABLE_WIRINGS = ("dense", "dense3", "ncp", "cncp", "cncp2")
 
 
 def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
@@ -152,3 +158,36 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
         metrics=[tf.keras.metrics.MeanAbsoluteError()],
     )
     return model
+
+
+def forced_rollout_model(model, alpha):
+    """Mixed-forcing view of a plain model from build_lotka_volterra_model.
+
+    The view runs the model's own recurrent core (dense3: its three RNN
+    layers as one StackedCell) and readout (ncp: motor slice + head) inside a
+    ForcedRolloutCell, so it shares every weight with ``model`` and adds none.
+    Same inputs [state, time] and output as the plain model; ``alpha`` (a
+    non-trainable tf.Variable) = 1 reproduces its teacher-forced predictions,
+    0 the closed-loop rollout. Compiled with the plain model's optimizer, loss
+    and metric, so ``--forcing mixed`` trains the view directly.
+    """
+    rnns = [l for l in model.layers if isinstance(l, tf.keras.layers.RNN)]
+    readout = [l for l in model.layers
+               if l.name in ("motor_neurons", "next_state")]
+    scale = [l for l in model.layers if l.name == "dt_scale"]  # dt_scale != 1
+    if (len(model.inputs) != 2 or not rnns
+            or len(model.layers) != 2 + len(scale) + len(rnns) + len(readout)):
+        raise ValueError("forced_rollout_model needs a (state, time) -> RNN "
+                         f"-> head model, i.e. one of {FORCEABLE_WIRINGS}")
+    core = rnns[0].cell if len(rnns) == 1 else StackedCell(
+        [l.cell for l in rnns])
+    inputs = [tf.keras.Input(shape=t.shape[1:]) for t in model.inputs]
+    state, time = inputs
+    if scale:                       # the plain model's own time rescaling
+        time = scale[0](time)
+    out = tf.keras.layers.RNN(ForcedRolloutCell(core, readout, alpha),
+                              return_sequences=True)((state, time))
+    view = tf.keras.Model(inputs=inputs, outputs=out)
+    view.compile(optimizer=model.optimizer, loss=model.loss,
+                 metrics=[tf.keras.metrics.MeanAbsoluteError()])
+    return view
