@@ -2,7 +2,8 @@
 # Sync code and submit the partial-view voting-committee benchmark
 # (cluster/committee.sbatch) as ONE SLURM job into its own run folder under
 # 04_column_voting (see cluster/_run.sh for the layout). The person-activity
-# CSV under data/person/ is rsynced with the code (not excluded).
+# CSV under data/person/ is rsynced with the code when present locally and
+# protected on the cluster otherwise (cluster/README.md, "Dataset").
 #
 #   ./cluster/submit_committee.sh <label>
 #   CO_WIRINGS="cncp" CO_KS="1 4" CO_SEEDS="0" ./cluster/submit_committee.sh <label>
@@ -29,4 +30,5 @@ run_count "${CO_WIRINGS:-cncp ncp dense}" "${CO_KS:-1 2 4}" "${CO_SEEDS:-0 1 2}"
 
 run_prepare 04_column_voting   # reserve the run folder first, then touch the shared code tree
 run_rsync
+run_require_dataset
 run_sbatch cluster/committee.sbatch "${CO_ENV}"

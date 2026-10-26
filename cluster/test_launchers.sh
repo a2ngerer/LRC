@@ -41,19 +41,30 @@ check tspan "$out" "LV_SYSTEM='multitimescale' LV_TSPAN='0 10'"
 
 out="$(BENCH=00_canary ./cluster/submit_lotka_volterra.sh -n lv-smoke 2>&1)"
 check canary "$out" "00_canary/runs/${today}_lv-smoke"
+if grep -q "test -f" <<<"$out"; then
+    echo "FAIL [canary]: LV launcher checks the PA dataset"; fail=1
+fi
 
 out="$(PA_EPOCHS=1 ./cluster/submit_person_activity.sh -n smoke 2>&1)"
-check pa "$out" "03_person_activity/runs/${today}_smoke" "PA_EPOCHS='1'" "cluster/person_activity.sbatch"
+check pa "$out" "03_person_activity/runs/${today}_smoke" "PA_EPOCHS='1'" "cluster/person_activity.sbatch" \
+    "--delete --copy-links --filter=P data/" \
+    "[dry-run] ssh ${CLUSTER_HOST} test -f wk/code/data/person/ConfLongDemo_JSI.txt"
 
 out="$(CO_KS='1 4' ./cluster/submit_committee.sh -n smoke 2>&1)"
-check committee "$out" "04_column_voting/runs/${today}_smoke" "CO_KS='1 4'" "cluster/committee.sbatch"
+check committee "$out" "04_column_voting/runs/${today}_smoke" "CO_KS='1 4'" "cluster/committee.sbatch" \
+    "test -f wk/code/data/person/ConfLongDemo_JSI.txt"
 
 out="$(BENCH=00_canary GH_TASK=lv GH_CELL=cfc_lrc GH_WIRING=dense3 GH_EXTRA="--epochs 2 --grid-lr 1e-3 3e-3 --grid-clip off" ./cluster/submit_grid_hpo.sh --dry-run canary 2>&1)"
 check grid_hpo "$out" "00_canary/runs/${today}_canary" "GH_TASK='lv'" \
     "GH_EXTRA='--epochs 2 --grid-lr 1e-3 3e-3 --grid-clip off'" "cluster/grid_hpo.sbatch"
 
 out="$(GH_TASK=pa GH_CELL=gru GH_WIRING=ncp ./cluster/submit_grid_hpo.sh -n smoke 2>&1)"
-check grid_hpo_pa "$out" "03_person_activity/runs/${today}_smoke"
+check grid_hpo_pa "$out" "03_person_activity/runs/${today}_smoke" \
+    "test -f wk/code/data/person/ConfLongDemo_JSI.txt"
+
+# sync_to_cluster.sh has no dry run: check the filter statically.
+grep -qF -- "--filter='P data/'" cluster/sync_to_cluster.sh \
+    || { echo "FAIL [sync_to_cluster]: data/ not protected from --delete"; fail=1; }
 
 if out="$(./cluster/submit_committee.sh -n 'bad label' 2>&1)"; then
     echo "FAIL [label]: accepted a label with a space"; fail=1

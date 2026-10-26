@@ -40,4 +40,5 @@ run_count "${PA_CELLS:-cfc_lrc gru}" "${PA_WIRINGS:-ncp cncp}" "${PA_SEEDS:-0 1 
 
 run_prepare 03_person_activity   # reserve the run folder first, then touch the shared code tree
 run_rsync
+run_require_dataset
 run_sbatch cluster/person_activity.sbatch "${PA_ENV}"

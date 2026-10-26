@@ -184,3 +184,20 @@ by hand afterwards) and the `Outcome` line once the run is evaluated. Fetch with
 `./cluster/fetch_run.sh <NN_benchmark> <run>` (mirrors to
 `results/<NN_benchmark>/<run>/`); the old `fetch_*.sh` are thin wrappers.
 `cluster/test_launchers.sh` checks the dry-run paths offline.
+
+## Dataset (Person Activity)
+
+The Person Activity CSV is not tracked in git. On the cluster it lives inside
+the code tree at `<CLUSTER_REPO_DIR>/data/person/ConfLongDemo_JSI.txt` and is
+not part of the rsync'd tree: `run_rsync` (`cluster/_run.sh`) and
+`sync_to_cluster.sh` pass `--filter='P data/'`, which protects `data/` on the
+cluster from `--delete`. A launch from a checkout without `data/` (a fresh
+worktree) leaves the cluster copy untouched; a checkout that has `data/`
+(e.g. the `data` symlink to the main checkout, followed by `--copy-links`)
+still updates it. `submit_person_activity.sh`, `submit_committee.sh` and
+`submit_grid_hpo.sh` with `GH_TASK=pa` check the file with `ssh test -f`
+after the rsync and abort before `sbatch` when it is missing. Copy it once:
+
+```bash
+rsync -a data/person/ datalab:masterarbeit/code/data/person/
+```

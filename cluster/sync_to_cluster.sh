@@ -9,6 +9,7 @@ source cluster/config.sh
 
 echo "Syncing $(pwd) -> ${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/"
 rsync -avz --delete \
+    --filter='P data/' \
     --exclude='.git/' \
     --exclude='.venv/' \
     --exclude='results/' \
