@@ -203,6 +203,7 @@ DEFAULTS = dict(n_iters=2000, batch_size=16, batch_time=16, lr=1e-3,
 # and that RQ2/RQ5 isolate. Other cells take no extra kwargs.
 CELL_KWARGS = {
     'lrc': dict(elastance_type='asymmetric'),
+    'lrc_ar': dict(elastance_type='asymmetric'),
     'mm_lrc': dict(elastance_type='asymmetric'),
     # cfc_lrc: liquid-elastance gate, asymmetric to match lrc/mm_lrc.
     'cfc_lrc': dict(elastance_type='asymmetric'),

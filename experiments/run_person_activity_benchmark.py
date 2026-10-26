@@ -49,6 +49,7 @@ import numpy as np
 # Allow running as a plain script (``src`` is the installed package).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.benchmark.registry import cell_kwargs as registry_cell_kwargs  # noqa: E402
 from src.evaluation.metrics import confusion_matrix, macro_f1  # noqa: E402
 from src.tasks.person_activity.datasets import SPLITS  # noqa: E402
 from src.tasks.person_activity.model import (  # noqa: E402
@@ -58,18 +59,6 @@ from src.tasks.person_activity.model import (  # noqa: E402
 
 DEFAULT_SIZE = 64
 BUDGET_TOLERANCE = 0.05
-
-# Per-cell constructor kwargs, mirroring CELL_KWARGS in run_benchmark.py:
-# the numerical LRC family needs elastance_type='asymmetric' (its 'interp'
-# default disables the elastance mechanism); cfc_lrc already defaults to
-# 'asymmetric', listed here for explicitness. run() adds ode_unfolds from
-# --ode-unfolds for the numerical cells (lrc, lrc_pm, ltc, mm_*; issue #28).
-CELL_KWARGS = {
-    "lrc": dict(elastance_type="asymmetric"),
-    "lrc_pm": dict(elastance_type="asymmetric"),
-    "cfc_lrc": dict(elastance_type="asymmetric"),
-}
-
 
 def result_tag(args, multi=None):
     """Run tag (log, wandb name, result JSON stem); --backbone-layers adds
@@ -114,7 +103,10 @@ def run(args):
     counts = np.bincount(data.test_y.flatten(), minlength=data.num_classes)
     majority_baseline = float(counts.max() / counts.sum())
 
-    cell_kwargs = dict(CELL_KWARGS.get(args.cell, {}))
+    # Per-cell constructor kwargs from the registry (elastance_type for the
+    # LRC family, elastance_gate for cfc_lrc_outer); ode_unfolds added below
+    # for the numerical cells (issue #28).
+    cell_kwargs = registry_cell_kwargs(args.cell, args.elastance_type)
     cell_kwargs.update(backbone_override(args.cell, args.backbone_layers))
     if args.head_activation != "none":     # non-CfC cells reject the kwarg
         cell_kwargs["head_activation"] = args.head_activation
@@ -282,6 +274,7 @@ def run(args):
                           seq_len=data.seq_len, lr=args.lr,
                           dt_feature=dt_feature, dt_scale=args.dt_scale,
                           self_recurrent=args.self_recurrent, **multi),
+            "elastance_type": cell_kwargs.get("elastance_type"),
             "cell_kwargs": cell_kwargs}},
     }
 
@@ -348,6 +341,9 @@ def main():
                    help="explicit Euler sub-steps per input step for the "
                         "numerical ODE cells (ltc, lrc, lrc_pm, mm_ltc, "
                         "mm_lrc); ignored for closed-form and discrete cells")
+    p.add_argument("--elastance-type", default=None,
+                   help="override the registry elastance_type of the "
+                        "LRC-family cells; default: the registry value")
     p.add_argument("--outdir", default="results/person_activity")
     p.add_argument("--data-path", default=None,
                    help="override the ConfLongDemo_JSI.txt location")
