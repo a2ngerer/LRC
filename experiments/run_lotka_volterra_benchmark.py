@@ -71,7 +71,8 @@ from src.neurons.forced_rollout_cell import AlphaSchedule
 from src.tasks.person_activity.model import (
     backbone_override, backbone_suffix, effective_backbone_layers,
     effective_self_recurrent, add_multi_column_args, multi_column_config,
-    multi_column_suffix, ode_unfolds_override)
+    multi_column_suffix, ode_unfolds_override, effective_ode_unfolds,
+    DEFAULT_ODE_UNFOLDS)
 from src.tasks.active_sensing.model import TBT_MODES
 from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
 from src.benchmark.tracking import keras_callbacks, track
@@ -322,10 +323,11 @@ def main():
                     help="override the registry elastance_type of the "
                          "LRC-family cells (RQ2/RQ5 mechanism); default: the "
                          "registry value ('asymmetric')")
-    ap.add_argument("--ode-unfolds", type=int, default=6,
+    ap.add_argument("--ode-unfolds", type=int, default=DEFAULT_ODE_UNFOLDS,
                     help="explicit Euler sub-steps per input step for the "
-                         "numerical ODE cells (ltc, lrc, lrc_pm, mm_ltc, "
-                         "mm_lrc); ignored for closed-form and discrete cells")
+                         "numerical ODE cells (ltc, lrc, lrc_pm, ctrnn, "
+                         "mm_ltc, mm_lrc); ignored for closed-form and discrete "
+                         "cells")
     ap.add_argument("--dt-scale", type=float, default=1.0,
                     help="multiply the elapsed time by this factor before it "
                          "reaches any cell; 1.0 = unchanged")
@@ -522,6 +524,7 @@ def main():
             "n_trajectories": args.n_trajectories, "seq_len": args.seq_len,
             "data_seed": data_seed, "split": split,
             "param_budget": args.param_budget, "backbone_layers": bb_effective,
+            "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
             "forcing": args.forcing,
             "alpha_min": args.alpha_min if mixed else None,
             "build": dict(wiring=args.wiring, cell=args.cell, size=args.size,

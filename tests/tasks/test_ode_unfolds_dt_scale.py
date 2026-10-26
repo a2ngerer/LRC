@@ -1,12 +1,14 @@
 # tests/tasks/test_ode_unfolds_dt_scale.py
 # Explicit ODE sub-steps and the task-level dt scale of the LV / PA runners
-# (issue #28):
-#   - --ode-unfolds reaches the numerical ODE cells (ltc, lrc, lrc_pm, mm_ltc,
-#     mm_lrc) and no closed-form or discrete cell;
+# (issues #28, #56):
+#   - --ode-unfolds reaches the numerical ODE cells (ltc, lrc, lrc_pm, ctrnn,
+#     mm_ltc, mm_lrc) and no closed-form or discrete cell; ctrnn gets the
+#     runner default of 6 sub-steps under ncp and dense like lrc;
 #   - dt_scale=2.0 doubles the one-step LRC increment (halves the effective
 #     time constant) and equals feeding 2 * dt, for every cell and the dt
 #     feature; the default 1.0 adds no layer;
-#   - both runners record ode_unfolds and dt_scale in the result JSON.
+#   - both runners record ode_unfolds and dt_scale in the result JSON, and
+#     every runner (LV, PA, committee) reports config.effective.ode_unfolds.
 import json
 import sys
 
@@ -14,11 +16,15 @@ import numpy as np
 import pytest
 import tensorflow as tf
 
+from experiments import run_committee_benchmark as co_runner
 from experiments import run_lotka_volterra_benchmark as lv_runner
 from experiments import run_person_activity_benchmark as pa_runner
 from src.tasks.lotka_volterra.model import build_lotka_volterra_model
-from src.tasks.person_activity.model import (build_person_activity_model,
+from src.tasks.person_activity.model import (DEFAULT_ODE_UNFOLDS,
+                                             build_person_activity_model,
+                                             effective_ode_unfolds,
                                              ode_unfolds_override)
+from tests.benchmark.test_checkpoints import _pa_stub
 from tests.tasks.person_activity.test_person_activity import _write_stub
 
 ASYM = dict(elastance_type="asymmetric")
@@ -29,11 +35,13 @@ def _rnn_cells(model):
 
 
 def _unfolds(cell):
-    return getattr(getattr(cell, "_inner", cell), "_ode_unfolds", None)
+    cell = getattr(cell, "_inner", cell)
+    return getattr(cell, "_ode_unfolds", getattr(cell, "ode_unfolds", None))
 
 
 @pytest.mark.parametrize("wiring", ["dense", "ncp"])
-@pytest.mark.parametrize("cell", ["ltc", "lrc", "lrc_pm", "mm_ltc", "mm_lrc"])
+@pytest.mark.parametrize("cell", ["ltc", "lrc", "lrc_pm", "ctrnn", "mm_ltc",
+                                  "mm_lrc"])
 def test_ode_unfolds_reaches_the_numerical_cells(cell, wiring):
     kw = ode_unfolds_override(cell, 6)
     assert kw == {"ode_unfolds": 6}
@@ -46,6 +54,33 @@ def test_ode_unfolds_reaches_the_numerical_cells(cell, wiring):
                                   "gru", "lstm"])
 def test_ode_unfolds_skips_closed_form_and_discrete_cells(cell):
     assert ode_unfolds_override(cell, 6) == {}
+
+
+@pytest.mark.parametrize("build,features", [(build_person_activity_model, 7),
+                                            (build_lotka_volterra_model, 2)])
+@pytest.mark.parametrize("wiring", ["ncp", "dense"])
+def test_ctrnn_runs_the_runner_default_substeps(build, features, wiring):
+    """ctrnn follows the lrc path (issue #56): the runner default of 6 Euler
+    sub-steps under ncp (the constructor default 1 would keep the motor slice
+    from seeing the current input) and the same documented default on
+    dense."""
+    assert DEFAULT_ODE_UNFOLDS == 6
+    kw = ode_unfolds_override("ctrnn", DEFAULT_ODE_UNFOLDS)
+    assert effective_ode_unfolds("ctrnn", kw) == 6
+    model = build(wiring, "ctrnn", size=8, seed=0, **kw)
+    model([np.zeros((1, 32, features), np.float32),
+           np.ones((1, 32, 1), np.float32)])
+    assert [_unfolds(c) for c in _rnn_cells(model)] == [6]
+
+
+@pytest.mark.parametrize("cell,expected", [
+    ("ctrnn", 1), ("lrc", 1), ("ltc", 6), ("mm_ltc", 6), ("mm_lrc", 1),
+    ("cfc_lrc", None), ("gru", None)])
+def test_effective_ode_unfolds_falls_back_to_the_constructor_default(
+        cell, expected):
+    assert effective_ode_unfolds(cell, {}) == expected
+    if expected is not None:
+        assert effective_ode_unfolds(cell, {"ode_unfolds": 3}) == 3
 
 
 def test_ode_unfolds_rejects_zero():
@@ -103,6 +138,7 @@ def test_dt_scale_equals_scaling_the_time_input(build, wiring, cell, kw,
 
 @pytest.mark.parametrize("flags,cell,unfolds,dt_scale", [
     ([], "lrc", 6, 1.0),                                      # defaults
+    ([], "ctrnn", 6, 1.0),                                    # issue #56
     (["--ode-unfolds", "2", "--dt-scale", "0.5"], "lrc", 2, 0.5),
     (["--ode-unfolds", "2"], "cfc_lrc", None, 1.0),           # closed form
 ])
@@ -118,6 +154,7 @@ def test_pa_runner_records_ode_unfolds_and_dt_scale(flags, cell, unfolds,
     rec = json.loads((tmp_path / f"{cell}_dense_seed0.json").read_text())
     assert rec["ode_unfolds"] == unfolds
     assert rec["cell_kwargs"].get("ode_unfolds") == unfolds
+    assert rec["config"]["effective"]["ode_unfolds"] == unfolds
     assert rec["dt_scale"] == dt_scale
 
 
@@ -130,3 +167,29 @@ def test_lv_runner_records_ode_unfolds_and_dt_scale(tmp_path, monkeypatch):
     lv_runner.main()
     rec = json.loads((tmp_path / "lrc_dense_seed0.json").read_text())
     assert rec["ode_unfolds"] == 2 and rec["dt_scale"] == 0.5
+
+
+def test_lv_runner_reports_effective_ode_unfolds_for_ctrnn(tmp_path,
+                                                          monkeypatch):
+    monkeypatch.setattr(sys, "argv", [
+        "run_lotka_volterra_benchmark.py", "--wiring", "ncp", "--cell",
+        "ctrnn", "--epochs", "1", "--n-trajectories", "6", "--seq-len", "6",
+        "--size", "4", "--outdir", str(tmp_path)])
+    lv_runner.main()
+    rec = json.loads((tmp_path / "ctrnn_ncp_seed0.json").read_text())
+    assert rec["ode_unfolds"] == rec["config"]["effective"]["ode_unfolds"] == 6
+
+
+def test_committee_runner_reports_effective_ode_unfolds(tmp_path, monkeypatch):
+    """The committee runner has no --ode-unfolds: it reports the constructor
+    default the ctrnn cells actually run."""
+    monkeypatch.setattr(co_runner, "load_person_activity", _pa_stub)
+    monkeypatch.setattr(sys, "argv", [
+        "run_committee_benchmark.py", "--cell", "ctrnn", "--n-columns", "2",
+        "--size", "8", "--epochs", "1", "--seq-len", "32", "--drop-fracs",
+        "0.0", "--drop-seeds", "0", "--no-save-weights", "--outdir",
+        str(tmp_path)])
+    co_runner.main()
+    (path,) = tmp_path.glob("*.json")
+    rec = json.loads(path.read_text())
+    assert rec["config"]["effective"]["ode_unfolds"] == 1
