@@ -98,6 +98,9 @@ def main():
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--seq-len", type=int, default=32)
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--clipnorm", type=float, default=None,
+                    help="clip the global gradient norm to this value (the "
+                         "optimizer's global_clipnorm); default: no clipping")
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--view-mode", default="partition",
                     choices=("partition", "noisy"))
@@ -209,6 +212,7 @@ def main():
         print(f"budget {args.param_budget}: size={args.size} "
               f"params_effective={n_eff} (dev {budget_dev:.1%}){flag}")
     model = build(args.size)
+    model.optimizer.global_clipnorm = args.clipnorm   # None = no clipping
     model.fit([views(d.train_x), d.train_t], d.train_y,
               validation_data=([views(d.test_x), d.test_t], d.test_y),
               epochs=args.epochs, batch_size=args.batch_size,
@@ -249,7 +253,9 @@ def main():
         "task": "person_activity", "wiring": args.wiring,
         "n_columns": args.n_columns, "size": args.size,
         "param_budget": args.param_budget, "budget_deviation": budget_dev,
-        "cell": args.cell, "seed": args.seed, "epochs": args.epochs, **pc,
+        "cell": args.cell, "seed": args.seed, "epochs": args.epochs,
+        "clipnorm": args.clipnorm,
+        "clip_mode": None if args.clipnorm is None else "global", **pc,
         "feature_size": F, "num_classes": C, "view_mode": args.view_mode,
         "overlap": args.overlap, "train_drop": args.train_drop,
         "train_noise": args.train_noise, "test_corruption": args.test_corruption,

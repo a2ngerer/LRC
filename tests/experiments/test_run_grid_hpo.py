@@ -2,7 +2,8 @@
 # Fixed-grid HPO driver (issue a2ngerer/LRC#22): stage 1/2 selection, the edge
 # rule, the tie-break, resume and hpo_selection.json, driven through a fake
 # runner (fake_grid_runner.sh) that reads its metrics from a score table; plus
-# the runners' --clipnorm reaching the optimizer (tiny fits).
+# the tuning-seed guard and the runners' --clipnorm reaching the optimizer as
+# global_clipnorm (tiny fits, issue #58).
 import json
 import subprocess
 import sys
@@ -11,27 +12,29 @@ from pathlib import Path
 import pytest
 
 import src.tasks.person_activity as pa_pkg
+from experiments import run_committee_benchmark as co_runner
 from experiments import run_lotka_volterra_benchmark as lv_runner
 from experiments import run_person_activity_benchmark as pa_runner
 from experiments.run_grid_hpo import GRID_LR, main
-from tests.benchmark.test_checkpoints import _capture_builds, _pa_stub
+from tests.benchmark.test_checkpoints import T, _capture_builds, _pa_stub
 
 FAKE = Path(__file__).with_name('fake_grid_runner.sh')
 
 
-def _hpo(tmp_path, monkeypatch, table, *extra, task='lv'):
+def _hpo(tmp_path, monkeypatch, table, *extra, task='lv', seeds=(100, 101)):
     """Run the driver on the fake runner. table: {(lr, clip): (score_s0,
-    score_s1[, tie_break])} for the tuning seeds 0 and 1. Returns the
+    score_s1[, tie_break])} for the tuning seeds (default 100 and 101). Returns the
     selection and the logged fits ([lr, clip, seed, args...] per fit)."""
     rows = [f"{lr:g} {'off' if clip is None else f'{clip:g}'} {seed} "
-            f"{scores[seed]} {scores[2] if len(scores) > 2 else 0.5}"
-            for (lr, clip), scores in table.items() for seed in (0, 1)]
+            f"{scores[i]} {scores[2] if len(scores) > 2 else 0.5}"
+            for (lr, clip), scores in table.items()
+            for i, seed in enumerate(seeds)]
     (tmp_path / 'scores.txt').write_text('\n'.join(rows) + '\n')
     monkeypatch.setenv('FAKE_SCORES', str(tmp_path / 'scores.txt'))
     monkeypatch.setenv('FAKE_LOG', str(tmp_path / 'fits.log'))
     out = tmp_path / 'hpo'
     main(['--task', task, '--cell', 'cfc_lrc', '--wiring', 'dense3',
-          '--tuning-seeds', '0', '1', '--outdir', str(out),
+          '--tuning-seeds', *map(str, seeds), '--outdir', str(out),
           '--runner', f'bash {FAKE}', *extra])
     log = tmp_path / 'fits.log'
     fits = [line.split() for line in log.read_text().splitlines()]
@@ -45,29 +48,30 @@ def _table(best=()):
 
 
 def test_stage1_top2_then_mean_over_both_seeds(tmp_path, monkeypatch):
-    # stage 1 (seed 0) ranks 1e-3/off first, the mean over seeds 0 and 1
+    # stage 1 (seed 100) ranks 1e-3/off first, the mean over seeds 100 and 101
     # flips the order: 3e-3/clip 1.0 wins (54 > 50).
     table = _table({(1e-3, None): (60, 40), (3e-3, 1.0): (58, 50)})
     sel, fits = _hpo(tmp_path, monkeypatch, table, '--system', 'duffing',
                      '--param-budget', '4000', '--epochs', '2')
     assert len(fits) == 8 + 2
-    assert sorted(tuple(f[:3]) for f in fits if f[2] == '1') == [
-        ('0.001', 'off', '1'), ('0.003', '1', '1')]
+    assert sorted(tuple(f[:3]) for f in fits if f[2] == '101') == [
+        ('0.001', 'off', '101'), ('0.003', '1', '101')]
     assert (sel['lr'], sel['clipnorm']) == (3e-3, 1.0)
     assert [(r['lr'], r['clipnorm'], r['score']) for r in sel['ranking']] == [
         (3e-3, 1.0, 54), (1e-3, None, 50)]
-    assert sel['ranking'][0]['scores'] == {'0': 58, '1': 50}
+    assert sel['ranking'][0]['scores'] == {'100': 58, '101': 50}
     # the fields aggregate_results.py --hpo-dir (#29) reads
     assert (sel['task'], sel['system'], sel['cell'], sel['wiring']) == (
         'lv', 'duffing', 'cfc_lrc', 'dense3')
     assert sel['grid_extended'] is False and sel['lr_at_grid_edge'] is False
     assert sel['select_on'] == 'rollout_metrics_val.vpt_median'
     assert sel['tie_break'] == 'rollout_metrics_val.nrmse_32_median'
-    assert sel['tuning_seeds'] == [0, 1] and sel['data_seeds'] == [1000, 1001]
+    assert sel['tuning_seeds'] == [100, 101]
+    assert sel['data_seeds'] == [1100, 1101]
     assert len(sel['candidates']) == 10
     assert sel['runner_args'] == ['--epochs', '2']
     # every fit in its own folder; LV tuning draws; flags reach the runner
-    assert (tmp_path / 'hpo' / 'lr0.003_clip1_seed1' / 'fake.json').is_file()
+    assert (tmp_path / 'hpo' / 'lr0.003_clip1_seed101' / 'fake.json').is_file()
     for f in fits:
         args = ' '.join(f[3:])
         assert '--data-seed-offset' in args and '--param-budget 4000' in args
@@ -93,8 +97,8 @@ def test_edge_rule_extends_once(edge, ext, ext_scores, lr, at_edge,
     assert sel['lr'] == lr and sel['grid_lr'] == sorted([*GRID_LR, ext])
     # stage 1 reruns the new point only (both clip settings), no fit twice
     assert sorted(tuple(f[:3]) for f in fits if f[0] == f'{ext:g}'
-                  and f[2] == '0') == [(f'{ext:g}', '1', '0'),
-                                       (f'{ext:g}', 'off', '0')]
+                  and f[2] == '100') == [(f'{ext:g}', '1', '100'),
+                                       (f'{ext:g}', 'off', '100')]
     assert len({tuple(f[:3]) for f in fits}) == len(fits)
     assert len(fits) == 8 + 2 + 2 + (1 if lr == ext else 0)
 
@@ -132,24 +136,50 @@ def test_failed_fit_aborts(tmp_path, monkeypatch):
         _hpo(tmp_path, monkeypatch, table)
 
 
-def test_runners_apply_clipnorm(tmp_path, monkeypatch):
+def test_tuning_seeds_must_avoid_final_seeds(tmp_path, monkeypatch, capsys):
+    # a tuning seed in 0..9 would share initialisation (and on PA the data)
+    # with a final replicate: refused before any fit unless overridden
+    with pytest.raises(SystemExit):
+        _hpo(tmp_path, monkeypatch, _table(), seeds=(9, 101))
+    assert 'final seed range 0..9' in capsys.readouterr().err
+    assert not (tmp_path / 'fits.log').exists()
+    sel, _ = _hpo(tmp_path, monkeypatch, _table({(1e-3, None): (1, 1)}),
+                  '--allow-seed-overlap', seeds=(0, 1))
+    assert sel['tuning_seeds'] == [0, 1] and sel['runner_args'] == []
+
+
+def _assert_global_clip(built, path, value):
+    opt = built[-1][0].optimizer
+    assert opt.global_clipnorm == value and opt.clipnorm is None
+    rec = json.loads(path.read_text())
+    assert (rec['clipnorm'], rec['clip_mode']) == (value, 'global')
+
+
+def test_runners_apply_global_clipnorm(tmp_path, monkeypatch):
     built = _capture_builds(monkeypatch, lv_runner, 'build_lotka_volterra_model')
     monkeypatch.setattr(sys, 'argv', [
         'run_lotka_volterra_benchmark.py', '--wiring', 'dense', '--cell', 'gru',
         '--size', '4', '--epochs', '1', '--n-trajectories', '10',
         '--seq-len', '8', '--clipnorm', '1.0', '--outdir', str(tmp_path)])
     lv_runner.main()
-    assert built[-1][0].optimizer.clipnorm == 1.0
-    assert json.loads((tmp_path / 'gru_dense_seed0.json').read_text())[
-        'clipnorm'] == 1.0
+    _assert_global_clip(built, tmp_path / 'gru_dense_seed0.json', 1.0)
 
-    built = _capture_builds(monkeypatch, pa_pkg, 'build_person_activity_model')
     monkeypatch.setattr(pa_pkg, 'load_person_activity', _pa_stub)
+    built = _capture_builds(monkeypatch, pa_pkg, 'build_person_activity_model')
     monkeypatch.setattr(sys, 'argv', [
         'run_person_activity_benchmark.py', '--wiring', 'dense', '--cell', 'gru',
         '--size', '4', '--epochs', '1', '--clipnorm', '0.5',
         '--outdir', str(tmp_path / 'pa')])
     pa_runner.main()
-    assert built[-1][0].optimizer.clipnorm == 0.5
-    assert json.loads((tmp_path / 'pa' / 'gru_dense_seed0.json').read_text())[
-        'clipnorm'] == 0.5
+    _assert_global_clip(built, tmp_path / 'pa' / 'gru_dense_seed0.json', 0.5)
+
+    monkeypatch.setattr(co_runner, 'load_person_activity', _pa_stub)
+    built = _capture_builds(monkeypatch, co_runner, 'build_committee_model')
+    monkeypatch.setattr(sys, 'argv', [
+        'run_committee_benchmark.py', '--n-columns', '2', '--size', '8',
+        '--epochs', '1', '--seq-len', str(T), '--drop-fracs', '0.0',
+        '--drop-seeds', '0', '--clipnorm', '2.0',
+        '--outdir', str(tmp_path / 'co')])
+    co_runner.main()
+    (path,) = (tmp_path / 'co').glob('*.json')
+    _assert_global_clip(built, path, 2.0)

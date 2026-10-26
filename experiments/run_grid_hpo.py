@@ -29,7 +29,7 @@ candidates (every fit with its metrics and result path).
 
 Usage:
     uv run python experiments/run_grid_hpo.py --task lv --cell cfc_lrc \
-        --wiring dense3 --param-budget 4000 --tuning-seeds 0 1 --outdir D
+        --wiring dense3 --param-budget 4000 --tuning-seeds 100 101 --outdir D
 """
 from __future__ import annotations
 
@@ -46,6 +46,7 @@ GRID_LR = (1e-4, 1e-3, 3e-3, 1e-2)
 GRID_CLIP = (None, 1.0)
 EDGE_EXTENSION = {1e-4: 3e-5, 1e-2: 3e-2}
 TOP_K = 2
+FINAL_SEEDS = range(10)                 # the final replicates; tuning stays out
 RUNNERS = {"lv": "experiments/run_lotka_volterra_benchmark.py",
            "pa": "experiments/run_person_activity_benchmark.py"}
 # task -> (primary key, higher wins), tie-break key (lower wins)
@@ -175,6 +176,8 @@ def main(argv=None):
     ap.add_argument("--param-budget", type=int, default=None)
     ap.add_argument("--tuning-seeds", type=int, nargs=2, required=True,
                     metavar=("S1", "S2"))
+    ap.add_argument("--allow-seed-overlap", action="store_true",
+                    help="allow tuning seeds in the final seed range 0..9")
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--grid-lr", type=float, nargs="+", default=list(GRID_LR))
     ap.add_argument("--grid-clip", type=_clip, nargs="+",
@@ -191,6 +194,10 @@ def main(argv=None):
         ap.error("--system applies to --task lv only")
     if args.tuning_seeds[0] == args.tuning_seeds[1]:
         ap.error("--tuning-seeds needs two different seeds")
+    overlap = [s for s in args.tuning_seeds if s in FINAL_SEEDS]
+    if overlap and not args.allow_seed_overlap:
+        ap.error(f"--tuning-seeds {overlap} lie in the final seed range 0..9 "
+                 "(e.g. use 100 101) or pass --allow-seed-overlap")
     if args.minimize and not args.select_on:
         ap.error("--minimize needs --select-on")
 

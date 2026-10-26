@@ -313,8 +313,8 @@ def main():
                           "(closest size on the arm's own knob)")
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--clipnorm", type=float, default=None,
-                    help="clip every gradient tensor to this L2 norm (the "
-                         "optimizer's clipnorm); default: no clipping")
+                    help="clip the global gradient norm to this value (the "
+                         "optimizer's global_clipnorm); default: no clipping")
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--n-trajectories", type=int, default=80)
     ap.add_argument("--seq-len", type=int, default=128)
@@ -405,7 +405,7 @@ def main():
         print(f"budget {args.param_budget}: size={args.size} "
               f"params_effective={n_eff} (dev {budget_dev:.1%}){flag}")
     model = build(args.size)
-    model.optimizer.clipnorm = args.clipnorm      # None = no clipping
+    model.optimizer.global_clipnorm = args.clipnorm   # None = no clipping
     pc = param_counts(model)
     params = pc['params_effective']
     print(f"{args.wiring}/{args.cell} seed {args.seed}: size {args.size}, "
@@ -495,6 +495,7 @@ def main():
         "size": args.size, "param_budget": args.param_budget,
         "budget_deviation": budget_dev, "epochs": args.epochs, "lr": args.lr,
         "clipnorm": args.clipnorm,
+        "clip_mode": None if args.clipnorm is None else "global",
         "backbone_layers": args.backbone_layers,
         "backbone_layers_effective": bb_effective, "self_recurrent": self_rec,
         "head_activation": args.head_activation,

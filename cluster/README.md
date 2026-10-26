@@ -150,9 +150,12 @@ GH_TASK=lv GH_CELL=cfc_lrc GH_WIRING=ncp GH_SYSTEM=duffing ./cluster/submit_grid
 GH_TASK=pa GH_CELL=gru GH_WIRING=ncp ./cluster/submit_grid_hpo.sh --dry-run <label>
 ```
 
-`GH_TUNING_SEEDS` (default `0 1`), `GH_PARAM_BUDGET` (default 4000 lv / 30000
-pa) and `GH_EXTRA` (driver flags such as `--grid-lr`, `--grid-clip`, and runner
-flags such as `--epochs`, forwarded) are optional. `run_lotka_volterra_hpo.py`
+`GH_TUNING_SEEDS` (default `100 101`, disjoint from the final seeds 0..9;
+`run_grid_hpo.py` refuses seeds in 0..9 without `--allow-seed-overlap`),
+`GH_PARAM_BUDGET` (default 4000 lv / 30000 pa) and `GH_EXTRA` (driver flags
+such as `--grid-lr`, `--grid-clip`, and runner flags such as `--epochs`,
+forwarded) are optional. Clipping is on the global gradient norm
+(`optimizer.global_clipnorm`). `run_lotka_volterra_hpo.py`
 (Optuna) is exploratory and not part of the final suite.
 
 ## Run folders (task launchers, since 2026-10-21)
