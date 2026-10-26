@@ -1,0 +1,20 @@
+# Canary for the final-suite launcher (#52): a 2-epoch grid HPO on a reduced
+# grid for 4 Lotka-Volterra arms, the numerical lrc and the cNCP arms in the
+# heavy group. Submit with BENCH=00_canary:
+#   BENCH=00_canary ./cluster/submit_suite.sh configs/suite/canary_lv_hpo.yaml suite-canary
+# Schema: experiments/suite_manifest.py.
+task: lv
+stage: hpo
+cells: [cfc_lrc, lrc]
+wirings: [dense3, cncp]
+param_budget: 4000
+seeds: [0, 1]
+epochs: 2
+extra_args: [--grid-lr, 1e-3, 3e-3, --grid-clip, "off"]
+per_cell:
+  lrc: {ode_unfolds: 6}
+cluster: {runs_per_gpu: 4, mem: 16G, walltime: "01:00:00"}
+heavy:
+  cells: [lrc]
+  wirings: [cncp]
+  cluster: {runs_per_gpu: 2, mem: 32G}

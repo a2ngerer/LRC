@@ -201,3 +201,27 @@ after the rsync and abort before `sbatch` when it is missing. Copy it once:
 ```bash
 rsync -a data/person/ datalab:masterarbeit/code/data/person/
 ```
+
+## Final suite (manifest-driven arrays)
+
+`./cluster/submit_suite.sh [-n] [--wandb] <config> <label>` submits one campaign
+YAML (`configs/suite/*.yaml`, schema in `experiments/suite_manifest.py`) as SLURM
+arrays into one run folder. `experiments/suite_manifest.py` expands it into one
+manifest line per task: stage `hpo` one `run_grid_hpo.py` call per arm into
+`results/hpo/<cell>_<wiring>/`, stage `final` one fit per (arm, seed) into
+`results/` with the lr and clipnorm of the arm's `hpo_selection.json` under
+`hpo_dir` (the HPO run fetched with `fetch_run.sh`). Each group (`default`, and
+`heavy` for the arms the YAML lists under `heavy:`) is its own array
+`--array=0-(T-1)%8` with its own `runs_per_gpu`, `mem`, `walltime` and `cpus`;
+`cluster/suite_array.sbatch` runs `RUNS_PER_GPU` lines per GPU (`cc_launch_bundle`)
+and writes per-fit logs to `<run>/logs/run-<job>_idx<line>.log`.
+
+```bash
+uv run python experiments/suite_manifest.py configs/suite/canary_lv_hpo.yaml --list
+BENCH=00_canary ./cluster/submit_suite.sh -n configs/suite/canary_lv_hpo.yaml suite-canary
+# after a walltime kill: same config into the existing run folder; lines whose
+# result JSON / hpo_selection.json exists are skipped
+./cluster/submit_suite.sh --resume <config> <YYYY-MM-DD_label>
+```
+
+`--wandb` adds `--wandb` to every call; the offline runs land under `<run>/wandb/`.

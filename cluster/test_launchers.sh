@@ -66,6 +66,19 @@ check grid_hpo_pa "$out" "03_person_activity/runs/${today}_smoke" \
 grep -qF -- "--filter='P data/'" cluster/sync_to_cluster.sh \
     || { echo "FAIL [sync_to_cluster]: data/ not protected from --delete"; fail=1; }
 
+out="$(BENCH=00_canary ./cluster/submit_suite.sh -n --wandb configs/suite/canary_lv_hpo.yaml canary 2>&1)"
+check suite "$out" "00_canary/runs/${today}_canary" "fits: 4 manifest lines" \
+    "cat > \$HOME/wk/benchmarks/00_canary/runs/${today}_canary/manifest_heavy.jsonl" \
+    "SUITE_GROUP=default N_SPECS=1 RUNS_PER_GPU=4 RUN_DIR=" "--array=0-0%8" \
+    "SUITE_GROUP=heavy N_SPECS=3 RUNS_PER_GPU=2 RUN_DIR=" "--array=0-1%8" "--mem=32G" \
+    "--time=01:00:00" "cluster/suite_array.sbatch"
+
+out="$(./cluster/submit_suite.sh -n --resume configs/suite/canary_lv_hpo.yaml 2026-10-20_lv-final 2>&1)"
+check suite_resume "$out" "01_lotka_volterra/runs/2026-10-20_lv-final"
+
+if out="$(./cluster/submit_suite.sh -n missing.yaml canary 2>&1)"; then
+    echo "FAIL [suite]: accepted a missing config"; fail=1
+fi
 if out="$(./cluster/submit_committee.sh -n 'bad label' 2>&1)"; then
     echo "FAIL [label]: accepted a label with a space"; fail=1
 fi
@@ -74,7 +87,7 @@ if out="$(./cluster/submit_committee.sh -n 2>&1)"; then
 fi
 
 for f in cluster/lotka_volterra.sbatch cluster/person_activity.sbatch cluster/committee.sbatch \
-         cluster/grid_hpo.sbatch; do
+         cluster/grid_hpo.sbatch cluster/suite_array.sbatch; do
     if grep -q 'outputs/slurm\|results/\(person_activity\|lotka_volterra\|committee\)' "$f"; then
         echo "FAIL [$f]: still writes under the code tree"; fail=1
     fi

@@ -14,7 +14,9 @@
 # Contract for a launcher that sources this file:
 #   run_parse_args "$@"        -> sets LABEL, DRY_RUN (-n / --dry-run), BENCH (env override)
 #   run_prepare <NN_benchmark> -> sets RUN_DIR (cluster path), creates the folder
-#                                 and LAUNCH.md (skipped on DRY_RUN)
+#                                 and LAUNCH.md (skipped on DRY_RUN); with
+#                                 RUN_RESUME=1 the label is an existing run
+#                                 folder name, reused and noted in LAUNCH.md
 #   run_rsync                  -> rsync the code tree (skipped on DRY_RUN)
 #   run_require_dataset        -> abort if the PA dataset is missing on the cluster
 #   run_sbatch <sbatch file> "<ENV assignments>" -> submits, records the job id
@@ -120,12 +122,22 @@ run_prepare() {
     local bench="${BENCH:-$1}"
     local date_utc; date_utc="$(date -u +%F)"
     RUN_NAME="${date_utc}_${LABEL}"
+    if [[ "${RUN_RESUME:-0}" -eq 1 ]]; then RUN_NAME="${LABEL}"; fi
     RUN_REL="${CLUSTER_BENCH_DIR}/${bench}/runs/${RUN_NAME}"
     # $HOME-relative on the cluster unless absolute.
     if [[ "${RUN_REL}" == /* ]]; then RUN_DIR="${RUN_REL}"; else RUN_DIR="\$HOME/${RUN_REL}"; fi
     RUN_BENCH="${bench}"
     echo "run folder: ${CLUSTER_HOST}:${RUN_REL}"
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then return 0; fi
+    if [[ "${RUN_RESUME:-0}" -eq 1 ]]; then
+        # shellcheck disable=SC2029
+        if ! ssh "${CLUSTER_HOST}" "test -f ${RUN_DIR}/LAUNCH.md && cat >> ${RUN_DIR}/LAUNCH.md" \
+                <<<"- Resumed: $(date -u +%FT%TZ), git SHA $(_run_git_sha), \`${RUN_COMMAND:-$0 $LABEL}\`"; then
+            echo "FATAL: no run folder ${RUN_REL} to resume" >&2
+            exit 1
+        fi
+        return 0
+    fi
     local launch_md
     launch_md="$(_run_launch_md "${RUN_NAME}")"
     # Reserve the folder atomically: a plain mkdir fails if it exists (run
@@ -188,11 +200,12 @@ ${SBATCH_EXTRA:+${SBATCH_EXTRA} }--output=${RUN_DIR}/logs/%x-%j.out --error=${RU
 
 _run_record_job() {
     local job_id="$1"
-    # LAUNCH.md: fill the job id. README index: set the "Last run folder" cell
+    # LAUNCH.md: fill the job id (append it when the line holds one already:
+    # several arrays per launch, a resumed run). README index: set the "Last run folder" cell
     # of this benchmark's row (the last cell before the closing pipe); print
     # the row when the table does not match.
     # shellcheck disable=SC2029
-    ssh "${CLUSTER_HOST}" "sed -i 's#^- SLURM job IDs: <pending>#- SLURM job IDs: ${job_id}#' ${RUN_DIR}/LAUNCH.md && \
+    ssh "${CLUSTER_HOST}" "sed -i -e 's#^- SLURM job IDs: <pending>\$#- SLURM job IDs: ${job_id}#;t' -e 's#^- SLURM job IDs: .*#&, ${job_id}#' ${RUN_DIR}/LAUNCH.md && \
 readme=\$HOME/${CLUSTER_BENCH_DIR}/README.md && \
 if grep -q '^| ${RUN_BENCH} |' \"\$readme\"; then \
   awk -v b='${RUN_BENCH}' -v r='${RUN_NAME}' 'BEGIN{FS=OFS=\"|\"} \$2==\" \" b \" \" {\$(NF-1)=\" \" r \" \"} {print}' \"\$readme\" > \"\$readme.tmp\" && mv \"\$readme.tmp\" \"\$readme\"; \
