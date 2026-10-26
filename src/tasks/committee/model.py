@@ -106,7 +106,7 @@ def build_committee_model(wiring, n_columns, cell="cfc_lrc", size=64, seed=42,
                           feature_size=7, seq_len=32, task="classification",
                           num_classes=7, lr=1e-3, vote_init=0.0, vote_lambda=None,
                           consensus="mean", dense_vote_units=None, train_drop=0.0,
-                          train_noise=0.0, **cell_kwargs):
+                          train_noise=0.0, column_loop=False, **cell_kwargs):
     """Build + compile a partial-view voting committee.
 
     Args:
@@ -129,6 +129,9 @@ def build_committee_model(wiring, n_columns, cell="cfc_lrc", size=64, seed=42,
         consensus:    'mean' or 'median' (lower median for even K).
         dense_vote_units: dense only -- vote on and read out the leading n units
                       of the hidden state instead of the whole state.
+        column_loop:  cncp/ncp/dense only -- step the K weight-shared columns
+                      in the per-column loop instead of one folded-batch call
+                      (same function; the equivalence canary of #32).
 
     Inputs [features (B, seq_len, K, F), time (B, seq_len, 1)]; output per step
     either (B, T, num_classes) logits or (B, T, F) predictions.
@@ -174,7 +177,8 @@ def build_committee_model(wiring, n_columns, cell="cfc_lrc", size=64, seed=42,
         cellobj = MultiColumnVotingCell(
             n_columns=n_columns, cell_cls=cell_cls,
             lamina_units=scaled_lamina_units(size), seed=seed,
-            use_location=False, **vote, **cell_kwargs)
+            use_location=False, column_loop=column_loop, **vote,
+            **cell_kwargs)
         h = tf.keras.layers.RNN(cellobj, return_sequences=True)(
             (feat_in, time, loc))
     elif wiring == "cncp2":
@@ -192,14 +196,15 @@ def build_committee_model(wiring, n_columns, cell="cfc_lrc", size=64, seed=42,
         cellobj = CommitteeVotingCell(
             n_columns=n_columns, cell=ncp.make_cell(),
             vote_slice=slice(motor, motor + command),
-            readout_slice=slice(0, motor), **vote)
+            readout_slice=slice(0, motor), column_loop=column_loop, **vote)
         h = tf.keras.layers.RNN(cellobj, return_sequences=True)((feat_in, time))
     else:  # dense
         sub = (None if dense_vote_units is None
                else slice(0, int(dense_vote_units)))
         cellobj = CommitteeVotingCell(
             n_columns=n_columns, cell_cls=cell_cls, units=size, seed=seed,
-            vote_slice=sub, readout_slice=sub, **vote, **cell_kwargs)
+            vote_slice=sub, readout_slice=sub, column_loop=column_loop,
+            **vote, **cell_kwargs)
         h = tf.keras.layers.RNN(cellobj, return_sequences=True)((feat_in, time))
 
     if out is None:

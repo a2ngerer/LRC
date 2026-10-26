@@ -1,4 +1,6 @@
 """Tests for the partial-view voting committee (Iteration 7)."""
+import json
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -7,15 +9,19 @@ import tensorflow as tf
 
 from src.tasks.committee.views import (partition_masks, masked_views,
                                        noisy_views, drop_features, add_noise,
-                                       make_views)
+                                       make_views, average_views)
 from src.tasks.committee.model import (build_committee_model, ChannelDropout,
                                        NoiseAugment, COMMITTEE_WIRINGS)
 from src.neurons import CfC_Cell, CfC_LRC_Cell
 from src.tasks.person_activity.model import (backbone_override,
                                              effective_backbone_layers)
 from src.wirings import effective_param_count, match_param_budget
-from experiments.run_committee_benchmark import result_filename
+from experiments import run_committee_benchmark as co_runner
+from experiments.run_committee_benchmark import (result_filename,
+                                                 position_metrics, steps_to)
+from src.evaluation.metrics import confusion_matrix, macro_f1
 from src.wirings.committee import CommitteeVotingCell
+from src.wirings.tbt_cncp import MultiColumnVotingCell
 
 
 # --- view operators ---
@@ -202,13 +208,13 @@ def test_vote_and_readout_slices_shape_the_output():
 
 # --- NCP committee (2026-10-04) ---
 
-def _ncp_committee(K, vote_lambda, vote_slice, readout_slice, seed=0):
+def _ncp_committee(K, vote_lambda, vote_slice, readout_slice, seed=0, **vote):
     from src.wirings import NCPWiring
     tf.keras.utils.set_random_seed(seed)
     ncp = NCPWiring(_resolve("gru"), 8, 4, 4, seed=1)
     cell = CommitteeVotingCell(n_columns=K, cell=ncp.make_cell(),
                                vote_slice=vote_slice, readout_slice=readout_slice,
-                               vote_lambda=vote_lambda)
+                               vote_lambda=vote_lambda, **vote)
     cell.build((tf.TensorShape([None, K, 5]), tf.TensorShape([None, 1])))
     return cell
 
@@ -339,6 +345,94 @@ def test_train_drop_builds_adds_no_params_and_infers_deterministically():
     assert np.allclose(p1, p2)                               # dropout off at test
 
 
+# --- folded-batch columns == per-column loop (#32) ---
+
+def _fold_arm(arm, K, vote):
+    """A built weight-shared committee cell of the given arm (random weights)."""
+    tf.keras.utils.set_random_seed(0)
+    if arm == "cncp":
+        cell = MultiColumnVotingCell(n_columns=K, cell_cls="cfc_lrc",
+                                     use_location="gate",
+                                     elastance_type="asymmetric", **vote)
+        cell.build((tf.TensorShape([None, K, 5]), tf.TensorShape([None, 1]),
+                    tf.TensorShape([None, K, 2])))
+        return cell
+    if arm == "ncp":
+        return _ncp_committee(K, vote_slice=slice(4, 8),
+                              readout_slice=slice(0, 4), **vote)
+    cell = CommitteeVotingCell(n_columns=K, cell_cls="cfc_lrc", units=8,
+                               vote_slice=slice(2, 6), readout_slice=slice(0, 4),
+                               elastance_type="asymmetric", **vote)
+    cell.build((tf.TensorShape([None, K, 5]), tf.TensorShape([None, 1])))
+    return cell
+
+
+def _rollout(cell, step, inputs, states):
+    """Steps `step` over inputs; returns (outputs, final states, gradients of
+    a scalar loss on both w.r.t. the cell's trainable variables)."""
+    with tf.GradientTape() as tape:
+        outs = []
+        for x in inputs:
+            out, states = step(x, states)
+            outs.append(out)
+        loss = (tf.add_n([tf.reduce_sum(o ** 2) for o in outs])
+                + tf.add_n([tf.reduce_sum(tf.sin(s)) for s in states]))
+    return outs, list(states), tape.gradient(loss, cell.trainable_variables)
+
+
+@pytest.mark.parametrize("vote_lambda", [0.0, 0.3, None])
+@pytest.mark.parametrize("consensus", ["mean", "median"])
+@pytest.mark.parametrize("K", [1, 2, 4])
+@pytest.mark.parametrize("arm", ["dense", "ncp", "cncp"])
+def test_folded_columns_match_column_loop(arm, K, consensus, vote_lambda):
+    """One shared-cell call on the (B*K)-folded batch computes the per-column
+    loop: same outputs, states and gradients over three steps from random
+    states, with per-row elapsed times and per-column features/locations."""
+    B, T = 3, 3
+    cell = _fold_arm(arm, K, dict(vote_lambda=vote_lambda, vote_init=0.4,
+                                  consensus=consensus))
+    tf.keras.utils.set_random_seed(1)
+    inputs = [(tf.random.normal([B, K, 5]),
+               tf.random.uniform([B, 1], 0.5, 1.5))
+              + ((tf.random.normal([B, K, 2]),) if arm == "cncp" else ())
+              for _ in range(T)]
+    s0 = [tf.random.normal(s.shape)
+          for s in cell.get_initial_state(batch_size=B)]
+    ref_out, ref_st, ref_g = _rollout(cell, cell._call_loop, inputs, s0)
+    out, st, g = _rollout(cell, cell.call, inputs, s0)
+    assert len(st) == len(ref_st) and len(g) == len(ref_g)
+    for a, b in zip(ref_out + ref_st, out + st):
+        np.testing.assert_allclose(b.numpy(), a.numpy(), atol=1e-5)
+    # Weight gradients sum over the batch rows in a different order (one
+    # (B*K)-row reduction vs K B-row ones): float32 rounding on the scale of
+    # the summands, so the tolerance is relative to the tensor's largest entry.
+    for a, b in zip(ref_g, g):
+        assert (a is None) == (b is None)
+        if a is not None:
+            a = a.numpy()
+            np.testing.assert_allclose(
+                b.numpy(), a, atol=1e-5 * max(1.0, np.abs(a).max()))
+
+
+@pytest.mark.parametrize("wiring", ["cncp", "ncp", "dense"])
+def test_column_loop_flag_reaches_cell_and_matches_folded_model(wiring):
+    kw = dict(cell="cfc_lrc", size=24 if wiring == "cncp" else 32,
+              feature_size=7, seq_len=6, num_classes=7,
+              elastance_type="asymmetric", seed=0)
+    fold = build_committee_model(wiring, 3, **kw)
+    loop = build_committee_model(wiring, 3, column_loop=True, **kw)
+    assert loop.count_params() == fold.count_params()
+    loop.set_weights(fold.get_weights())
+    cells = [l.cell for m in (fold, loop) for l in m.layers
+             if isinstance(l, tf.keras.layers.RNN)]
+    assert [c._column_loop for c in cells] == [False, True]
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((10, 6, 3, 7)).astype("float32")
+    t = rng.uniform(0.5, 1.5, (10, 6, 1)).astype("float32")
+    np.testing.assert_allclose(fold.predict([X, t], verbose=0),
+                               loop.predict([X, t], verbose=0), atol=1e-5)
+
+
 # --- --backbone-layers override (V2s control) ---
 
 @pytest.mark.parametrize("backbone_layers", [None, 0, 1])
@@ -356,9 +450,83 @@ def test_result_filename_backbone_suffix():
     a = SimpleNamespace(cell="cfc_lrc", wiring="cncp", n_columns=4, size=48,
                         view_mode="partition", vote_lambda=None,
                         consensus="mean", dense_vote_units=None,
-                        view_average=False, train_drop=0.0, train_noise=0.0,
+                        view_average="off", train_drop=0.0, train_noise=0.0,
                         test_corruption="dropout", seed=0, backbone_layers=None)
     base = "cfc_lrc_cncp_K4_s48_partition_seed0"
     assert result_filename(a) == base + ".json"
     a.backbone_layers = 1
     assert result_filename(a) == base + "_bb1.json"
+    a.view_average = "median"
+    assert result_filename(a) == base[:-6] + "_viewmed_seed0_bb1.json"
+
+
+# --- H-d endpoints: median-input monolith, per-position curve (#33) ---
+
+@pytest.mark.parametrize("K, n_fail", [(4, 1), (5, 2), (30, 3), (30, 14)])
+def test_median_view_average_ignores_minority_column_failure(K, n_fail):
+    """n_fail of K identical views zeroed (column failure, rho = n_fail / K
+    < 0.5): the lower median returns the intact input, the mean shrinks it."""
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((5, 6, 7)).astype(np.float32)
+    v = noisy_views(X, K, noise=0.0)
+    v[:, :, rng.choice(K, n_fail, replace=False)] = 0.0
+    med = average_views(v, "median")
+    assert med.shape == (5, 6, 1, 7)
+    np.testing.assert_array_equal(med[:, :, 0], X)
+    np.testing.assert_allclose(average_views(v, "mean")[:, :, 0],
+                               (1 - n_fail / K) * X, atol=1e-6)
+    if K % 2 == 0:              # rho = 0.5: the LOWER median breaks down
+        v = noisy_views(X, K, noise=0.0)
+        v[:, :, :K // 2] = 0.0
+        np.testing.assert_array_equal(average_views(v, "median")[:, :, 0],
+                                      np.minimum(X, 0.0))
+    with pytest.raises(ValueError):
+        average_views(v, "max")
+
+
+def test_position_metrics_curves_and_window_scores():
+    rng = np.random.default_rng(0)
+    y = rng.integers(0, 7, (40, 32))
+    pred = np.where(rng.random((40, 32)) < 0.6, y, rng.integers(0, 7, (40, 32)))
+    acc, f1, f1_win = position_metrics(pred, y, 7)
+    assert acc.shape == f1.shape == (32,)
+    assert np.isclose(acc.mean(), (pred == y).mean())
+    assert np.isclose(f1[3], macro_f1(confusion_matrix(y[:, 3], pred[:, 3], 7)))
+    assert np.isclose(f1_win, macro_f1(confusion_matrix(y, pred, 7)))
+    assert steps_to([0.1, 0.5, 0.95, 0.9, 1.0]) == 3     # first reach of 0.9
+    assert steps_to([0.0, 0.0]) == 1
+
+
+def test_runner_writes_per_position_endpoints_and_view_average_mode(
+        tmp_path, monkeypatch):
+    """One-epoch fit on a stub data set: the per-position arrays have one
+    length-32 entry per corruption level, and their mean over positions is
+    the window accuracy of that level."""
+    rng = np.random.default_rng(0)
+    def split(n):
+        return (rng.standard_normal((n, 32, 7)).astype(np.float32),
+                np.ones((n, 32, 1), np.float32),
+                rng.integers(0, 7, (n, 32)).astype(np.int32))
+    (trx, trt, tr_y), (tex, tet, te_y) = split(16), split(12)
+    stub = SimpleNamespace(train_x=trx, train_t=trt, train_y=tr_y,
+                           test_x=tex, test_t=tet, test_y=te_y,
+                           feature_size=7, num_classes=7)
+    monkeypatch.setattr(co_runner, "load_person_activity",
+                        lambda seq_len: stub)
+    monkeypatch.setattr(sys, "argv", [
+        "run_committee_benchmark.py", "--wiring", "dense", "--n-columns", "3",
+        "--size", "4", "--epochs", "1", "--view-mode", "noisy",
+        "--view-average", "median", "--drop-fracs", "0.0,0.3",
+        "--drop-seeds", "0,1", "--batch-size", "16",
+        "--outdir", str(tmp_path)])
+    co_runner.main()
+    (path,) = tmp_path.glob("*.json")
+    assert path.name == "cfc_lrc_dense_K3_s4_noisy_viewmed_seed0.json"
+    r = json.loads(path.read_text())
+    assert r["view_average"] == "median" and r["model_columns"] == 1
+    for key in ("per_position_accuracy", "per_position_macro_f1"):
+        assert np.array(r[key]).shape == (2, 32)
+    np.testing.assert_allclose(np.mean(r["per_position_accuracy"], axis=1),
+                               r["drop_accs"], atol=1.5e-4)
+    assert all(1 <= s <= 32 for s in r["steps_to_90"])
+    assert len(r["per_position_macro_f1_auc"]) == len(r["drop_macro_f1"]) == 2

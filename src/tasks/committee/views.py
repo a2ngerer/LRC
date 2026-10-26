@@ -15,6 +15,9 @@ corruption for the robustness axis:
   - drop_features: zero a fraction of whole channels at TEST time (sensor
     failure). The committee's hypothesised win is graceful degradation here.
 
+  - average_views: collapse the K views to one (mean or lower median), the
+    input of the input-averaging monolith control.
+
 Everything is deterministic given a seed, so train and test share the SAME masks
 (a column consistently owns the same features).
 """
@@ -105,6 +108,25 @@ def add_noise(X, sigma, seed=0):
         return X.copy()
     rng = np.random.default_rng(seed)
     return (X + rng.normal(0.0, sigma, size=X.shape)).astype(np.float32)
+
+
+def average_views(views, how="mean"):
+    """(N,T,K,F) -> (N,T,1,F): the input of the input-averaging monolith.
+
+    how='mean' is the coordinate-wise mean of the K views; how='median' the
+    coordinate-wise LOWER median (index (K - 1) // 2 of the sorted views, as
+    consensus='median'). With a fraction rho of the views zeroed (column
+    failure) the mean shrinks the signal by (1 - rho), the median returns the
+    intact value while rho < 0.5. On partition views a feature owned by fewer
+    than half of the columns has median 0, so the median monolith needs
+    mode='noisy' (or enough overlap).
+    """
+    if how == "mean":
+        return views.mean(axis=2, keepdims=True)
+    if how == "median":
+        k = (views.shape[2] - 1) // 2
+        return np.partition(views, k, axis=2)[:, :, k:k + 1]
+    raise ValueError(f"how must be 'mean' or 'median', got {how!r}")
 
 
 def make_views(X, n_columns, mode="partition", overlap=0, noise=0.1, seed=42):
