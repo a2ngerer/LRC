@@ -24,7 +24,8 @@ from src.tasks.person_activity.model import (
     WIRINGS, COMPOSITE_WIRINGS, DENSE3_LAYERS, MULTI_COLUMN_DEFAULTS,
     default_readout,
     ncp_layer_sizes,
-    scaled_lamina_units, stacked_dense, _resolve_cell_cls, _reject_multi_state)
+    scaled_lamina_units, scaled_time, stacked_dense, _resolve_cell_cls,
+    _reject_multi_state)
 from src.tasks.active_sensing.model import TBT_MODES
 
 # The Lotka-Volterra / duffing trajectory task compares the thesis-core topology
@@ -42,7 +43,7 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
                                loc_dim=12, lr=1e-3, columns=MULTI_COLUMN_DEFAULTS["columns"],
                                partition=MULTI_COLUMN_DEFAULTS["partition"],
                                coupling=MULTI_COLUMN_DEFAULTS["coupling"],
-                               readout=None, self_recurrent=True,
+                               readout=None, self_recurrent=True, dt_scale=1.0,
                                **cell_kwargs):
     """Build and compile a next-step trajectory model for one (wiring, cell).
 
@@ -71,6 +72,8 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
                       the 2-D state has no sensor structure, so
                       partition='region' splits the state axis (warning).
         self_recurrent: ncp only, see NCPWiring (issue #23).
+        dt_scale:     multiplies the time input before it reaches any cell
+                      (task-level time unit, issue #28); 1.0 adds no layer.
         **cell_kwargs: forwarded to every cell constructor.
 
     Returns:
@@ -89,7 +92,8 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
     tf.keras.utils.set_random_seed(seed)
 
     state = tf.keras.Input(shape=(None, feature_size), name="state")
-    time = tf.keras.Input(shape=(None, 1), name="time")
+    time_in = tf.keras.Input(shape=(None, 1), name="time")
+    time = scaled_time(time_in, dt_scale)
 
     if wiring in TBT_MODES:
         concat_loc, use_gate = TBT_MODES[wiring]
@@ -101,19 +105,19 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
             seed=seed, use_location=use_gate, **cell_kwargs)
         h = tf.keras.layers.RNN(tbt_cell, return_sequences=True)(
             (feats, time, location))
-        inputs = [state, time, location]
+        inputs = [state, time_in, location]
     elif wiring == "cncp":
         cncp_cell = CorticalColumnCell(
             cell_cls=cell_cls, lamina_units=scaled_lamina_units(size),
             seed=seed, **cell_kwargs)
         h = tf.keras.layers.RNN(cncp_cell, return_sequences=True)(
             (state, time))
-        inputs = [state, time]
+        inputs = [state, time_in]
     elif wiring == "cncp2":
         col = CorticalColumnV2Cell(cell_cls=cell_cls, units=size, seed=seed,
                                    **cell_kwargs)
         h = tf.keras.layers.RNN(col, return_sequences=True)((state, time))
-        inputs = [state, time]
+        inputs = [state, time_in]
     elif wiring == "cncp2_multi":
         h = None                                    # head built below
         next_state = multi_column_head(
@@ -121,7 +125,7 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
             cell_cls=cell_cls, units=size, seed=seed, partition=partition,
             coupling=coupling, readout=readout or default_readout(partition),
             **cell_kwargs)
-        inputs = [state, time]
+        inputs = [state, time_in]
     elif wiring == "ncp":
         inter, command, motor = ncp_layer_sizes(size)
         ncp = NCPWiring(cell_cls, inter, command, motor, seed=seed,
@@ -129,12 +133,12 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
         h = tf.keras.layers.RNN(ncp.make_cell(), return_sequences=True)(
             (state, time))
         h = ncp.motor_slice()(h)
-        inputs = [state, time]
+        inputs = [state, time_in]
     else:  # dense / dense3
         h = stacked_dense(cell_cls, size, state, time,
                           n_layers=DENSE3_LAYERS if wiring == "dense3" else 1,
                           **cell_kwargs)
-        inputs = [state, time]
+        inputs = [state, time_in]
 
     # Linear regression head: predict the next (prey, predator) state. A plain
     # Dense on (B, T, units) applies to the last axis == TimeDistributed here.

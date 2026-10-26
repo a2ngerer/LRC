@@ -42,7 +42,7 @@ from src.tasks.lotka_volterra.model import build_lotka_volterra_model, LV_WIRING
 from src.tasks.person_activity.model import (
     backbone_override, backbone_suffix, effective_backbone_layers,
     effective_self_recurrent, add_multi_column_args, multi_column_config,
-    multi_column_suffix)
+    multi_column_suffix, ode_unfolds_override)
 from src.tasks.active_sensing.model import TBT_MODES
 from src.benchmark.tracking import keras_callbacks, track
 
@@ -208,6 +208,13 @@ def main():
     ap.add_argument("--outdir", default="results/lotka_volterra")
     ap.add_argument("--elastance-type", default="asymmetric",
                     help="forwarded to LRC-family cells (RQ2/RQ5 mechanism)")
+    ap.add_argument("--ode-unfolds", type=int, default=6,
+                    help="explicit Euler sub-steps per input step for the "
+                         "numerical ODE cells (ltc, lrc, lrc_pm, mm_ltc, "
+                         "mm_lrc); ignored for closed-form and discrete cells")
+    ap.add_argument("--dt-scale", type=float, default=1.0,
+                    help="multiply the elapsed time by this factor before it "
+                         "reaches any cell; 1.0 = unchanged")
     ap.add_argument("--backbone-layers", type=int, default=None,
                     help="CfC-family backbone depth for EVERY wiring (overrides "
                          "the default 1 of every wiring; 0 = no backbone); "
@@ -238,6 +245,7 @@ def main():
     cell_kwargs.update(backbone_override(args.cell, args.backbone_layers))
     if args.head_activation != "none":     # non-CfC cells reject the kwarg
         cell_kwargs["head_activation"] = args.head_activation
+    cell_kwargs.update(ode_unfolds_override(args.cell, args.ode_unfolds))
     bb_effective = effective_backbone_layers(args.wiring, args.cell, cell_kwargs)
     self_rec = effective_self_recurrent(args.wiring, args.cell,
                                         args.self_recurrent)
@@ -254,7 +262,8 @@ def main():
         return build_lotka_volterra_model(
             args.wiring, args.cell, size=size, seed=args.seed,
             feature_size=data.feature_size, loc_dim=data.loc_dim, lr=args.lr,
-            self_recurrent=args.self_recurrent, **multi, **cell_kwargs)
+            self_recurrent=args.self_recurrent, dt_scale=args.dt_scale,
+            **multi, **cell_kwargs)
 
     # Capacity: a fixed width knob, or the knob closest to the effective
     # parameter budget for THIS arm.
@@ -288,6 +297,7 @@ def main():
         "batch_size": args.batch_size, "epochs": args.epochs,
         "backbone_layers": args.backbone_layers, "self_recurrent": self_rec,
         "head_activation": args.head_activation, **pc, **multi,
+        "ode_unfolds": cell_kwargs.get("ode_unfolds"), "dt_scale": args.dt_scale,
     }
     tag = result_filename(args, multi)[:-len(".json")]
     probe = None
@@ -337,6 +347,7 @@ def main():
         "backbone_layers_effective": bb_effective, "self_recurrent": self_rec,
         "head_activation": args.head_activation,
         **pc, **multi, "dt": data.dt, "seq_len": data.seq_len,
+        "ode_unfolds": cell_kwargs.get("ode_unfolds"), "dt_scale": args.dt_scale,
         "n_test": int(data.test_x.shape[0]),
         "teacher_forced_mse": float(tf_mse), "teacher_forced_mae": float(tf_mae),
         "closed_loop_mse": cl_mse, "persistence_mse": persistence_mse,
