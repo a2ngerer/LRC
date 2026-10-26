@@ -11,7 +11,7 @@ from experiments.aggregate_results import (_test_block, load_runs, main,
 from src.evaluation.stats import kendall_tau_b, p_a_gt_b
 
 
-def _write_run(dirpath, cell, clip_norm, seed=0, nrmse=0.5):
+def _write_run(dirpath, cell, clip_norm, seed=0, nrmse=0.5, **top):
     os.makedirs(dirpath, exist_ok=True)
     name = f'{cell}_dense_spiral_seed{seed}'
     if clip_norm:
@@ -23,6 +23,7 @@ def _write_run(dirpath, cell, clip_norm, seed=0, nrmse=0.5):
         'config': {'clip_norm': clip_norm},
         'training': {'final_loss': 0.1, 'duration_s': 1.0},
         'evaluation': {'mse': 0.2, 'nrmse': nrmse},
+        **top,
     }
     with open(os.path.join(dirpath, name + '.json'), 'w', encoding='utf-8') as f:
         json.dump(payload, f)
@@ -168,6 +169,26 @@ def test_test_block_finite_pairs_and_family_alpha():
     assert cols[1:3] == ['7', '1']                       # n pairs, excluded
     assert cols[6] == f'{0.05 / 12:.4g}'                 # alpha adj
     assert cols[-1] == '1.00 [0.590, 1.000]'             # 7/7 wins, lower nrmse
+
+
+def test_budget_flag_excludes_the_contrast_from_a_confirmatory_family(
+        tmp_path):
+    """budget_above_tolerance (#59) is read (False when absent) and drops a
+    contrast with a flagged arm from a pre-registered family only."""
+    d = str(tmp_path / 'runs')
+    for s in range(6):
+        _write_run(d, 'a', 0.0, seed=s, nrmse=0.1 + 0.01 * s)
+        _write_run(d, 'b', 0.0, seed=s, nrmse=0.5 + 0.02 * s,
+                   budget_above_tolerance=s == 0)
+    df = load_runs([d])
+    assert df.loc[df['cell'] == 'a', 'budget_above_tolerance'].eq(False).all()
+    assert df['budget_above_tolerance'].sum() == 1
+    pairs = [('a vs b', {'cell': 'a', 'wiring': 'dense'},
+              {'cell': 'b', 'wiring': 'dense'})]
+    confirmatory = _test_block(df, pairs, 'T', family='H-c')
+    assert 'excluded: arm above budget tolerance' in confirmatory
+    assert 'excluded: arm above budget tolerance' not in _test_block(
+        df, pairs, 'T')
 
 
 def _write_hpo(root, system, cell, wiring, scores, edge=False):

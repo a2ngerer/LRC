@@ -134,6 +134,8 @@ def load_runs(runs_dirs) -> pd.DataFrame:
                 'mse': r['evaluation']['mse'],
                 'nrmse': r['evaluation']['nrmse'],
                 'duration_s': r['training']['duration_s'],
+                # budget sizing outside tolerance (#59); absent in older runs
+                'budget_above_tolerance': bool(r.get('budget_above_tolerance')),
                 'file': os.path.basename(path),
             })
     return pd.DataFrame(rows)
@@ -182,6 +184,14 @@ def _paired_vectors(df: pd.DataFrame, key_a: dict, key_b: dict):
             merged['_div_a'].to_numpy(bool), merged['_div_b'].to_numpy(bool))
 
 
+def _above_budget(df: pd.DataFrame, *keys) -> bool:
+    """True if any run of the given configs carries budget_above_tolerance."""
+    if 'budget_above_tolerance' not in df:
+        return False
+    return any(df.loc[(df[list(k)] == pd.Series(k)).all(axis=1),
+                      'budget_above_tolerance'].any() for k in keys)
+
+
 def _cohens_d_paired(x: np.ndarray, y: np.ndarray) -> float:
     diff = x - y
     sd = diff.std(ddof=1)
@@ -192,7 +202,9 @@ def _test_block(df, pairs, title, family=None) -> str:
     """One comparison family; Bonferroni over the pre-registered family size
     (BONFERRONI_FAMILIES[family]) or, without a family, over the block's tests.
 
-    Wilcoxon and d_z use the finite pairs only; P(A>B) uses every pair."""
+    Wilcoxon and d_z use the finite pairs only; P(A>B) uses every pair. In a
+    pre-registered (confirmatory) family, a contrast with an arm sized outside
+    the budget tolerance (budget_above_tolerance, #59) is excluded."""
     n_tests = BONFERRONI_FAMILIES[family] if family else len(pairs)
     alpha_adj = ALPHA / n_tests
     sign = 1 if HIGHER_IS_BETTER else -1
@@ -205,6 +217,10 @@ def _test_block(df, pairs, title, family=None) -> str:
                  '|--------------|-----------|-------------|--------------'
                  '|-----------------|')
     for label, key_a, key_b in pairs:
+        if family and _above_budget(df, key_a, key_b):
+            lines.append(f'| {label} | — | — | — | — | — | {alpha_adj:.4g} '
+                         f'| excluded: arm above budget tolerance | — | — |')
+            continue
         x, y, dx, dy = _paired_vectors(df, key_a, key_b)
         if len(x) < 5:
             lines.append(f'| {label} | {len(x)} | — | — | — | — | {alpha_adj:.4g} '

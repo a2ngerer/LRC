@@ -411,7 +411,13 @@ def match_param_budget(count_fn, target, sizes):
     return best
 
 
-def size_for_budget(build_fn, target, sizes=range(2, 257)):
+# Default width-knob scan of size_for_budget; the scan stops at the first size
+# above the budget, so the upper bound only caps the widest arm (ctrnn/ncp
+# needs more than 256 at 30k, #59).
+BUDGET_SIZES = range(2, 513)
+
+
+def size_for_budget(build_fn, target, sizes=BUDGET_SIZES):
     """``(size, params_effective)`` of the arm whose EFFECTIVE count is closest
     to ``target``.
 
@@ -419,7 +425,9 @@ def size_for_budget(build_fn, target, sizes=range(2, 257)):
     (a functional Keras model counts as run; a Sequential must have been
     called once). Every probe model is discarded and the Keras session cleared,
     so the caller builds the real model afterwards. Shared by the task runners'
-    ``--param-budget`` (see ``match_param_budget`` for the scan).
+    ``--param-budget`` (see ``match_param_budget`` for the scan); the runners
+    pass ``person_activity.model.budget_sizes(wiring)``, which adds the
+    fractional cNCP sizes.
     """
     def count(size):
         model = build_fn(size)

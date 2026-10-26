@@ -41,7 +41,7 @@ from src.tasks.committee.views import (make_views, average_views,
                                        drop_features, add_noise)
 from src.tasks.committee.model import build_committee_model, COMMITTEE_WIRINGS
 from src.tasks.person_activity.model import (
-    backbone_override, backbone_suffix, effective_backbone_layers,
+    backbone_override, backbone_suffix, budget_sizes, effective_backbone_layers,
     effective_ode_unfolds)
 
 
@@ -204,11 +204,13 @@ def main():
 
     # Capacity: a fixed width knob, or the knob closest to the effective
     # parameter budget for THIS arm.
-    budget_dev = None
+    budget_dev, over_budget = None, False
     if args.param_budget is not None:
-        args.size, n_eff = size_for_budget(build, args.param_budget)
+        args.size, n_eff = size_for_budget(build, args.param_budget,
+                                           budget_sizes(args.wiring))
         budget_dev = abs(n_eff - args.param_budget) / args.param_budget
-        flag = "  ABOVE TOLERANCE" if budget_dev > BUDGET_TOLERANCE else ""
+        over_budget = budget_dev > BUDGET_TOLERANCE
+        flag = "  ABOVE TOLERANCE" if over_budget else ""
         print(f"budget {args.param_budget}: size={args.size} "
               f"params_effective={n_eff} (dev {budget_dev:.1%}){flag}")
     model = build(args.size)
@@ -253,6 +255,7 @@ def main():
         "task": "person_activity", "wiring": args.wiring,
         "n_columns": args.n_columns, "size": args.size,
         "param_budget": args.param_budget, "budget_deviation": budget_dev,
+        "budget_above_tolerance": over_budget,
         "cell": args.cell, "seed": args.seed, "epochs": args.epochs,
         "clipnorm": args.clipnorm,
         "clip_mode": None if args.clipnorm is None else "global", **pc,

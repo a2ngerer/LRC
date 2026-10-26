@@ -21,6 +21,7 @@ import pytest
 import tensorflow as tf
 
 from src.wirings import size_for_budget
+from src.wirings.ncp import BUDGET_SIZES
 from src.tasks.person_activity import (build_person_activity_model,
                                        load_person_activity,
                                        DEFAULT_DATA_PATH)
@@ -111,6 +112,19 @@ def test_size_for_budget_picks_the_closest_size():
         return tf.keras.Sequential([tf.keras.layers.Dense(size, input_shape=(3,))])
     assert size_for_budget(build, 41, range(1, 50)) == (10, 40)
     assert size_for_budget(build, 43, range(1, 50)) == (11, 44)
+
+
+def test_budget_scan_reaches_ctrnn_ncp_at_30k():
+    """ctrnn/ncp needs more than the old scan cap of 256 at 30k (#59); the
+    scan starts near the pick to stay fast."""
+    def build(size):
+        return build_person_activity_model(
+            "ncp", "ctrnn", size=size, seed=0, num_classes=NUM_CLASSES,
+            feature_size=FEATURES, seq_len=SEQ_LEN)
+    assert BUDGET_SIZES.stop > 256
+    size, n = size_for_budget(build, 30000,
+                              range(262, BUDGET_SIZES.stop))
+    assert size > 256 and abs(n - 30000) / 30000 <= 0.05, (size, n)
 
 
 # --- input validation ---

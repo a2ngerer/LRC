@@ -40,7 +40,9 @@ test split are written into the JSON so plot_lotka_volterra.py needs no retrain.
 
 Capacity: --param-budget sizes the arm on its own width knob to the EFFECTIVE
 parameter budget (masked-off weights excluded); --size fixes the knob. The run
-records size, both counts and the deviation from the budget (flagged above 5 %).
+records size, both counts and the deviation from the budget (flagged above 5 %
+as budget_above_tolerance). cncp and tbt_cncp* scan fractional sizes (finer
+lamina knob, scaled_lamina_units).
 
 Usage:
     uv run python experiments/run_lotka_volterra_benchmark.py \
@@ -69,7 +71,7 @@ from src.tasks.lotka_volterra.model import (
     LV_WIRINGS)
 from src.neurons.forced_rollout_cell import AlphaSchedule
 from src.tasks.person_activity.model import (
-    backbone_override, backbone_suffix, effective_backbone_layers,
+    backbone_override, backbone_suffix, budget_sizes, effective_backbone_layers,
     effective_self_recurrent, add_multi_column_args, multi_column_config,
     multi_column_suffix, ode_unfolds_override, effective_ode_unfolds,
     DEFAULT_ODE_UNFOLDS)
@@ -397,11 +399,13 @@ def main():
 
     # Capacity: a fixed width knob, or the knob closest to the effective
     # parameter budget for THIS arm.
-    budget_dev = None
+    budget_dev, over_budget = None, False
     if args.param_budget is not None:
-        args.size, n_eff = size_for_budget(build, args.param_budget)
+        args.size, n_eff = size_for_budget(build, args.param_budget,
+                                           budget_sizes(args.wiring))
         budget_dev = abs(n_eff - args.param_budget) / args.param_budget
-        flag = "  ABOVE TOLERANCE" if budget_dev > BUDGET_TOLERANCE else ""
+        over_budget = budget_dev > BUDGET_TOLERANCE
+        flag = "  ABOVE TOLERANCE" if over_budget else ""
         print(f"budget {args.param_budget}: size={args.size} "
               f"params_effective={n_eff} (dev {budget_dev:.1%}){flag}")
     model = build(args.size)
@@ -420,7 +424,8 @@ def main():
         "task": "lotka_volterra", "system": args.system,
         "cell": args.cell, "wiring": args.wiring, "seed": args.seed,
         "size": args.size, "param_budget": args.param_budget,
-        "budget_deviation": budget_dev, "lr": args.lr,
+        "budget_deviation": budget_dev,
+        "budget_above_tolerance": over_budget, "lr": args.lr,
         "clipnorm": args.clipnorm,
         "batch_size": args.batch_size, "epochs": args.epochs,
         "backbone_layers": args.backbone_layers, "self_recurrent": self_rec,
@@ -493,7 +498,9 @@ def main():
         "wiring": args.wiring, "cell": args.cell, "seed": args.seed,
         "system": args.system, "t_span": list(data.t_span),
         "size": args.size, "param_budget": args.param_budget,
-        "budget_deviation": budget_dev, "epochs": args.epochs, "lr": args.lr,
+        "budget_deviation": budget_dev,
+        "budget_above_tolerance": over_budget, "epochs": args.epochs,
+        "lr": args.lr,
         "clipnorm": args.clipnorm,
         "clip_mode": None if args.clipnorm is None else "global",
         "backbone_layers": args.backbone_layers,

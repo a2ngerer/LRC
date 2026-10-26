@@ -21,6 +21,7 @@
 # differ by more than a factor of four in effective parameters).
 
 import inspect
+import math
 import warnings
 
 import tensorflow as tf
@@ -31,7 +32,7 @@ from src.neurons.base_cell import BaseCell
 from src.wirings import (CorticalColumnCell, CorticalColumnV2Cell, NCPWiring,
                          PARTITIONS, COUPLINGS, READOUTS, multi_column_head)
 from src.wirings.cncp import DEFAULT_LAMINA_UNITS
-from src.wirings.ncp import CFC_NCP_CELLS, ncp_cell_kwargs
+from src.wirings.ncp import BUDGET_SIZES, CFC_NCP_CELLS, ncp_cell_kwargs
 
 # dense:  one recurrent layer (reference)
 # dense3: three stacked recurrent layers, elapsed time fed to every layer -- the
@@ -72,10 +73,51 @@ ODE_UNFOLD_CELLS = (LTC_Cell, LRC_Cell, CTRNN_Cell, MM_LTC_Cell, MM_LRC_Cell)
 DEFAULT_ODE_UNFOLDS = 6
 
 
-def scaled_lamina_units(size):
-    """Per-node cNCP widths scaled by size / 16 (see comment above)."""
+def _lamina_units_at(size):
     return {node: max(1, round(units * size / _LAMINA_REFERENCE_SIZE))
             for node, units in DEFAULT_LAMINA_UNITS.items()}
+
+
+def scaled_lamina_units(size):
+    """Per-node cNCP widths scaled by size / 16 (see comment above).
+
+    A fractional size n + f is the finer budget knob (#59): of the k nodes
+    that grow between the integer sizes n and n + 1, the first floor(f * k)
+    in DEFAULT_LAMINA_UNITS order already take their size-(n + 1) width. A
+    uniform scale cannot do this, since the three 8-unit nodes always grow
+    together. Integer sizes are unchanged.
+    """
+    n = math.floor(size)
+    units = _lamina_units_at(n)
+    if size == n:
+        return units
+    nxt = _lamina_units_at(n + 1)
+    grow = [node for node in units if nxt[node] != units[node]]
+    for node in grow[:math.floor((size - n) * len(grow))]:
+        units[node] = nxt[node]
+    return units
+
+
+def lamina_sizes(sizes=BUDGET_SIZES):
+    """Every distinct cNCP width configuration over the integer ``sizes``:
+    each integer n plus one eighth-step size per node that grows between n
+    and n + 1 (at most eight nodes, so floor(f * k) hits every count), for
+    the ``size_for_budget`` scan."""
+    out = []
+    for n in sizes:
+        k = sum(a != b for a, b in zip(_lamina_units_at(n).values(),
+                                       _lamina_units_at(n + 1).values()))
+        out += [n] + [n + math.ceil(i * 8 / k) / 8 for i in range(1, k)]
+    return out
+
+
+def budget_sizes(wiring):
+    """The ``size_for_budget`` scan of one arm: the finer lamina knob for the
+    wirings built from scaled_lamina_units (cncp, tbt_cncp*), else every
+    integer size in BUDGET_SIZES."""
+    if wiring == "cncp" or wiring.startswith("tbt_"):
+        return lamina_sizes()
+    return BUDGET_SIZES
 
 
 def ncp_layer_sizes(size):
@@ -297,7 +339,8 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
                       BaseCell subclass; cncp takes single-state cells only.
         size:         the arm's width knob. dense/dense3: RNN units per layer;
                       ncp: inter=size, command=motor=size//2; cncp: lamina
-                      widths scaled by size/16 (see scaled_lamina_units);
+                      widths scaled by size/16, fractional sizes allowed
+                      (see scaled_lamina_units);
                       cncp2 / cncp2_multi: column width u = size.
                       Derive it per arm from the parameter budget
                       (src.wirings.size_for_budget).
