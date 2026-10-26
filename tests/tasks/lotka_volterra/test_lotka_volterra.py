@@ -27,8 +27,11 @@ from src.tasks.lotka_volterra import (build_lotka_volterra_model,
                                       DATA_SEED_BASE)
 from src.tasks.active_sensing.model import TBT_MODES
 from src.tasks.person_activity.model import (backbone_override,
+                                             budget_sizes,
                                              effective_backbone_layers,
-                                             effective_self_recurrent)
+                                             effective_self_recurrent,
+                                             lamina_sizes,
+                                             scaled_lamina_units)
 from experiments.run_lotka_volterra_benchmark import (closed_loop_rollout,
                                                       result_filename)
 from experiments import run_lotka_volterra_benchmark as lv_runner
@@ -361,6 +364,9 @@ def test_runner_records_backbone_end_to_end(tmp_path, monkeypatch):
     rec = json.loads((tmp_path / "cfc_lrc_cncp_seed0_bb1.json").read_text())
     assert rec["backbone_layers"] == 1
     assert rec["backbone_layers_effective"] == 1
+    # budget flag next to the deviation (#59)
+    assert rec["budget_above_tolerance"] is (rec["budget_deviation"] > 0.05)
+    assert rec["config"]["effective"]["build"]["size"] == rec["size"]
 
 
 def test_runner_head_activation_reaches_every_subcell(tmp_path, monkeypatch):
@@ -454,3 +460,31 @@ def test_runner_data_seed_offset_and_override(tmp_path, monkeypatch):
     assert tuning["data_seed"] == DATA_SEED_BASE + 1000
     fixed = _run(tmp_path / "f", monkeypatch, "dense", 0, "--data-seed", "7")
     assert fixed["data_seed"] == 7
+
+
+# --- finer cNCP budget knob (#59) ---
+
+def test_lamina_knob_keeps_integer_sizes_and_grows_one_node_per_step():
+    assert list(scaled_lamina_units(18).values()) == [9, 9, 7, 9, 4, 4, 4, 2]
+    assert list(scaled_lamina_units(50).values()) == [25, 25, 19, 25, 12, 12,
+                                                      12, 6]
+    sizes = lamina_sizes(range(18, 19))
+    assert sizes[0] == 18 and all(18 < s < 19 for s in sizes[1:])
+    totals = [sum(scaled_lamina_units(s).values()) for s in sizes + [19]]
+    assert totals == list(range(48, 55))      # one node +1 per scan step
+    assert 18.5 in budget_sizes("cncp") and 18.5 in budget_sizes("tbt_cncp")
+    assert budget_sizes("dense") == range(2, 513)
+
+
+@pytest.mark.parametrize("cell", ["cfc_lrc", "cfc", "gru"])
+def test_fractional_cncp_scan_reaches_4k_within_tolerance(cell):
+    """Integer sizes overshoot 4k by 6.7 to 8.1 % on cncp (bb1); the
+    fractional knob lands within 5 %."""
+    kw = backbone_override(cell, 1)
+    if cell == "cfc_lrc":
+        kw["elastance_type"] = "asymmetric"
+    build = lambda s: build_lotka_volterra_model("cncp", cell, size=s, seed=0,
+                                                 **kw)
+    size, n = size_for_budget(build, 4000, lamina_sizes(range(14, 30)))
+    assert abs(n - 4000) / 4000 <= 0.05, (size, n)
+    assert size != int(size)                  # only reachable off the integers

@@ -9,7 +9,8 @@ src/tasks/person_activity/model.py for the fairness invariant).
 Capacity: pass --param-budget to size the arm on its own width knob to the
 EFFECTIVE parameter budget (masked-off weights excluded); --size fixes the
 knob directly. The run records size, effective and raw counts and the
-deviation from the budget (flagged above 5 %).
+deviation from the budget (flagged above 5 % as budget_above_tolerance);
+cncp scans fractional sizes (finer lamina knob, scaled_lamina_units).
 
 Split: --split grouped (default) trains on 15 whole recordings, validates on
 5 and tests on 5 (one per person each, --split-seed); --split random_window is
@@ -52,7 +53,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.evaluation.metrics import confusion_matrix, macro_f1  # noqa: E402
 from src.tasks.person_activity.datasets import SPLITS  # noqa: E402
 from src.tasks.person_activity.model import (  # noqa: E402
-    WIRINGS, backbone_override, backbone_suffix, dt_feature_applies,
+    WIRINGS, backbone_override, backbone_suffix, budget_sizes,
+    dt_feature_applies,
     effective_backbone_layers, effective_self_recurrent, add_multi_column_args,
     multi_column_config, multi_column_suffix, ode_unfolds_override)
 
@@ -136,11 +138,13 @@ def run(args):
 
     # Capacity: either a fixed width knob or the knob that lands closest to the
     # effective parameter budget for THIS arm.
-    budget_dev = None
+    budget_dev, over_budget = None, False
     if args.param_budget is not None:
-        args.size, n_eff = size_for_budget(build, args.param_budget)
+        args.size, n_eff = size_for_budget(build, args.param_budget,
+                                           budget_sizes(args.wiring))
         budget_dev = abs(n_eff - args.param_budget) / args.param_budget
-        flag = "  ABOVE TOLERANCE" if budget_dev > BUDGET_TOLERANCE else ""
+        over_budget = budget_dev > BUDGET_TOLERANCE
+        flag = "  ABOVE TOLERANCE" if over_budget else ""
         print(f"budget {args.param_budget}: size={args.size} "
               f"params_effective={n_eff} (dev {budget_dev:.1%}){flag}",
               flush=True)
@@ -165,6 +169,7 @@ def run(args):
         "size": args.size,
         "param_budget": args.param_budget,
         "budget_deviation": budget_dev,
+        "budget_above_tolerance": over_budget,
         "lr": args.lr,
         "clipnorm": args.clipnorm,
         "batch_size": args.batch_size,
@@ -228,6 +233,7 @@ def run(args):
         "size": args.size,
         "param_budget": args.param_budget,
         "budget_deviation": budget_dev,
+        "budget_above_tolerance": over_budget,
         "lr": args.lr,
         "clipnorm": args.clipnorm,
         "batch_size": args.batch_size,
