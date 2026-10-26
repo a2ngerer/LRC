@@ -40,4 +40,5 @@ esac
 
 run_prepare "${BENCH_DEFAULT}"   # reserve the run folder first, then touch the shared code tree
 run_rsync
+if [[ "${GH_TASK}" == pa ]]; then run_require_dataset; fi
 run_sbatch cluster/grid_hpo.sbatch "${GH_ENV}"

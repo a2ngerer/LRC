@@ -16,6 +16,7 @@
 #   run_prepare <NN_benchmark> -> sets RUN_DIR (cluster path), creates the folder
 #                                 and LAUNCH.md (skipped on DRY_RUN)
 #   run_rsync                  -> rsync the code tree (skipped on DRY_RUN)
+#   run_require_dataset        -> abort if the PA dataset is missing on the cluster
 #   run_sbatch <sbatch file> "<ENV assignments>" -> submits, records the job id
 #   The sbatch file reads RUN_DIR from the environment (--export=ALL).
 #
@@ -65,18 +66,34 @@ _run_ssh() {
     ssh "${CLUSTER_HOST}" "$@"
 }
 
+# The Person Activity CSV is not tracked in git, so a fresh worktree has no
+# data/. 'P data/' protects the cluster copy from --delete; a local data/ is
+# still transferred and updates it.
+RUN_DATASET="data/person/ConfLongDemo_JSI.txt"
+
 run_rsync() {
+    local args=(-avz --delete --copy-links --filter='P data/'
+        --exclude='.git/' --exclude='.venv/' --exclude='results/'
+        --exclude='outputs/' --exclude='__pycache__/' --exclude='*.pyc'
+        --exclude='.DS_Store' --exclude='.pytest_cache/' --exclude='datasets/'
+        --exclude='papers/')
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
-        echo "[dry-run] rsync $(pwd)/ -> ${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/"
+        echo "[dry-run] rsync ${args[*]} $(pwd)/ -> ${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/"
         return 0
     fi
     echo "rsync $(pwd) -> ${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/"
-    rsync -avz --delete --copy-links \
-        --exclude='.git/' --exclude='.venv/' --exclude='results/' \
-        --exclude='outputs/' --exclude='__pycache__/' --exclude='*.pyc' \
-        --exclude='.DS_Store' --exclude='.pytest_cache/' --exclude='datasets/' \
-        --exclude='papers/' \
-        ./ "${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/"
+    rsync "${args[@]}" ./ "${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/"
+}
+
+# run_require_dataset: abort before sbatch when the Person Activity CSV is
+# missing from the cluster code tree (call after run_rsync).
+run_require_dataset() {
+    if ! _run_ssh "test -f ${CLUSTER_REPO_DIR}/${RUN_DATASET}"; then
+        echo "FATAL: dataset missing on the cluster: ${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/${RUN_DATASET}" >&2
+        echo "  copy it once: rsync -a data/person/ ${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/data/person/" >&2
+        echo "  nothing was submitted; the run folder ${RUN_REL:-} is reserved, relaunch with a new label." >&2
+        exit 1
+    fi
 }
 
 # run_count <list> <list> ...: product of the word counts; sets RUN_COUNT (fits)
