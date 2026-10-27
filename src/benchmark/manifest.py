@@ -25,6 +25,10 @@ def _repo_root() -> Path:
 
 
 def _git_sha() -> str | None:
+    # The cluster code tree is an rsync copy without .git: the launcher
+    # (cluster/_run.sh run_sbatch) exports the local commit as RUN_GIT_SHA.
+    if os.environ.get('RUN_GIT_SHA'):
+        return os.environ['RUN_GIT_SHA']
     try:
         out = subprocess.run(
             ['git', 'rev-parse', 'HEAD'],

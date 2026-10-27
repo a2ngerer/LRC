@@ -106,8 +106,9 @@ from src.tasks.person_activity.model import (
     DEFAULT_ODE_UNFOLDS, dt_scale_arg, resolve_dt_scale)
 from src.tasks.active_sensing.model import TBT_MODES
 from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
-from src.benchmark.tracking import keras_callbacks, track
-from src.benchmark.checkpoints import rebuild_from_result, save_weights
+from src.benchmark.tracking import keras_callbacks, log_summary, track_fit
+from src.benchmark.checkpoints import (rebuild_from_result, save_weights,
+                                       stamp_protocol)
 from src.evaluation.rollout_metrics import (ANCHOR_HORIZON, ANCHORS, TAU_ORB,
                                             THETA, anchor_metrics,
                                             make_norm_stats,
@@ -450,6 +451,18 @@ def evaluate(model, data, wiring, system, anchors=ANCHORS,
     }
 
 
+def fit_summary(evaluation) -> dict:
+    """wandb run summary of a fit (#53): the primary endpoint
+    vpt_multi_median on val and test, the test outcome-class rates and the
+    fit-level non_finite flag."""
+    val, test = (evaluation[f"rollout_metrics_{s}"] for s in ("val", "test"))
+    return {"val_vpt_multi_median": val["vpt_multi_median"],
+            "test_vpt_multi_median": test["vpt_multi_median"],
+            **{f"test_{k}": test[k] for k in (
+                "rate_ok", "rate_unbounded", "rate_bounded_wrong",
+                "non_finite")}}
+
+
 def _rel_dev(old, new):
     """Largest relative deviation over the numeric scalars ``old`` and ``new``
     share (nested dicts recursed, lists skipped); equal values, both NaN and
@@ -725,6 +738,24 @@ def main():
     train_in, val_in, test_in = (split_inputs(data, s, needs_loc)
                                  for s in ("train", "val", "test"))
 
+    effective = stamp_protocol({
+        "task": "lotka_volterra", "system": args.system,
+        "t_span": list(data.t_span), "ic_spread": data.spread,
+        "n_trajectories": args.n_trajectories, "seq_len": args.seq_len,
+        "data_seed": data_seed, "split": split,
+        "param_budget": args.param_budget, "backbone_layers": bb_effective,
+        "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
+        "dt_scale": args.dt_scale, "forcing": args.forcing,
+        "alpha_min": args.alpha_min if mixed else None,
+        "tau_orb": args.tau_orb,
+        "deterministic": args.deterministic,
+        "build": dict(wiring=args.wiring, cell=args.cell, size=args.size,
+                      seed=args.seed, feature_size=data.feature_size,
+                      loc_dim=data.loc_dim, lr=args.lr,
+                      self_recurrent=args.self_recurrent,
+                      dt_scale=args.dt_scale, **multi),
+        "elastance_type": cell_kwargs.get("elastance_type"),
+        "cell_kwargs": cell_kwargs})
     wandb_config = {
         "task": "lotka_volterra", "system": args.system,
         "ic_spread": data.spread,
@@ -764,8 +795,8 @@ def main():
         schedule = AlphaSchedule(alpha, args.epochs, args.alpha_min)
         train_model = forced_rollout_model(model, alpha)
     t0 = time.time()
-    with track(args.wandb, group=args.cell, job_type=args.wiring, name=tag,
-               config=wandb_config) as run_:
+    with track_fit(args.wandb, task=args.system, name=tag,
+                   config=wandb_config, effective=effective) as run_:
         hist = train_model.fit(
             train_in, data.train_y,
             batch_size=args.batch_size, epochs=args.epochs,
@@ -773,12 +804,13 @@ def main():
             verbose=args.verbose,
             callbacks=([schedule] if schedule else []) + keras_callbacks(run_)
             + [test_tap] + ([probe] if probe else []) + ([diag] if diag else []))
-    wall = time.time() - t0
+        wall = time.time() - t0
+        evaluation = evaluate(model, data, args.wiring, args.system,
+                              args.anchors, args.horizon, args.theta,
+                              args.tau_orb)
+        log_summary(run_, fit_summary(evaluation))
     val_curve = hist.history["val_loss"]
     best = int(np.argmin(np.nan_to_num(val_curve, nan=np.inf)))  # NaN never wins
-
-    evaluation = evaluate(model, data, args.wiring, args.system, args.anchors,
-                          args.horizon, args.theta, args.tau_orb)
 
     os.makedirs(args.outdir, exist_ok=True)
     record = {
@@ -807,24 +839,7 @@ def main():
         "forcing": args.forcing,
         "alpha_min": args.alpha_min if mixed else None,
         "alpha_curve": _round(schedule.curve, 6) if mixed else None,
-        "config": {"effective": {
-            "task": "lotka_volterra", "system": args.system,
-            "t_span": list(data.t_span), "ic_spread": data.spread,
-            "n_trajectories": args.n_trajectories, "seq_len": args.seq_len,
-            "data_seed": data_seed, "split": split,
-            "param_budget": args.param_budget, "backbone_layers": bb_effective,
-            "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
-            "dt_scale": args.dt_scale, "forcing": args.forcing,
-            "alpha_min": args.alpha_min if mixed else None,
-            "tau_orb": args.tau_orb,
-            "deterministic": args.deterministic,
-            "build": dict(wiring=args.wiring, cell=args.cell, size=args.size,
-                          seed=args.seed, feature_size=data.feature_size,
-                          loc_dim=data.loc_dim, lr=args.lr,
-                          self_recurrent=args.self_recurrent,
-                          dt_scale=args.dt_scale, **multi),
-            "elastance_type": cell_kwargs.get("elastance_type"),
-            "cell_kwargs": cell_kwargs}},
+        "config": {"effective": effective},
     }
     if probe is not None:
         record["stability"] = probe.result
