@@ -13,6 +13,8 @@
 # recordings, needs MF1(m_max) < MF1(0) and falls back to the strict check
 # without the per-recording confusions. #80: G2 reports the PA test macro-F1
 # against the one-class value of the test split and lists an arm at chance.
+# #81: --gk-rule offset reads a K = 3 step up against the test-minus-
+# validation offset of the reference arms; the default stays the S1 reading.
 import copy
 import json
 import math
@@ -325,10 +327,10 @@ def pilot():
     return fits, floors
 
 
-def _s1(tmp_path, fits, floors):
+def _s1(tmp_path, fits, floors, *extra):
     """One run folder per pilot YAML (finals flat in results/, the consensus
-    pilot under results/hpo/<arm>/lr*_clipoff_seed100/), run the S1 gate;
-    (exit, report, {(gate, task): result})."""
+    pilot under results/hpo/<arm>/lr*_clipoff_seed100/), run the S1 gate
+    (extra: further CLI flags); (exit, report, {(gate, task): result})."""
     runs = set()
     for (key, arm, seed, tag), rec in fits.items():
         run = tmp_path / f"pilot_{key}{'_dt1' if tag and key != 'co' else ''}"
@@ -341,7 +343,7 @@ def _s1(tmp_path, fits, floors):
     (tmp_path / 'floors.json').write_text(json.dumps(floors))
     out = tmp_path / 'S1.md'
     code = main(['--stage', 's1', '--runs', *sorted(runs), '--floors',
-                 str(tmp_path / 'floors.json'), '--out', str(out)])
+                 str(tmp_path / 'floors.json'), '--out', str(out), *extra])
     report = out.read_text()
     rows = {tuple(c.strip() for c in row.split('|')[1:3]):
             row.split('|')[3].strip()
@@ -708,3 +710,104 @@ def test_s1_dt_scale_control_is_descriptive(tmp_path, pilot):
     assert 'epochs unchanged (1 of 5 arms qualify, needs 4)' in report
     assert ('median VPT 31 (dt_scale 1, 3 fits) vs 3 (main, 3 fits)'
             in report)
+
+
+# --- GK offset rule (#81) ---------------------------------------------------
+
+OFFSET = ('--gk-rule', 'offset')
+
+
+def _offset_fixture(fits, ref_offset):
+    """avg_in (K = 3) rises by 0.02 at m = 0 -> 1 in every test recording
+    (SE about 0) on a validation step of -0.01: its offset is +0.03. The four
+    aug_mono fits (K = 1, the probability grid) have the test-minus-
+    validation offset ref_offset between the entries nearest m/3 = 0 and
+    1/3 (0 and 0.3)."""
+    _with_confusions(fits, 'avg_in', [0.9, 0.5, 0.9, 0.5, 0.9],
+                     [0.92, 0.52, 0.92, 0.52, 0.92], [0.3] * 5)
+    _set(fits, 'co', 'avg_in', (100,), 'n_columns', 3)
+    _set(fits, 'co', 'avg_in', (100,), 'val_macro_f1_grid_curve',
+         [[0.65, 0.64, 0.5]] * 40)
+    for k, v in (('n_columns', 1),
+                 ('fault_counts', [0.0, 0.1, 0.3, 0.5, 0.67]),
+                 ('test_macro_f1_by_fault', [0.64, 0.6, 0.5, 0.45, 0.4]),
+                 ('val_macro_f1_grid_curve',
+                  [[0.65, 0.6, 0.51 - ref_offset, 0.45, 0.4]] * 40)):
+        _set(fits, 'co', 'aug_mono', (100,), k, v)
+
+
+@pytest.mark.parametrize('ref_offset, status', [(0.04, 'PASS'),
+                                                (0.025, 'FAIL')])
+def test_gk_offset_rule_reads_a_rise_against_the_reference_offset(
+        ref_offset, status, tmp_path, pilot):
+    """paired-se fails the +0.02 rise (above its SE) in both cases; the offset
+    rule absolves it when the reference offset is larger (0.03 - 0.04) and
+    still fails it when its offset exceeds the reference by more than one SE
+    (0.03 - 0.025, while the test step 0.02 alone would not); the reference
+    arm keeps the paired-se rule."""
+    _offset_fixture(pilot[0], ref_offset)
+    code, report, rows = _s1(tmp_path, *pilot)
+    assert code == 1 and _only(rows, 'FAIL', ('GK', 'co')), rows
+    assert re.search(r'0->1 rises \+0\.020 > SE [0-9.e+-]+\n', report)
+    code, report, rows = _s1(tmp_path, *pilot, *OFFSET)
+    assert code == (status == 'FAIL') and _only(rows, status, ('GK', 'co'))
+    line = next(x for x in report.splitlines()
+                if x.startswith('- avg_in: best lr'))
+    assert re.search(r'; offset rule \(4 reference fits\): steps .* 0->1 '
+                     rf'\+0\.020 offset \+0\.0300 ref \+{ref_offset:.4f} '
+                     r'\(SE [0-9.e+-]+\), 1->2 -0\.460 offset ', line), line
+    assert ('arms pass; GK rule offset (reference fits: aug_mono 4, '
+            'fault_mean 0) |') in report
+    assert ('- aug_mono: best lr 0.001 (val_macro_f1_mean 0.600), val '
+            'macro-F1 at m=0 0.650') in report
+    assert '; reference arm, paired-se rule; no test_confusion' in report
+    if status == 'FAIL':
+        section = report.split('## FAIL: GK co\n')[1]
+        assert re.search(r'- avg_in: test macro-F1 does not degrade over the '
+                         r'fault grid: 0->1 rises \+0\.020, offset \+0\.0300 '
+                         r'- ref \+0\.0250 > SE [0-9.e+-]+\n', section)
+        assert ('- Consequence: protocol check (fault mask, noise scale) '
+                'before the consensus reading (offset rule, protocol '
+                'addendum, #81)\n') in section
+
+
+def test_gk_offset_rule_still_needs_a_drop_over_the_grid(tmp_path, pilot):
+    """No step rises, but MF1(m_max) is not below MF1(0): FAIL."""
+    _offset_fixture(pilot[0], 0.04)
+    _with_confusions(pilot[0], 'avg_in', *([0.7, 0.6, 0.7, 0.6, 0.7],) * 3)
+    code, report, rows = _s1(tmp_path, *pilot, *OFFSET)
+    assert code == 1 and _only(rows, 'FAIL', ('GK', 'co')), rows
+    assert ('- avg_in: test macro-F1 does not degrade over the fault grid: '
+            'm=2 0.660 not below m=0 0.660\n') in report
+
+
+def test_gk_offset_rule_without_a_reference_arm_falls_back(tmp_path, pilot):
+    """No aug_mono or fault_mean fit in the campaign: the paired-se rule,
+    said so in the summary and the detail line."""
+    _offset_fixture(pilot[0], 0.04)
+    for fid in [f for f in pilot[0] if f[1] == 'aug_mono']:
+        del pilot[0][fid]
+    code, report, rows = _s1(tmp_path, *pilot, *OFFSET)
+    assert code == 1 and rows[('GK', 'co')] == 'FAIL', rows
+    assert ('GK rule offset (reference fits: aug_mono 0, fault_mean 0), '
+            'none: paired-se |') in report
+    assert ('offset rule: no reference fit of aug_mono, fault_mean, '
+            'paired-se rule; steps MF1(m\') - MF1(m) with paired bootstrap '
+            'SE') in report
+    assert re.search(r'- avg_in: test macro-F1 does not degrade over the '
+                     r'fault grid: 0->1 rises \+0\.020 > SE [0-9.e+-]+\n',
+                     report)
+    assert '- aug_mono: no fit' in report
+
+
+def test_gk_default_rule_is_the_s1_reading(tmp_path, pilot):
+    """paired-se is the default; on the passing fixture the offset rule
+    changes only the GK row and the reference arm's detail line."""
+    _, default, _ = _s1(tmp_path, *pilot)
+    _, explicit, _ = _s1(tmp_path, *pilot, '--gk-rule', 'paired-se')
+    assert default == explicit and 'offset' not in default
+    _, offset, _ = _s1(tmp_path, *pilot, *OFFSET)
+    a, b = default.splitlines(), offset.splitlines()
+    assert len(a) == len(b)
+    assert [x.split(':')[0] for x, y in zip(a, b) if x != y] == [
+        '| GK | co | PASS | best lr per arm (val_macro_f1_mean)', '- aug_mono']
