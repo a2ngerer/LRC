@@ -250,17 +250,25 @@ def test_rollout_outcome_classes_pool_trajectories_with_cp_and_flag_non_finite(
         tmp_path):
     """Class shares pool the test trajectories of all fits of an arm (exact
     Clopper-Pearson), once at tau_orb and once at 0.30; a non-finite fit gives
-    the arm one label; files without outcome classes are skipped."""
+    the arm one label; files without outcome classes are skipped. A control
+    run folder with the same file names is its own arm, and HPO tuning fits
+    (run_grid_hpo layout, seed 100) are never pooled into the final arm."""
     from src.evaluation.stats import clopper_pearson
     d = tmp_path / 'lv'
-    os.makedirs(d / 'sub')
+    hpo = d / 'hpo' / 'cfc_ncp' / 'lr0.01_clip1_seed100'
+    os.makedirs(d / 'ctrl_k1')
+    os.makedirs(hpo)
     _write_rollout(d, 'cfc_ncp_mixed', 0, (1, 0, 0), (1, 0, 0), False)
-    _write_rollout(d / 'sub', 'cfc_ncp_mixed', 1, (0.5, 0.25, 0.25),
+    _write_rollout(d, 'cfc_ncp_mixed', 1, (0.5, 0.25, 0.25),
                    (0.75, 0, 0.25), True)
+    _write_rollout(d / 'ctrl_k1', 'cfc_ncp_mixed', 0, (0, 1, 0), (0, 1, 0), False)
+    _write_rollout(hpo, 'cfc_ncp_mixed', 100, (0, 0, 1), (0, 0, 1), True)
     _write_rollout(d, 'gru_dense_mixed', 0, (0.5, 0.5, 0), (1, 0, 0), False)
     (d / 'hpo_selection.json').write_text('{"task": "lv"}')
     (d / 'old_seed0.json').write_text(
         '{"system": "duffing", "seed": 0, "rollout_metrics_test": {"rate_drift": 1}}')
+    (d / 'noseed.json').write_text(json.dumps(
+        {'rollout_metrics_test': {'outcome_classes_tau_0.30': {}}}))
     out = str(tmp_path / 'out')
     assert main(['--runs', str(tmp_path / 'none'), '--out', out,
                  '--rollout-runs', str(d)]) == 0
@@ -279,4 +287,8 @@ def test_rollout_outcome_classes_pool_trajectories_with_cp_and_flag_non_finite(
             f'{share(28, 32)} | {share(0, 32)} | {share(4, 32)} | {label} |') in text
     assert (f'| periodic_predator_prey | gru_dense_mixed | 1 | 16 | 0.15 | '
             f'{share(8, 16)} | {share(8, 16)} | {share(0, 16)} | — |') in text
-    assert 'Skipped 2 file(s) without outcome classes.' in text
+    assert (f'| periodic_predator_prey | ctrl_k1/cfc_ncp_mixed | 1 | 16 | 0.15 | '
+            f'{share(0, 16)} | {share(16, 16)} | {share(0, 16)} | — |') in text
+    assert 'lr0.01' not in text
+    assert 'Skipped 3 file(s) without outcome classes.' in text
+    assert 'Left out 1 tuning-seed fit(s) (seed outside 0..9).' in text

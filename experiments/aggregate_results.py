@@ -53,6 +53,7 @@ from src.evaluation.stats import (bootstrap_mean_ci, clopper_pearson,  # noqa: E
 ALPHA = 0.05
 METRIC = 'nrmse'   # primary comparison metric (proposal: MSE/NRMSE)
 HIGHER_IS_BETTER = False   # METRIC orientation for P(A>B); load_runs metrics are errors
+FINAL_SEEDS = range(10)   # final replicates, as in run_grid_hpo.py; tuning seeds lie outside
 GAMMA = 0.75       # P(A>B) reference line, printed for orientation only
 
 # Pre-registered core contrasts (Chapter 5 decision rules; H-a as revised in
@@ -359,19 +360,31 @@ def rollout_outcome_classes(rollout_dir) -> str:
     """Outcome-class shares per rollout arm on the test split, pooled over the
     trajectories of all fits, with exact Clopper-Pearson 95 % intervals; one
     row at the stored tau_orb and one at the 0.30 sensitivity. Non-finite is a
-    fit property: one label per arm with the count of non-finite fits. Files
-    without the #63 keys (older schema, HPO selections) are skipped."""
-    arms, skipped = defaultdict(list), 0
+    fit property: one label per arm with the count of non-finite fits.
+
+    An arm is (system, folder relative to rollout_dir, file name without
+    _seed<N>, tau_orb): the file name carries neither lr, clipnorm nor the
+    control knobs (ode_unfolds, dt_scale), so fits from different run or HPO
+    folders are never pooled. Fits on a seed outside FINAL_SEEDS (HPO tuning
+    fits, e.g. hpo/<arm>/lr<lr>_clip<clip>_seed100/) are left out, as are
+    files without the #63 keys (older schema, hpo_selection.json)."""
+    arms, skipped, tuning = defaultdict(list), 0, 0
     for path in sorted(glob(os.path.join(rollout_dir, '**', '*.json'),
                             recursive=True)):
         with open(path, encoding='utf-8') as f:
             r = json.load(f)
         m = r.get('rollout_metrics_test') if isinstance(r, dict) else None
-        if not m or SENSITIVITY_KEY not in m:
+        if (not m or SENSITIVITY_KEY not in m or r.get('seed') is None
+                or r.get('system') is None):
             skipped += 1
             continue
+        if r['seed'] not in FINAL_SEEDS:
+            tuning += 1
+            continue
         tag = os.path.basename(path)[:-len('.json')].replace(f"_seed{r['seed']}", '')
-        arms[(r['system'], tag, m['tau_orb'])].append(m)
+        rel = os.path.relpath(os.path.dirname(path), rollout_dir)
+        arm = tag if rel == '.' else f'{rel}/{tag}'
+        arms[(r['system'], arm, m['tau_orb'])].append(m)
     lines = ['## Rollout outcome classes (test trajectories, share [95% '
              'Clopper-Pearson CI])\n',
              '| System | Arm | fits | trajectories | tau_orb | '
@@ -395,6 +408,8 @@ def rollout_outcome_classes(rollout_dir) -> str:
                          + ' | '.join(shares) + f' | {nf} |')
     lines.append(f'\nSkipped {skipped} file(s) without outcome classes.\n'
                  if skipped else '')
+    lines.append(f'\nLeft out {tuning} tuning-seed fit(s) (seed outside '
+                 f'{FINAL_SEEDS.start}..{FINAL_SEEDS.stop - 1}).\n' if tuning else '')
     return '\n'.join(lines)
 
 
@@ -413,7 +428,8 @@ def main(argv=None) -> int:
                         'bootstrap interval)')
     p.add_argument('--rollout-runs', default=None,
                    help='rollout result JSON folder, searched recursively '
-                        '(outcome-class shares per arm)')
+                        '(outcome-class shares per arm; each subfolder is '
+                        'its own arm, tuning seeds are left out)')
     p.add_argument('--bootstrap-units', default='seed',
                    choices=('seed', 'seed,recording'),
                    help='resampling units for the --pa-runs arm means')
