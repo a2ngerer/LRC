@@ -43,6 +43,10 @@ drop_* fields.
 settings in the run config, the test macro-F1 per fault count in the run
 summary.
 
+--deterministic enables tf.config.experimental.enable_op_determinism() before
+the model is built, as in the LV and PA runners (#70); the record carries it as
+config.effective.deterministic (protocol freeze F1-2026-10-26 l, #76).
+
 Usage:
     uv run python experiments/run_committee_benchmark.py \
         --wiring ncp --n-columns 30 --param-budget 30000 --seed 0
@@ -350,6 +354,9 @@ def main():
     ap.add_argument("--wandb", action="store_true",
                     help="log this run to Weights & Biases (needs the "
                          "'tracking' extra; use WANDB_MODE=offline on cluster)")
+    ap.add_argument("--deterministic", action="store_true",
+                    help="tf.config.experimental.enable_op_determinism() "
+                         "before model construction (#76)")
     args = ap.parse_args()
     if args.size is None and args.param_budget is None:
         args.size = DEFAULT_SIZE
@@ -362,6 +369,8 @@ def main():
                       "owned by fewer than half of the columns has median 0; "
                       "use --view-mode noisy")
 
+    if args.deterministic:
+        tf.config.experimental.enable_op_determinism()
     cell_kwargs = registry_cell_kwargs(args.cell, args.elastance_type)
     cell_kwargs.update(backbone_override(args.cell, args.backbone_layers))
     bb_effective = effective_backbone_layers(args.wiring, args.cell, cell_kwargs)
@@ -420,6 +429,7 @@ def main():
 
     effective = stamp_protocol({
         "task": "committee", "param_budget": args.param_budget,
+        "deterministic": args.deterministic,
         "backbone_layers": bb_effective,
         # training, data split and corruption knobs outside the builder
         # (#53 config_hash)

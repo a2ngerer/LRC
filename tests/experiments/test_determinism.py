@@ -1,7 +1,7 @@
 # tests/experiments/test_determinism.py
 # Issue #70: --deterministic on the sequence runners (op determinism, recorded
 # in config.effective.deterministic) and the S0 probe's summary
-# (experiments/determinism_probe.py).
+# (experiments/determinism_probe.py). Issue #76: the committee runner likewise.
 import json
 import subprocess
 import sys
@@ -24,13 +24,23 @@ PA_STUB = ("import sys; import src.tasks.person_activity as p; "
            "r.main()")
 PA = ['--wiring', 'ncp', '--cell', 'cfc_lrc', '--size', '8',
       '--no-save-weights']
+# committee on the same stub: the smallest closed-form fit (K = 2, 1 epoch)
+CO_STUB = ("import sys; from tests.benchmark.test_checkpoints import _pa_stub; "
+           "from experiments import run_committee_benchmark as r; "
+           "r.load_person_activity = _pa_stub; "
+           "sys.argv = ['run_committee_benchmark.py'] + sys.argv[1:]; "
+           "r.main()")
+CO = ['--wiring', 'ncp', '--cell', 'cfc_lrc', '--n-columns', '2', '--size',
+      '8', '--epochs', '1', '--test-seeds', '0', '--no-save-weights']
 
 
 def _fit(outdir, task, *flags):
     """One runner fit in a fresh process (enable_op_determinism is global and
     cannot be switched off again); returns the result record."""
-    cmd = ([sys.executable, 'experiments/run_lotka_volterra_benchmark.py', *LV]
-           if task == 'lv' else [sys.executable, '-c', PA_STUB, *PA])
+    cmd = {'lv': [sys.executable, 'experiments/run_lotka_volterra_benchmark.py',
+                  *LV],
+           'pa': [sys.executable, '-c', PA_STUB, *PA],
+           'co': [sys.executable, '-c', CO_STUB, *CO]}[task]
     subprocess.run([*cmd, *flags, '--outdir', str(outdir)], cwd=ROOT,
                    check=True, capture_output=True)
     (path,) = Path(outdir).glob('*.json')
@@ -54,6 +64,15 @@ def test_lv_same_seed_reproduces_val_metric(tmp_path):
                                             (('--deterministic',), True)])
 def test_pa_records_setting(tmp_path, flags, expected):
     rec = _fit(tmp_path, 'pa', '--epochs', '2', *flags)
+    assert rec['config']['effective']['deterministic'] is expected
+
+
+@pytest.mark.parametrize('flags,expected', [((), False),
+                                            (('--deterministic',), True)])
+def test_co_records_setting(tmp_path, flags, expected):
+    """The committee runner takes --deterministic (run_grid_hpo.py forwards
+    it from the consensus campaigns) and records it in config.effective."""
+    rec = _fit(tmp_path, 'co', *flags)
     assert rec['config']['effective']['deterministic'] is expected
 
 
