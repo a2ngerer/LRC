@@ -144,3 +144,27 @@ def test_no_save_weights(tmp_path, monkeypatch):
     record = json.loads((tmp_path / 'gru_dense_seed0.json').read_text())
     assert record['weights_path'] is None
     assert not list(tmp_path.glob('*.h5'))
+
+
+def test_pre_issue23_record_rebuilds_without_self_recurrence(tmp_path,
+                                                            monkeypatch):
+    """A record written before #23 has no build.self_recurrent: its NCP had
+    no self-recurrence and its CfC depth is config.effective.backbone_layers
+    (here 0, while today's NCP default is 1)."""
+    built = _capture_builds(monkeypatch, lv_runner,
+                            'build_lotka_volterra_model')
+    monkeypatch.setattr(sys, 'argv', _lv_argv(
+        tmp_path, '--wiring', 'ncp', '--cell', 'cfc', '--size', '8',
+        '--backbone-layers', '0', '--no-self-recurrence'))
+    lv_runner.main()
+    path = tmp_path / 'cfc_ncp_seed0_bb0.json'
+    record = json.loads(path.read_text())
+    eff = record['config']['effective']
+    del eff['build']['self_recurrent']
+    eff['cell_kwargs'].pop('backbone_layers')
+    path.write_text(json.dumps(record))
+    x = np.random.default_rng(1).normal(size=(3, 8, 2)).astype(np.float32)
+    inputs = (x, np.full((3, 8, 1), 0.1, np.float32))
+    np.testing.assert_allclose(
+        rebuild_from_result(path).predict(inputs, verbose=0),
+        built[-1][0].predict(inputs, verbose=0), atol=1e-6)
