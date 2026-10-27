@@ -16,7 +16,9 @@ Split: --split grouped (default) trains on 15 whole recordings, validates on
 5 and tests on 5 (one per person each, --split-seed); --split random_window is
 the original window-level split (literature anchor only, val = test).
 Metrics: per-step macro-F1 (primary) and accuracy; the epoch with the best
-val macro-F1 is selected and the test values are read at that epoch.
+val macro-F1 is selected, the test values are read at that epoch and its
+weights are the saved ones (<stem>.weights.h5, protocol freeze
+F1-2026-10-26 decision m), so a rebuilt fit reproduces them (#34).
 
 Elapsed time: the discrete cells (gru, lstm) ignore the time input, so with
 --dt-feature on (default) they get dt as an extra input feature (issue #27).
@@ -205,14 +207,16 @@ def run(args):
 
     # After every epoch: val macro-F1 / accuracy (the val curve selects the
     # epoch) and the per-recording test confusion matrices (read at that
-    # epoch only). val_macro_f1 also goes to the Keras logs (history, wandb).
-    val_f1, val_acc, test_cms = [], [], []
+    # epoch only) and the weights (the best epoch's are restored before
+    # saving). val_macro_f1 also goes to the Keras logs (history, wandb).
+    val_f1, val_acc, test_cms, epoch_weights = [], [], [], []
 
     def evaluate(epoch, logs):
         cm = sum(split_confusions(model, data, "val", args.batch_size).values())
         val_f1.append(macro_f1(cm))
         val_acc.append(accuracy(cm))
         test_cms.append(split_confusions(model, data, "test", args.batch_size))
+        epoch_weights.append(model.get_weights())
         logs["val_macro_f1"] = val_f1[-1]
 
     diag = None
@@ -307,6 +311,7 @@ def run(args):
     if diag is not None:
         result["diagnostics"] = diag.result
 
+    model.set_weights(epoch_weights[best])      # the best-val epoch's fit
     os.makedirs(args.outdir, exist_ok=True)
     out_path = os.path.join(args.outdir, f"{tag}.json")
     result["weights_path"] = save_weights(model, out_path, args.save_weights)
@@ -395,7 +400,8 @@ def main():
                         "before model construction (#70)")
     p.add_argument("--no-save-weights", dest="save_weights",
                    action="store_false",
-                   help="do not write <stem>.weights.h5 next to the result JSON")
+                   help="do not write <stem>.weights.h5 (the best-val epoch) "
+                        "next to the result JSON")
     add_multi_column_args(p)
     args = p.parse_args()
     if args.size is None and args.param_budget is None:

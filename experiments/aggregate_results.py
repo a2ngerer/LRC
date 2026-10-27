@@ -43,12 +43,17 @@ Optional sections:
                    --hpo-dir, the tuning-seed sign stability), the H-c
                    conjunction and every other arm pair descriptively;
                    <out>/contrasts.csv and <out>/sequence_runs.csv
+  --robustness CSV  with --contrasts: the eval-only robustness rows of
+                   experiments/eval_robustness.py (#34); their metric_robust
+                   (diverged_robust as the divergence flag) runs the H-c
+                   contrasts once more as the second family, the other
+                   robustness endpoints get a descriptive per-arm table
 
 Usage:
     uv run python experiments/aggregate_results.py [--runs results/runs] [--out results]
         [--hpo-dir DIR ...] [--pa-runs DIR [--bootstrap-units seed,recording]]
         [--rollout-runs DIR [--floors]] [--co-runs DIR]
-        [--contrasts [--floors-json PATH]]
+        [--contrasts [--floors-json PATH] [--robustness CSV ...]]
 
     # the frozen suite: ROLLOUTS holds the final run folders of every rollout
     # system (searched recursively), PA the Person Activity final run
@@ -106,6 +111,11 @@ CORE_CONTRASTS = {
 # The H-c contrasts once more on the eval-only robustness endpoint (#34), a
 # second family; evaluated on the column 'metric_robust' when it is loaded.
 ROBUSTNESS_FAMILY = 'H-c robustness'
+# The other robustness endpoints, summarised per arm in the report only.
+ROBUST_DESCRIPTIVE = ('metric_robust', 'f1_sigma_0', 'f1_sigma_0.1',
+                      'ood_nrmse_128_median', 'ood_rate_unbounded',
+                      'long_vpt_multi_median', 'long_nrmse_128_median',
+                      'long_rate_unbounded')
 # Bonferroni family sizes, the one place they are defined.
 BONFERRONI_FAMILIES = {
     'H-a': 3,              # multitimescale_lib/ncp, duffing/ncp, pa/dense
@@ -637,6 +647,14 @@ def _control_tag(r):
     return ', '.join(tags)
 
 
+def arm_label(r):
+    """'cell/wiring' of a runner record, a control arm with its
+    _control_tag in brackets (the arm column of load_sequence_runs and of
+    experiments/eval_robustness.py)."""
+    tag = _control_tag(r)
+    return f"{r['cell']}/{r['wiring']}" + (f' [{tag}]' if tag else '')
+
+
 def load_sequence_runs(runs_dirs, task) -> pd.DataFrame:
     """One row per fit of the task's runner JSONs below runs_dirs (searched
     recursively; other runners' JSONs and non-fit files are skipped).
@@ -687,14 +705,12 @@ def load_sequence_runs(runs_dirs, task) -> pd.DataFrame:
                 extra = {'confusion': (np.array([cms[k] for k in sorted(cms)],
                                                 float) if cms else None)}
             metric = float('nan') if metric is None else float(metric)
-            tag = _control_tag(r)
             rows.append({
                 'cell': r['cell'], 'wiring': r['wiring'], 'task': task,
                 'system': system, 'seed': r['seed'],
                 'stage': 'final' if r['seed'] in FINAL_SEEDS else 'hpo',
-                'arm': f"{r['cell']}/{r['wiring']}" + (f' [{tag}]' if tag
-                                                       else ''),
-                'control': bool(tag), 'metric': metric,
+                'arm': arm_label(r), 'control': bool(_control_tag(r)),
+                'metric': metric,
                 'diverged': bool(diverged or not np.isfinite(metric)),
                 **{k: r.get(k) for k in ('best_val_epoch', 'epochs',
                                          'params_effective',
@@ -712,6 +728,41 @@ def load_sequence_runs(runs_dirs, task) -> pd.DataFrame:
                          'folders of one protocol, or give the control its '
                          'own run): ' + ', '.join(dup['file']))
     return df
+
+
+def merge_robustness(df, csv_paths) -> pd.DataFrame:
+    """df (load_sequence_runs) with the columns of the eval-only robustness
+    CSVs of experiments/eval_robustness.py (#34): metric_robust,
+    diverged_robust (the divergence flag of that evaluation, which replaces
+    the clean one in the robustness family), rebuild_rel_dev and the
+    descriptive f1_sigma_* / ood_* / long_* columns, matched on (system,
+    arm, seed) of the final fits; a fit without a row stays NaN and is left
+    out of the robustness family. A CSV without diverged_robust, two rows of
+    one final fit and a row whose config_effective_sha256 is not that of the
+    loaded fit's config.effective raise SystemExit."""
+    from src.benchmark.checkpoints import config_hash   # imports TensorFlow
+    rob = pd.concat([pd.read_csv(p) for p in csv_paths], ignore_index=True)
+    if 'diverged_robust' not in rob:
+        raise SystemExit('robustness CSV without diverged_robust: rerun '
+                         'experiments/eval_robustness.py')
+    key = ['system', 'arm', 'seed']
+    cols = ['metric_robust', 'diverged_robust', 'config_effective_sha256',
+            *(c for c in rob if c.startswith(('f1_sigma_', 'ood_', 'long_',
+                                              'rebuild_rel_dev')))]
+    rob = rob.loc[rob['seed'].isin(FINAL_SEEDS), key + cols]
+    dup = rob[rob.duplicated(key, keep=False)]
+    if not dup.empty:
+        raise SystemExit('two robustness rows of one final fit: '
+                         + ', '.join(map(str, dup[key].values.tolist())))
+    df = df.merge(rob, on=key, how='left')
+    for path, sha in df.loc[df['diverged_robust'].notna(),
+                            ['file', 'config_effective_sha256']].values:
+        with open(path, encoding='utf-8') as f:
+            if config_hash(json.load(f)['config']['effective']) != sha:
+                raise SystemExit(f'{path}: its robustness row has another '
+                                 'config_effective_sha256 (a CSV of another '
+                                 'run folder?)')
+    return df.drop(columns='config_effective_sha256')
 
 
 def _paired(df, system, arm_a, arm_b):
@@ -786,7 +837,11 @@ def core_contrast_blocks(df, floors=None, hpo=None) -> pd.DataFrame:
     """Every entry of CORE_CONTRASTS as a paired block over the final seeds,
     Bonferroni over its family size (BONFERRONI_FAMILIES), two-sided. The
     H-c entries run once more as ROBUSTNESS_FAMILY on the column
-    'metric_robust' when df carries it (#34).
+    'metric_robust' when df carries it (#34, merge_robustness): fits
+    without an eval-only row are left out, the interval is over seeds (the
+    test confusion matrices belong to the clean metric) and the divergence
+    flag is diverged_robust (or a non-finite metric_robust), not the clean
+    one: a fit diverged on the robustness set enters at the worst value.
 
     floors: compute_floors output (floors.json, #67); a block takes the
     floor_bound flag of its (family, task, A, B) entry (None without floors
@@ -812,8 +867,14 @@ def core_contrast_blocks(df, floors=None, hpo=None) -> pd.DataFrame:
                    'significant': False,
                    'floor_bound': fb.get((floor_family, task, a, b)),
                    'sign_stable_tuning': _sign_stable_tuning(hpo, task, a, b)}
-            p = (_paired(df.assign(metric=df[col]), task, arm_a, arm_b)
-                 if not df.empty else pd.DataFrame())
+            d = df
+            if col != 'metric':     # the fits with an eval-only row
+                d = df[df['diverged_robust'].notna()]
+                d = d.assign(metric=d[col], confusion=None, diverged=(
+                    d['diverged_robust'].astype(bool)
+                    | ~np.isfinite(d[col].astype(float))))
+            p = (_paired(d, task, arm_a, arm_b)
+                 if not d.empty else pd.DataFrame())
             if p.empty:
                 row['status'] = 'missing'
             elif (p['budget_above_tolerance_a'] | p['budget_above_tolerance_b']
@@ -919,7 +980,10 @@ def contrast_report(df, blocks, desc) -> str:
               for a, s in hc_conjunction(blocks).items()]
     lines += ['', 'A diverged fit (non-finite, or every test rollout '
               'unbounded) enters the pairing with the worst value (VPT 0, '
-              'macro-F1 0). Median difference: 10,000-resample percentile '
+              'macro-F1 0); in the H-c robustness family divergence is that '
+              'of the robustness set (diverged_robust: every OOD rollout '
+              'unbounded or a non-finite one, non-finite noisy macro-F1). '
+              'Median difference: 10,000-resample percentile '
               'bootstrap. sign_stable_tuning: the sign of A - B on the '
               'validation scores of the selected configurations agrees '
               'between the two tuning seeds.\n',
@@ -930,6 +994,19 @@ def contrast_report(df, blocks, desc) -> str:
         lines.append(f"| {r['task']} | {r['a']} | {r['b']} | {r['n_pairs']} "
                      f"| {r['median_diff']:+.4g} | {r['p_a_gt_b']:.2f} "
                      f"[{r['p_a_gt_b_lo']:.3f}, {r['p_a_gt_b_hi']:.3f}] |")
+    if 'diverged_robust' in f:
+        cols = [c for c in ROBUST_DESCRIPTIVE if c in f]
+        lines += ['', '## Eval-only robustness endpoints (#34; final seeds '
+                  'with a robustness row, median per arm, descriptive)\n',
+                  '| Task | Arm | fits | diverged_robust | '
+                  + ' | '.join(cols) + ' |',
+                  '|' + '---|' * (len(cols) + 4)]
+        r = f[f['diverged_robust'].notna()]
+        for (system, arm), g in r.groupby(['system', 'arm']):
+            lines.append(
+                f"| {system} | {arm} | {len(g)} "
+                f"| {int(g['diverged_robust'].astype(bool).sum())} | "
+                + ' | '.join(_fmt(g[c].median()) for c in cols) + ' |')
     lines.append('')
     return '\n'.join(lines)
 
@@ -1071,6 +1148,10 @@ def main(argv=None) -> int:
     p.add_argument('--floors-json', default=None,
                    help='with --contrasts and without --floors: a floors.json '
                         'whose floor_bound flags the contrast blocks carry')
+    p.add_argument('--robustness', nargs='+', default=None, metavar='CSV',
+                   help='with --contrasts: eval-only robustness CSV(s) of '
+                        'experiments/eval_robustness.py; their metric_robust '
+                        'runs the H-c contrasts as the second family (#34)')
     p.add_argument('--co-runs', default=None,
                    help='committee result JSON folder (H-d consensus family)')
     p.add_argument('--bootstrap-units', default='seed',
@@ -1081,6 +1162,8 @@ def main(argv=None) -> int:
         p.error('--floors needs --rollout-runs')
     if args.contrasts and not (args.rollout_runs or args.pa_runs):
         p.error('--contrasts needs --rollout-runs and/or --pa-runs')
+    if args.robustness and not args.contrasts:
+        p.error('--robustness needs --contrasts')
 
     df = load_runs(args.runs)
     if args.cells and not df.empty:
@@ -1126,6 +1209,8 @@ def main(argv=None) -> int:
             print('--contrasts: no sequence-runner JSONs found',
                   file=sys.stderr)
             return 1
+        if args.robustness:
+            seq = merge_robustness(seq, args.robustness)
         blocks = core_contrast_blocks(
             seq, floors, load_hpo_selections(args.hpo_dir)
             if args.hpo_dir else None)
