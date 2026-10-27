@@ -10,7 +10,7 @@ cells: [lrc]
 wirings: [ncp]
 param_budget: 4000
 seeds: [0, 1, 2, 3, 4]
-epochs: 300
+epochs: 450
 ode_unfolds: 1
 dt_scale: auto
 extra_args: [--forcing, mixed, --deterministic]

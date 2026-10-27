@@ -10,7 +10,8 @@
 # one stage-1 fit per arm of the frozen HPO YAMLs, 93 arm-tasks. Issue #75:
 # stage final with a fixed lr/clipnorm instead of hpo_dir, the default stage-1
 # grid from run_grid_hpo.py, the six S1 pilot YAMLs (61 fits). Issue #76: every
-# campaign but the S0 smokes runs with --deterministic.
+# campaign but the S0 smokes runs with --deterministic. Issue #79: the width
+# and control YAMLs train the epochs of their task's final YAML.
 import fnmatch
 import json
 from argparse import Namespace
@@ -446,6 +447,16 @@ def test_static_w_size_is_the_cfc_ncp_budget_width():
     def build(size):
         return build_lotka_volterra_model('ncp', 'cfc', size=size, seed=0)
     assert size_for_budget(build, 4000, budget_sizes('ncp'))[0] == 24
+
+
+@pytest.mark.parametrize('name, ref', [
+    ('mt_final_static_w', 'mt_final'), ('control_duffing_k1', 'duffing_final'),
+    ('control_pa_k1', 'pa_final'), ('control_lv_dt_scale1', 'lv_final')])
+def test_width_and_control_epochs_follow_the_task(name, ref):
+    """The epochs belong to the task (protocol freeze F1-2026-10-26, decision
+    m) and a control arm takes the config of its reference arm: an epoch
+    change of the task's final YAML must not leave these YAMLs behind (#79)."""
+    assert _frozen(name)['epochs'] == _frozen(ref)['epochs']
 
 
 @pytest.mark.parametrize('flags', [
