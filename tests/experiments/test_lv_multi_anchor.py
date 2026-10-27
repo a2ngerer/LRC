@@ -54,7 +54,7 @@ def test_flag_defaults_are_the_frozen_protocol(monkeypatch):
     monkeypatch.setattr(sys, 'argv', ['run_lotka_volterra_benchmark.py',
                                       '--eval-only', 'x.json'])
     runner.main()
-    assert seen == [('x.json', None, (8, 16, 24, 32), 96, 0.5)]
+    assert seen == [('x.json', None, (8, 16, 24, 32), 96, 0.5, False)]
 
 
 @pytest.mark.parametrize('wiring', ['ncp', 'tbt_cncp_concat'])
