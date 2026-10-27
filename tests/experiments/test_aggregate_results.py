@@ -654,6 +654,50 @@ def test_robustness_family_runs_on_metric_robust(tmp_path):
     assert len(rob) == 6 and set(rob['m']) == {2}
 
 
+def test_robustness_csv_runs_the_second_family(tmp_path):
+    """--robustness (#34) merges metric_robust on (system, arm, seed) of the
+    final fits: the H-c contrasts rerun as the second family (m = 2) with a
+    seed interval (the clean confusions do not apply); a fit without a row
+    is left out, a tuning-seed row is ignored, a duplicate row raises."""
+    from experiments.aggregate_results import ROBUSTNESS_FAMILY
+    lv, pa = _suite(tmp_path)
+    rows = []
+    for s in range(10):
+        _write_lv_fit(lv, 'duffing', 'cfc_lrc', 'dense3', s, 5.0)
+        _write_pa_fit(pa, 'cfc_lrc', 'dense3', s, 0.5,
+                      {f'r{i}': [[3, 3], [2, 4 + i]] for i in range(4)})
+        rows += [('duffing', 'cfc_lrc/ncp', s, 8.0 + s),
+                 ('duffing', 'cfc_lrc/dense3', s, 4.0),
+                 ('pa', 'cfc_lrc/ncp', s, 0.7),
+                 ('pa', 'cfc_lrc/dense3', s, 0.4 + s / 100)]
+    csv = tmp_path / 'rob.csv'
+    cols = ['system', 'arm', 'seed', 'metric_robust']
+    pd.DataFrame(rows[1:] + [('duffing', 'cfc_lrc/ncp', 100, 1.0)],
+                 columns=cols).to_csv(csv, index=False)
+    out = tmp_path / 'out'
+    argv = ['--runs', str(tmp_path / 'none'), '--out', str(out),
+            '--rollout-runs', str(lv), '--pa-runs', str(pa), '--contrasts',
+            '--robustness', str(csv)]
+    assert main(argv) == 0
+    blocks = pd.read_csv(out / 'contrasts.csv')
+    rob = blocks[blocks['family'] == ROBUSTNESS_FAMILY].set_index(['task',
+                                                                   'a'])
+    assert len(rob) == 6 and set(rob['m']) == {2}
+    assert set(rob['endpoint']) == {'metric_robust'}
+    d = rob.loc[('duffing', 'cfc_lrc/ncp')]
+    assert (d['n_pairs'], d['status'], d['ci_units']) == (9, 'tested', 'seed')
+    assert d['median_diff'] == 9.0       # seeds 1-9: 9+s-4 .. 17-4
+    p = rob.loc[('pa', 'cfc_lrc/ncp')]
+    assert (p['n_pairs'], p['ci_units']) == (10, 'seed')
+    assert rob.loc[('pa', 'cfc_lrc/cncp'), 'status'] == 'missing'
+    hc = blocks[(blocks['family'] == 'H-c') & (blocks['task'] == 'pa')
+                & (blocks['a'] == 'cfc_lrc/ncp')]
+    assert hc['ci_units'].item() == 'seed x recording'
+    pd.DataFrame(rows + rows[:1], columns=cols).to_csv(csv, index=False)
+    with pytest.raises(SystemExit, match='two robustness rows'):
+        main(argv)
+
+
 def test_main_contrasts_writes_csv_and_descriptive_pairs(tmp_path):
     """--contrasts: contrasts.csv with one row per core contrast, the
     descriptive table holds the other pairs (the k=1 control included) and

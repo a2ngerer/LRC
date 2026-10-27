@@ -43,12 +43,15 @@ Optional sections:
                    --hpo-dir, the tuning-seed sign stability), the H-c
                    conjunction and every other arm pair descriptively;
                    <out>/contrasts.csv and <out>/sequence_runs.csv
+  --robustness CSV  with --contrasts: the eval-only robustness rows of
+                   experiments/eval_robustness.py (#34); their metric_robust
+                   runs the H-c contrasts once more as the second family
 
 Usage:
     uv run python experiments/aggregate_results.py [--runs results/runs] [--out results]
         [--hpo-dir DIR ...] [--pa-runs DIR [--bootstrap-units seed,recording]]
         [--rollout-runs DIR [--floors]] [--co-runs DIR]
-        [--contrasts [--floors-json PATH]]
+        [--contrasts [--floors-json PATH] [--robustness CSV ...]]
 
     # the frozen suite: ROLLOUTS holds the final run folders of every rollout
     # system (searched recursively), PA the Person Activity final run
@@ -637,6 +640,14 @@ def _control_tag(r):
     return ', '.join(tags)
 
 
+def arm_label(r):
+    """'cell/wiring' of a runner record, a control arm with its
+    _control_tag in brackets (the arm column of load_sequence_runs and of
+    experiments/eval_robustness.py)."""
+    tag = _control_tag(r)
+    return f"{r['cell']}/{r['wiring']}" + (f' [{tag}]' if tag else '')
+
+
 def load_sequence_runs(runs_dirs, task) -> pd.DataFrame:
     """One row per fit of the task's runner JSONs below runs_dirs (searched
     recursively; other runners' JSONs and non-fit files are skipped).
@@ -687,14 +698,12 @@ def load_sequence_runs(runs_dirs, task) -> pd.DataFrame:
                 extra = {'confusion': (np.array([cms[k] for k in sorted(cms)],
                                                 float) if cms else None)}
             metric = float('nan') if metric is None else float(metric)
-            tag = _control_tag(r)
             rows.append({
                 'cell': r['cell'], 'wiring': r['wiring'], 'task': task,
                 'system': system, 'seed': r['seed'],
                 'stage': 'final' if r['seed'] in FINAL_SEEDS else 'hpo',
-                'arm': f"{r['cell']}/{r['wiring']}" + (f' [{tag}]' if tag
-                                                       else ''),
-                'control': bool(tag), 'metric': metric,
+                'arm': arm_label(r), 'control': bool(_control_tag(r)),
+                'metric': metric,
                 'diverged': bool(diverged or not np.isfinite(metric)),
                 **{k: r.get(k) for k in ('best_val_epoch', 'epochs',
                                          'params_effective',
@@ -712,6 +721,22 @@ def load_sequence_runs(runs_dirs, task) -> pd.DataFrame:
                          'folders of one protocol, or give the control its '
                          'own run): ' + ', '.join(dup['file']))
     return df
+
+
+def merge_robustness(df, csv_paths) -> pd.DataFrame:
+    """df (load_sequence_runs) with the column 'metric_robust' of the
+    eval-only robustness CSVs of experiments/eval_robustness.py (#34),
+    matched on (system, arm, seed) of the final fits; a fit without a row
+    stays NaN and is left out of the robustness family. Two rows of one
+    final fit raise SystemExit."""
+    rob = pd.concat([pd.read_csv(p) for p in csv_paths], ignore_index=True)
+    key = ['system', 'arm', 'seed']
+    rob = rob.loc[rob['seed'].isin(FINAL_SEEDS), key + ['metric_robust']]
+    dup = rob[rob.duplicated(key, keep=False)]
+    if not dup.empty:
+        raise SystemExit('two robustness rows of one final fit: '
+                         + ', '.join(map(str, dup[key].values.tolist())))
+    return df.merge(rob, on=key, how='left')
 
 
 def _paired(df, system, arm_a, arm_b):
@@ -786,7 +811,10 @@ def core_contrast_blocks(df, floors=None, hpo=None) -> pd.DataFrame:
     """Every entry of CORE_CONTRASTS as a paired block over the final seeds,
     Bonferroni over its family size (BONFERRONI_FAMILIES), two-sided. The
     H-c entries run once more as ROBUSTNESS_FAMILY on the column
-    'metric_robust' when df carries it (#34).
+    'metric_robust' when df carries it (#34, merge_robustness): fits
+    without a value are left out, the interval is over seeds (the test
+    confusion matrices belong to the clean metric) and a diverged fit
+    keeps the worst value.
 
     floors: compute_floors output (floors.json, #67); a block takes the
     floor_bound flag of its (family, task, A, B) entry (None without floors
@@ -812,8 +840,10 @@ def core_contrast_blocks(df, floors=None, hpo=None) -> pd.DataFrame:
                    'significant': False,
                    'floor_bound': fb.get((floor_family, task, a, b)),
                    'sign_stable_tuning': _sign_stable_tuning(hpo, task, a, b)}
-            p = (_paired(df.assign(metric=df[col]), task, arm_a, arm_b)
-                 if not df.empty else pd.DataFrame())
+            d = (df.assign(metric=df[col]) if col == 'metric' else
+                 df[df[col].notna()].assign(metric=df[col], confusion=None))
+            p = (_paired(d, task, arm_a, arm_b)
+                 if not d.empty else pd.DataFrame())
             if p.empty:
                 row['status'] = 'missing'
             elif (p['budget_above_tolerance_a'] | p['budget_above_tolerance_b']
@@ -1071,6 +1101,10 @@ def main(argv=None) -> int:
     p.add_argument('--floors-json', default=None,
                    help='with --contrasts and without --floors: a floors.json '
                         'whose floor_bound flags the contrast blocks carry')
+    p.add_argument('--robustness', nargs='+', default=None, metavar='CSV',
+                   help='with --contrasts: eval-only robustness CSV(s) of '
+                        'experiments/eval_robustness.py; their metric_robust '
+                        'runs the H-c contrasts as the second family (#34)')
     p.add_argument('--co-runs', default=None,
                    help='committee result JSON folder (H-d consensus family)')
     p.add_argument('--bootstrap-units', default='seed',
@@ -1081,6 +1115,8 @@ def main(argv=None) -> int:
         p.error('--floors needs --rollout-runs')
     if args.contrasts and not (args.rollout_runs or args.pa_runs):
         p.error('--contrasts needs --rollout-runs and/or --pa-runs')
+    if args.robustness and not args.contrasts:
+        p.error('--robustness needs --contrasts')
 
     df = load_runs(args.runs)
     if args.cells and not df.empty:
@@ -1126,6 +1162,8 @@ def main(argv=None) -> int:
             print('--contrasts: no sequence-runner JSONs found',
                   file=sys.stderr)
             return 1
+        if args.robustness:
+            seq = merge_robustness(seq, args.robustness)
         blocks = core_contrast_blocks(
             seq, floors, load_hpo_selections(args.hpo_dir)
             if args.hpo_dir else None)
