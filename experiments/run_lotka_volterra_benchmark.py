@@ -18,8 +18,9 @@ that epoch, never a minimum over the test curve.
 
 Rollout endpoints (#20): rollout_metrics_val / rollout_metrics_test hold the
 src/evaluation/rollout_metrics dict of the closed-loop rollouts (VPT(0.5) as the
-primary endpoint, NRMSE@16/32/128, orbit error, invariant drift, divergence
-class rates); norm_stats lets experiments/rollout_metrics.py recompute it.
+primary endpoint, NRMSE@16/32/128, orbit error, invariant drift, the outcome
+class rates at --tau-orb plus outcome_classes_tau_0.30, the fit-level
+non_finite flag); norm_stats lets experiments/rollout_metrics.py recompute it.
 
 Forcing (#25): --forcing teacher (default) trains the plain model on the true
 state at every step, as before. --forcing mixed trains the same weights through
@@ -79,7 +80,8 @@ from src.tasks.active_sensing.model import TBT_MODES
 from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
 from src.benchmark.tracking import keras_callbacks, track
 from src.benchmark.checkpoints import save_weights
-from src.evaluation.rollout_metrics import make_norm_stats, rollout_metrics
+from src.evaluation.rollout_metrics import (TAU_ORB, make_norm_stats,
+                                            rollout_metrics)
 from src.evaluation.gradient_flow import RQ4Diagnostics
 
 
@@ -344,6 +346,9 @@ def main():
                     action="store_false",
                     help="ncp x CfC family: drop the diagonal self-recurrence "
                          "of the NCP layers (issue #23 stability pilot)")
+    ap.add_argument("--tau-orb", type=float, default=TAU_ORB,
+                    help="orbit-error threshold of the bounded_wrong outcome "
+                         "class (the 0.30 sensitivity pass is always stored)")
     ap.add_argument("--verbose", type=int, default=0)
     ap.add_argument("--probe-stability", action="store_true",
                     help="record per-state norms at init, after one step and "
@@ -483,9 +488,9 @@ def main():
     norm_stats = make_norm_stats(data.train_traj, data.mean, data.std)
     rollout = {
         "val": rollout_metrics(data.val_traj, data.denormalise(val_gen),
-                               norm_stats, args.system),
+                               norm_stats, args.system, args.tau_orb),
         "test": rollout_metrics(data.test_traj, cl_traj, norm_stats,
-                                args.system)}
+                                args.system, args.tau_orb)}
 
     for name, m in (("val", val_metrics), ("test", test_metrics)):
         print(f"  {name}: teacher-forced MSE {m['teacher_forced_mse']:.5f} | "
@@ -535,6 +540,7 @@ def main():
             "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
             "forcing": args.forcing,
             "alpha_min": args.alpha_min if mixed else None,
+            "tau_orb": args.tau_orb,
             "build": dict(wiring=args.wiring, cell=args.cell, size=args.size,
                           seed=args.seed, feature_size=data.feature_size,
                           loc_dim=data.loc_dim, lr=args.lr,
