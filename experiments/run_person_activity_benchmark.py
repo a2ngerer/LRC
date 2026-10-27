@@ -94,6 +94,8 @@ def run(args):
     from src.benchmark.checkpoints import save_weights
     from src.wirings import param_counts, size_for_budget
 
+    if args.deterministic:
+        tf.config.experimental.enable_op_determinism()
     data = load_person_activity(data_path=args.data_path, split=args.split,
                                 split_seed=args.split_seed)
     print(f"data ({data.split}, split_seed={data.split_seed}, "
@@ -277,6 +279,7 @@ def run(args):
         "training_diverged": not np.isfinite(hist.history["loss"][-1]),
         "config": {"effective": {
             "task": "person_activity", "param_budget": args.param_budget,
+            "deterministic": args.deterministic,
             "backbone_layers": bb_effective,
             "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
             "dt_scale": args.dt_scale,
@@ -376,6 +379,9 @@ def main():
                    help="RQ4 diagnostics on one fixed training batch per epoch "
                         "(result key 'diagnostics', see src/evaluation/"
                         "gradient_flow.py RQ4Diagnostics, #30)")
+    p.add_argument("--deterministic", action="store_true",
+                   help="tf.config.experimental.enable_op_determinism() "
+                        "before model construction (#70)")
     p.add_argument("--no-save-weights", dest="save_weights",
                    action="store_false",
                    help="do not write <stem>.weights.h5 next to the result JSON")
