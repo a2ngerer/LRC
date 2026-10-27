@@ -49,7 +49,8 @@ config.effective.deterministic (protocol freeze F1-2026-10-26 l, #76).
 
 --eval-only --weights <stem>.weights.h5 re-scores a stored fit without
 training (#81, eval_only): per-seed test confusions and further validation
-draws, written to <stem>.evalonly.json; its own flags, see --eval-only --help.
+draws, written to <out>/<stem>.evalonly.json (--out required, outside the fit
+folder); its own flags, see --eval-only --help.
 
 Usage:
     uv run python experiments/run_committee_benchmark.py \
@@ -269,7 +270,8 @@ def eval_only(argv):
     _rng(val_seed + VAL_DRAW_STRIDE * k, m), so draw 0 is the stored
     validation draw and draws k >= 1 (val_seed + 1000, + 2000, ...) differ
     from the test seeds 0-4 and from val_seed. Writes
-    <out>/<stem>.evalonly.json (confusions: rows true, columns predicted):
+    <out>/<stem>.evalonly.json (--out required; refused when it is the
+    record's folder or below it) (confusions: rows true, columns predicted):
 
       test_confusion_by_recording_by_fault_by_seed
           {str(test seed): [{recording: confusion} per fault count]}: one
@@ -299,14 +301,21 @@ def eval_only(argv):
     ap.add_argument("--val-draws", type=int, default=1,
                     help="validation draws per fault count; draw 0 is the "
                          "stored one")
-    ap.add_argument("--out", default=None,
-                    help="output folder (default: the record's folder; pass "
-                         "one outside a read-only results tree)")
+    ap.add_argument("--out", required=True,
+                    help="output folder outside the fit folder (refused: the "
+                         "record's folder or below it)")
     ap.add_argument("--data-path", default=None)
     args = ap.parse_args(argv)
     if args.val_draws < 1:
         ap.error("--val-draws must be >= 1")
     path = args.record or args.weights.removesuffix(".weights.h5") + ".json"
+    # A fit folder holds exactly one result JSON (run_grid_hpo.py,
+    # determinism_probe.py and the S0 gate unpack it so) and sits in a
+    # read-only results tree: the output never goes there.
+    fit_dir = os.path.realpath(os.path.dirname(os.path.abspath(path)))
+    if os.path.commonpath([fit_dir, os.path.realpath(args.out)]) == fit_dir:
+        sys.exit(f"eval-only refused: --out {args.out} is the folder of "
+                 f"{path} or below it; pass a folder outside the fit folder")
     with open(path) as f:
         record = json.load(f)
     eff, name = record["config"]["effective"], os.path.basename(args.weights)
@@ -314,10 +323,16 @@ def eval_only(argv):
         sys.exit(f"eval-only refused: config.effective of {path} hashes to "
                  f"{config_hash(eff)}, its config_hash is "
                  f"{eff.get('config_hash')!r}")
-    if name != record.get("weights_path") or not os.path.samefile(
-            args.weights, os.path.join(os.path.dirname(path), name)):
+    # ponytail: the record stores no weights hash, so a different file under
+    # the record's weights_path name next to it is not detected.
+    try:
+        same = name == record.get("weights_path") and os.path.samefile(
+            args.weights, os.path.join(os.path.dirname(path), name))
+    except OSError:                      # either weights file missing
+        same = False
+    if not same:
         sys.exit(f"eval-only refused: {args.weights} is not the weights_path "
-                 f"{record.get('weights_path')!r} of {path}")
+                 f"{record.get('weights_path')!r} of {path} (or is missing)")
     if eff.get("deterministic"):
         tf.config.experimental.enable_op_determinism()
     model = rebuild_from_result(path)
@@ -368,8 +383,7 @@ def eval_only(argv):
                                            for cs in val_cm],
         "val_macro_f1_by_fault_by_draw": [[macro_f1(c) for c in cs]
                                           for cs in val_cm]}
-    dest = os.path.join(args.out or os.path.dirname(os.path.abspath(path)),
-                        os.path.basename(path)[:-len(".json")]
+    dest = os.path.join(args.out, os.path.basename(path)[:-len(".json")]
                         + ".evalonly.json")
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     with open(dest, "w") as f:

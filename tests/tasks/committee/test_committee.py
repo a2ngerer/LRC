@@ -849,18 +849,20 @@ def test_eval_only_rescores_the_stored_fit_without_training(
 def test_eval_only_refuses_a_foreign_config_or_weights(stub_fit, tmp_path,
                                                        monkeypatch):
     """Refused (exit 1, nothing written): a config.effective that does not
-    hash to its config_hash, a weights file under another name, and one
-    with the right name that is not the file next to the record."""
+    hash to its config_hash, a weights file under another name, one with
+    the right name that is not the file next to the record, and a missing
+    one."""
     rec = json.loads(stub_fit.read_text())
-    name = rec["weights_path"]
+    name, fit = rec["weights_path"], tmp_path / "fit"
+    fit.mkdir()
     rec["config"]["effective"]["config_hash"] = "0" * 64
-    (tmp_path / "tampered.json").write_text(json.dumps(rec))
-    shutil.copy(_weights(stub_fit), tmp_path / name)
-    shutil.copy(_weights(stub_fit), tmp_path / "other.weights.h5")
-    cases = [((tmp_path / name, tmp_path / "tampered.json"),
-              "config_hash is '0000"),
-             ((tmp_path / "other.weights.h5", stub_fit), "weights_path"),
-             ((tmp_path / name, stub_fit), "weights_path")]
+    (fit / "tampered.json").write_text(json.dumps(rec))
+    shutil.copy(_weights(stub_fit), fit / name)
+    shutil.copy(_weights(stub_fit), fit / "other.weights.h5")
+    cases = [((fit / name, fit / "tampered.json"), "config_hash is '0000"),
+             ((fit / "other.weights.h5", stub_fit), "weights_path"),
+             ((fit / name, stub_fit), "weights_path"),
+             ((fit / "gone" / name, stub_fit), "(or is missing)")]
     for (weights, record), why in cases:
         with pytest.raises(SystemExit) as e:
             _eval_only(monkeypatch, "--weights", str(weights), "--record",
@@ -868,3 +870,21 @@ def test_eval_only_refuses_a_foreign_config_or_weights(stub_fit, tmp_path,
         assert "eval-only refused" in str(e.value.code)
         assert why in str(e.value.code)
     assert not (tmp_path / "out").exists()
+
+
+def test_eval_only_never_writes_into_the_fit_folder(stub_fit, monkeypatch):
+    """A fit folder holds exactly one result JSON (run_grid_hpo.py unpacks
+    it so): --out is required, and the record's folder or a folder below it
+    is refused before anything is read or written."""
+    before = sorted(p.name for p in stub_fit.parent.rglob("*"))
+    with pytest.raises(SystemExit) as e:
+        _eval_only(monkeypatch, "--weights", _weights(stub_fit))
+    assert e.value.code == 2
+    for out in (stub_fit.parent, stub_fit.parent / "sub",
+                stub_fit.parent / "sub" / ".."):
+        with pytest.raises(SystemExit) as e:
+            _eval_only(monkeypatch, "--weights", _weights(stub_fit), "--out",
+                       str(out))
+        assert "eval-only refused: --out" in str(e.value.code)
+        assert "pass a folder outside the fit folder" in str(e.value.code)
+    assert sorted(p.name for p in stub_fit.parent.rglob("*")) == before
