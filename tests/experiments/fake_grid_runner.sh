@@ -3,7 +3,8 @@
 # passes, appends "<lr> <clip> <seed> <all args>" to $FAKE_LOG and writes
 # <outdir>/fake.json whose metrics come from the $FAKE_SCORES row "<lr> <clip>
 # <seed> <score> <tie_break>" (clip "off" = no --clipnorm); a missing row fails
-# the fit. "system" echoes --system (null without it, as the PA runner).
+# the fit. "system" echoes --system (null without it, as the PA runner);
+# best_val_epoch is $FAKE_BEST_EPOCH (default 10) of 40 epochs.
 set -euo pipefail
 clip=off; system=null; all="$*"
 while [[ $# -gt 0 ]]; do
@@ -24,5 +25,7 @@ read -r score tie <<<"$row"
 mkdir -p "$outdir"
 cat > "$outdir/fake.json" <<JSON
 {"system": $system, "data_seed": $((1000 + seed)), "val_macro_f1": $score,
+ "val_macro_f1_mean": $score, "epochs": 40,
+ "best_val_epoch": ${FAKE_BEST_EPOCH:-10},
  "rollout_metrics_val": {"vpt_median": $score, "nrmse_32_median": $tie}}
 JSON

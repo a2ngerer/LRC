@@ -21,10 +21,14 @@ Optional sections:
   --pa-runs DIR    Person Activity arm means with a percentile bootstrap over
                    seeds (--bootstrap-units seed) or over seeds and test
                    recordings (--bootstrap-units seed,recording)
+  --co-runs DIR    H-d consensus-study family (committee runner JSONs, #55):
+                   one-sided paired Wilcoxon over seeds at K=30, Bonferroni
+                   over the family of four, plus the attribution flag
 
 Usage:
     uv run python experiments/aggregate_results.py [--runs results/runs] [--out results]
         [--hpo-dir DIR] [--pa-runs DIR [--bootstrap-units seed,recording]]
+        [--co-runs DIR]
 """
 import argparse
 import json
@@ -67,9 +71,18 @@ BONFERRONI_FAMILIES = {
     'H-b': len(CORE_CONTRASTS['H-b']),
     # 2 wirings x 3 tasks, each also on the eval-only robustness endpoint (#34)
     'H-c': 2 * len(CORE_CONTRASTS['H-c']),
-    # learned consensus vs input averaging at K=300, rho=0.5 (committee runner)
-    'H-d': 1,
+    # {ncp, cncp} x {part i, part ii} at K=30 (consensus_family below)
+    'H-d': 4,
 }
+
+# H-d (protocol freeze F1-2026-10-26, #55), one-sided (consensus better), at
+# K=30: part i learned consensus vs input averaging, test macro-F1 at m=15;
+# part ii learned vs lambda=0 on the normalised per-position macro-F1 AUC,
+# per seed the mean over m in {0, 15}. Attribution flag (no family test): the
+# part-i effect counts as consensus only if learned lambda also beats
+# lambda=0 on the test macro-F1 at m=15 (one-sided, alpha unadjusted).
+HD_K, HD_M, HD_AUC_M = 30, 15, (0, 15)
+HD_WIRINGS = ('ncp', 'cncp')
 
 
 def load_runs(runs_dirs) -> pd.DataFrame:
@@ -345,6 +358,112 @@ def pa_arm_means(pa_dir, units='seed') -> str:
     return '\n'.join(lines)
 
 
+def _co_arm(r):
+    """'cons' | 'lam0' | 'avg_in' | None for a committee result record of the
+    suite protocol (identical views, training corruption on)."""
+    if r.get('view_mode') != 'identical' or r.get('train_corruption') != 'on':
+        return None
+    if r.get('view_average') == 'mean':
+        return 'avg_in'
+    if r.get('view_average', 'off') != 'off' or r.get('consensus') != 'mean':
+        return None
+    if r.get('vote_lambda') is None:
+        return 'cons'
+    return 'lam0' if r['vote_lambda'] == 0 else None
+
+
+def load_consensus_runs(co_dir) -> dict:
+    """{(cell, wiring, arm): {seed: (macro-F1 at HD_M, AUC mean over
+    HD_AUC_M)}} from the K=HD_K committee JSONs with the fault-grid endpoints;
+    the input-averaging monolith (any wiring) is also keyed (cell, None,
+    'avg_in'). An arm with a run sized outside the budget tolerance (#59) is
+    replaced by None (it enters no confirmatory contrast)."""
+    runs, above = defaultdict(dict), set()
+    for path in sorted(glob(os.path.join(co_dir, '*.json'))):
+        with open(path, encoding='utf-8') as f:
+            r = json.load(f)
+        arm = _co_arm(r)
+        if (arm is None or r.get('n_columns') != HD_K
+                or 'test_macro_f1_by_fault' not in r):
+            continue
+        m = r['fault_counts']
+        auc = np.mean([r['per_position_macro_f1_auc'][m.index(k)]
+                       for k in HD_AUC_M])
+        key = (r['cell'], r['wiring'], arm)
+        runs[key][r['seed']] = (r['test_macro_f1_by_fault'][m.index(HD_M)],
+                                float(auc))
+        if r.get('budget_above_tolerance'):
+            above.add(key)
+    runs = {k: (None if k in above else v) for k, v in runs.items()}
+    for cell, wiring, arm in list(runs):
+        if arm == 'avg_in':
+            runs.setdefault((cell, None, 'avg_in'), runs[(cell, wiring, arm)])
+    return runs
+
+
+def _one_sided(a, b, j):
+    """(n pairs, median diff, one-sided p) of a > b on component j, paired
+    by seed; p None below 5 pairs or with all differences zero."""
+    seeds = sorted(set(a) & set(b))
+    x = np.array([a[s][j] for s in seeds])
+    y = np.array([b[s][j] for s in seeds])
+    if len(seeds) < 5 or np.all(x == y):
+        return len(seeds), (float(np.median(x - y)) if seeds else None), None
+    return len(seeds), float(np.median(x - y)), float(
+        wilcoxon(x, y, alternative='greater').pvalue)
+
+
+def consensus_family(co_dir) -> str:
+    """The H-d family of four (one-sided, Bonferroni) and the attribution
+    flag per wiring and cell."""
+    runs = load_consensus_runs(co_dir)
+    n_tests = BONFERRONI_FAMILIES['H-d']
+    lines = [f'## H-d consensus family (K={HD_K}, one-sided Wilcoxon over '
+             f'seeds, Bonferroni m={n_tests}, alpha={ALPHA})\n',
+             '| Cell | Wiring | Part | Contrast | n pairs | median diff '
+             '| p one-sided | p Bonferroni | significant |',
+             '|------|--------|------|----------|---------|-------------'
+             '|-------------|--------------|-------------|']
+    flags = []
+    for cell in sorted({c for c, _, _ in runs}):
+        for w in HD_WIRINGS:
+            cons = runs.get((cell, w, 'cons'))
+            avg = runs.get((cell, w, 'avg_in'), runs.get(
+                (cell, None, 'avg_in')))
+            lam0 = runs.get((cell, w, 'lam0'))
+            for part, label, b, j in (
+                    ('i', f'consensus vs avg_in, macro-F1 m={HD_M}', avg, 0),
+                    ('ii', 'consensus vs lambda=0, per-position AUC '
+                           f'm in {set(HD_AUC_M)}', lam0, 1)):
+                if cons is None or b is None:
+                    lines.append(f'| {cell} | {w} | {part} | {label} | 0 '
+                                 '| — | — | — | missing arm or arm above '
+                                 'budget tolerance |')
+                    continue
+                n, med, p = _one_sided(cons, b, j)
+                if p is None:
+                    lines.append(f'| {cell} | {w} | {part} | {label} | {n} '
+                                 f'| {med if med is None else f"{med:+.4f}"} '
+                                 '| — | — | too few pairs |')
+                    continue
+                p_adj = min(1.0, p * n_tests)
+                lines.append(f'| {cell} | {w} | {part} | {label} | {n} '
+                             f'| {med:+.4f} | {p:.4g} | {p_adj:.4g} '
+                             f'| {"YES" if p_adj < ALPHA else "no"} |')
+            if cons is not None and lam0 is not None:
+                n, med, p = _one_sided(cons, lam0, 0)
+                attr = ('consensus' if p is not None and p < ALPHA
+                        else 'late fusion')
+                flags.append(f'- {cell}/{w}: learned lambda vs lambda=0 at '
+                             f'm={HD_M}, n={n}, p one-sided '
+                             f'{"—" if p is None else f"{p:.4g}"} -> '
+                             f'attribution: **{attr}**')
+    lines += ['', 'Attribution (a part-i effect counts as consensus only if '
+              'learned lambda also beats lambda=0 at m=15, one-sided, '
+              f'alpha={ALPHA}; no family test):', *flags, '']
+    return '\n'.join(lines)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument('--runs', nargs='+', default=['results/runs'])
@@ -358,6 +477,8 @@ def main(argv=None) -> int:
     p.add_argument('--pa-runs', default=None,
                    help='Person Activity result JSON folder (arm means with '
                         'bootstrap interval)')
+    p.add_argument('--co-runs', default=None,
+                   help='committee result JSON folder (H-d consensus family)')
     p.add_argument('--bootstrap-units', default='seed',
                    choices=('seed', 'seed,recording'),
                    help='resampling units for the --pa-runs arm means')
@@ -366,7 +487,7 @@ def main(argv=None) -> int:
     df = load_runs(args.runs)
     if args.cells and not df.empty:
         df = df[df['cell'].isin(args.cells.split(','))]
-    if df.empty and not (args.hpo_dir or args.pa_runs):
+    if df.empty and not (args.hpo_dir or args.pa_runs or args.co_runs):
         print(f'No run JSONs found in {args.runs}', file=sys.stderr)
         return 1
 
@@ -386,6 +507,8 @@ def main(argv=None) -> int:
         parts.append(hpo_fragility(args.hpo_dir))
     if args.pa_runs:
         parts.append(pa_arm_means(args.pa_runs, args.bootstrap_units))
+    if args.co_runs:
+        parts.append(consensus_family(args.co_runs))
     report = '\n'.join(parts)
     md_path = os.path.join(args.out, 'summary.md')
     with open(md_path, 'w', encoding='utf-8') as f:

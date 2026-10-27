@@ -6,7 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from experiments.aggregate_results import (_test_block, load_runs, main,
+from experiments.aggregate_results import (BONFERRONI_FAMILIES, _test_block,
+                                           consensus_family, load_runs, main,
                                            pa_arm_means)
 from src.evaluation.stats import kendall_tau_b, p_a_gt_b
 
@@ -234,3 +235,52 @@ def test_pa_arm_means_hierarchical_bootstrap(tmp_path):
     row = pa_arm_means(d, 'seed,recording').splitlines()[-1]
     lo, hi = (float(v) for v in row.split('[')[1].rstrip('] |').split(','))
     assert '| cfc_lrc_dense3 | 5 | 0.6000 |' in row and lo < 0.6 < hi
+
+
+def _write_co(dirpath, wiring, seed, f1_m15, auc_m0, auc_m15, view_average='off',
+              vote_lambda=None, n_columns=30, above=False):
+    """A committee runner JSON with the fault-grid endpoints (#55)."""
+    grid = [0, 3, 9, 15, 20]
+    tag = f'{wiring}_{view_average}_{vote_lambda}_K{n_columns}_seed{seed}'
+    with open(os.path.join(dirpath, f'{tag}.json'), 'w') as f:
+        json.dump({'cell': 'cfc_lrc', 'wiring': wiring, 'seed': seed,
+                   'n_columns': n_columns, 'view_mode': 'identical',
+                   'train_corruption': 'on', 'view_average': view_average,
+                   'vote_lambda': vote_lambda, 'consensus': 'mean',
+                   'budget_above_tolerance': above, 'fault_counts': grid,
+                   'test_macro_f1_by_fault': [0.7, 0.6, 0.5, f1_m15, 0.3],
+                   'per_position_macro_f1_auc': [auc_m0, 0, 0, auc_m15, 0]}, f)
+
+
+def test_consensus_family_one_sided_bonferroni_and_attribution(tmp_path):
+    d = str(tmp_path)
+    for s in range(10):
+        e = 0.01 * s                    # distinct differences, no ties
+        for w in ('ncp', 'cncp'):
+            # learned consensus beats input averaging (part i) and lambda=0
+            # on the AUC (part ii); at m=15 it beats lambda=0 only for ncp
+            _write_co(d, w, s, 0.6 + e, 0.8 + e, 0.6 + e)
+            _write_co(d, w, s, (0.5 if w == 'ncp' else 0.7) + e / 2,
+                      0.7, 0.5, vote_lambda=0.0)
+            _write_co(d, w, s, 0.6 + e, 0.8 + e, 0.6 + e, n_columns=3)
+        _write_co(d, 'ncp', s, 0.4 + e / 3, 0.9, 0.2, view_average='mean')
+    assert BONFERRONI_FAMILIES['H-d'] == 4
+    report = consensus_family(d)
+    rows = [r for r in report.splitlines() if r.startswith('| cfc_lrc')]
+    assert len(rows) == 4 and all('| 10 |' in r and 'YES' in r for r in rows)
+    # exact one-sided p of 10 positive differences is 1/1024, x4 Bonferroni
+    assert all('0.0009766 | 0.003906' in r for r in rows)
+    assert 'cfc_lrc/ncp: learned lambda vs lambda=0 at m=15' in report
+    assert '-> attribution: **consensus**' in report
+    assert 'cfc_lrc/cncp' in report and '**late fusion**' in report
+
+
+def test_consensus_family_excludes_arm_above_budget(tmp_path):
+    d = str(tmp_path)
+    for s in range(6):
+        _write_co(d, 'ncp', s, 0.6 + s / 100, 0.8, 0.6, above=(s == 0))
+        _write_co(d, 'ncp', s, 0.4, 0.7, 0.5, vote_lambda=0.0)
+    report = consensus_family(d)
+    assert 'missing arm or arm above budget tolerance' in report
+    assert main(['--runs', str(tmp_path / 'none'), '--co-runs', d,
+                 '--out', str(tmp_path / 'out')]) == 0
