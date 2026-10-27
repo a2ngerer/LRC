@@ -25,7 +25,9 @@ cluster/submit_suite.sh) and checks the S0 criteria:
   budget            budget_above_tolerance true only on gru/dense3 and
                     lstm/dense3
   elastance         elastance_type 'asymmetric' on every cell whose registry
-                    kwargs carry an elastance (src/benchmark/registry.py)
+                    kwargs carry an elastance (src/benchmark/registry.py:
+                    lrc, mm_lrc, cfc_lrc, cfc_lrc_outer, cfc_mm_lrc; mm_ltc
+                    and cfc_mm_ltc have none and record None)
   ode_unfolds       6 on every solver cell (ODE_UNFOLD_CELLS: ctrnn, lrc,
                     mm_lrc, ltc, mm_ltc)
   determinism       with --determinism (determinism_probe.json, #70): runtime

@@ -315,7 +315,9 @@ the rollout keys (`vpt_multi_median`, `vpt_anchor_{8,16,24,32}`,
 `nrmse_32_anchor_8`, outcome rates, `non_finite` false) or the finite primary
 metric (Person Activity, committee); no NaN/Inf (the `inv_drift_*` fields of
 `multitimescale_lib` are listed, not failed); `budget_above_tolerance` only on
-gru/dense3 and lstm/dense3; `elastance_type` asymmetric on the elastance cells;
+gru/dense3 and lstm/dense3; `elastance_type` asymmetric on the cells with an
+elastance in the registry (lrc, mm_lrc, cfc_lrc, cfc_lrc_outer, cfc_mm_lrc;
+mm_ltc and cfc_mm_ltc have none);
 `ode_unfolds` 6 on the solver cells; the determinism probe (ratio on/off at
 most 1.3, |Delta| of the "on" pair at most 1e-3, lv and pa) and a floor line
 per system and data seed. The report lists every check as PASS/FAIL with the
