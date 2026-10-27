@@ -10,10 +10,9 @@ committee corruption code (noise_sigma, corrupt_views with one view and no
 faults). sigma in SIGMAS is in units of the training-split std of each
 coordinate; N_DRAWS draws from the fixed NOISE_SEED (draw d:
 default_rng([NOISE_SEED, d]), the same noisy inputs for every arm) are
-averaged. sigma 0 is the clean reference of the same weights: the runner
-saves the last epoch's weights but reads test_macro_f1 at the best
-validation epoch, so the two agree only when best_val_epoch == epochs.
-Columns f1_sigma_<sigma>.
+averaged. sigma 0 is the clean reference: the runner saves the weights of
+the best validation epoch, at which it reads test_macro_f1, so f1_sigma_0
+reproduces it. Columns f1_sigma_<sigma>.
 
 Rollouts (run_lotka_volterra_benchmark.py JSONs of SYSTEMS on
 FORCEABLE_WIRINGS): two fresh sets of N_ROLLOUT trajectories, drawn through

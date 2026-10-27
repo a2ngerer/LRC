@@ -6,6 +6,7 @@
 import json
 import sys
 
+import numpy as np
 import pandas as pd
 from scipy.spatial import Delaunay
 
@@ -14,6 +15,7 @@ from experiments import eval_robustness as er
 from experiments import run_lotka_volterra_benchmark as lv_runner
 from experiments import run_person_activity_benchmark as pa_runner
 from experiments.aggregate_results import load_sequence_runs
+from src.benchmark.checkpoints import rebuild_from_result
 from src.tasks.lotka_volterra.datasets import (load_lotka_volterra,
                                                sample_ood_trajectories)
 from tests.benchmark.test_checkpoints import _pa_stub
@@ -29,13 +31,13 @@ def _lv_fit(d, monkeypatch, system, wiring, seed=0):
     lv_runner.main()
 
 
-def _pa_fit(d, monkeypatch, epochs):
+def _pa_fit(d, monkeypatch, epochs, *extra):
     monkeypatch.setattr(pa_pkg, 'load_person_activity', _pa_stub)
     monkeypatch.setattr(er, 'load_person_activity', _pa_stub)
     monkeypatch.setattr(sys, 'argv', [
         'run_person_activity_benchmark.py', '--wiring', 'ncp', '--cell',
         'cfc_lrc', '--size', '8', '--epochs', str(epochs), '--outdir',
-        str(d)])
+        str(d), *extra])
     pa_runner.main()
     return d / 'cfc_lrc_ncp_seed0.json'
 
@@ -52,10 +54,29 @@ def test_ood_initial_conditions_leave_the_training_hull():
 
 
 def test_sigma_zero_reproduces_the_clean_metric(tmp_path, monkeypatch):
-    """One epoch (best epoch = saved epoch): sigma 0 on the rebuilt fit is
-    the runner's test macro-F1; the noisy draws are fixed."""
-    path = _pa_fit(tmp_path, monkeypatch, epochs=1)
+    """The runner saves the best-val epoch's weights (here epoch 2 of 3,
+    val curve scripted), so sigma 0 on the rebuilt fit is the runner's test
+    macro-F1; the noisy draws are fixed."""
+    real_f1, real_cms, val_weights = (pa_runner.macro_f1,
+                                      pa_runner.split_confusions, [])
+
+    def spy_cms(model, data, part, batch_size):     # weights of each epoch
+        if part == 'val':
+            val_weights.append(model.get_weights())
+        return real_cms(model, data, part, batch_size)
+    curve = iter((0.1, 0.9, 0.2))      # the first three calls: val curve
+    monkeypatch.setattr(pa_runner, 'split_confusions', spy_cms)
+    monkeypatch.setattr(pa_runner, 'macro_f1',
+                        lambda cm: next(curve, None) or real_f1(cm))
+    path = _pa_fit(tmp_path, monkeypatch, 3, '--lr', '0.05')
     record = json.loads(path.read_text())
+    assert (record['best_val_epoch'], record['epochs']) == (2, 3)
+    saved = rebuild_from_result(str(path)).get_weights()
+
+    def is_saved(weights):
+        return (len(weights) == len(saved)
+                and all(map(np.array_equal, weights, saved)))
+    assert is_saved(val_weights[1]) and not is_saved(val_weights[2])
     row = er.evaluate(str(path))
     assert row['f1_sigma_0'] == record['test_macro_f1']
     assert row['metric_robust'] == row['f1_sigma_0.3']
