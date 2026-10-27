@@ -21,10 +21,14 @@ Optional sections:
   --pa-runs DIR    Person Activity arm means with a percentile bootstrap over
                    seeds (--bootstrap-units seed) or over seeds and test
                    recordings (--bootstrap-units seed,recording)
+  --rollout-runs DIR  rollout outcome-class shares per arm (test split) with
+                   exact Clopper-Pearson intervals, at tau_orb and at the 0.30
+                   sensitivity, plus one non-finite label per arm
 
 Usage:
     uv run python experiments/aggregate_results.py [--runs results/runs] [--out results]
         [--hpo-dir DIR] [--pa-runs DIR [--bootstrap-units seed,recording]]
+        [--rollout-runs DIR]
 """
 import argparse
 import json
@@ -41,7 +45,10 @@ from scipy.stats import wilcoxon
 # Allow running as a plain script (``src`` is the installed package).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.evaluation.stats import bootstrap_mean_ci, p_a_gt_b  # noqa: E402
+from src.evaluation.rollout_metrics import (SENSITIVITY_KEY,  # noqa: E402
+                                            TAU_ORB_SENSITIVITY)
+from src.evaluation.stats import (bootstrap_mean_ci, clopper_pearson,  # noqa: E402
+                                  p_a_gt_b)
 
 ALPHA = 0.05
 METRIC = 'nrmse'   # primary comparison metric (proposal: MSE/NRMSE)
@@ -345,6 +352,52 @@ def pa_arm_means(pa_dir, units='seed') -> str:
     return '\n'.join(lines)
 
 
+OUTCOME_CLASSES = ('ok', 'bounded_wrong', 'unbounded')
+
+
+def rollout_outcome_classes(rollout_dir) -> str:
+    """Outcome-class shares per rollout arm on the test split, pooled over the
+    trajectories of all fits, with exact Clopper-Pearson 95 % intervals; one
+    row at the stored tau_orb and one at the 0.30 sensitivity. Non-finite is a
+    fit property: one label per arm with the count of non-finite fits. Files
+    without the #63 keys (older schema, HPO selections) are skipped."""
+    arms, skipped = defaultdict(list), 0
+    for path in sorted(glob(os.path.join(rollout_dir, '**', '*.json'),
+                            recursive=True)):
+        with open(path, encoding='utf-8') as f:
+            r = json.load(f)
+        m = r.get('rollout_metrics_test') if isinstance(r, dict) else None
+        if not m or SENSITIVITY_KEY not in m:
+            skipped += 1
+            continue
+        tag = os.path.basename(path)[:-len('.json')].replace(f"_seed{r['seed']}", '')
+        arms[(r['system'], tag, m['tau_orb'])].append(m)
+    lines = ['## Rollout outcome classes (test trajectories, share [95% '
+             'Clopper-Pearson CI])\n',
+             '| System | Arm | fits | trajectories | tau_orb | '
+             + ' | '.join(OUTCOME_CLASSES) + ' | non-finite fits |',
+             '|--------|-----|------|--------------|---------|'
+             + '----|' * len(OUTCOME_CLASSES) + '-----------------|']
+    for (system, arm, tau), ms in sorted(arms.items()):
+        n = [m['n_trajectories'] for m in ms]
+        n_nf = sum(bool(m['non_finite']) for m in ms)
+        lo, hi = clopper_pearson(n_nf, len(ms))
+        nf = (f'at least 1 of {len(ms)} fits non-finite ({n_nf}/{len(ms)} '
+              f'[{lo:.2f}, {hi:.2f}])' if n_nf else '—')
+        for t, rates in ((tau, ms), (TAU_ORB_SENSITIVITY,
+                                     [m[SENSITIVITY_KEY] for m in ms])):
+            shares = []
+            for c in OUTCOME_CLASSES:
+                k = sum(round(rt[f'rate_{c}'] * ni) for rt, ni in zip(rates, n))
+                lo, hi = clopper_pearson(k, sum(n))
+                shares.append(f'{k / sum(n):.2f} [{lo:.2f}, {hi:.2f}]')
+            lines.append(f'| {system} | {arm} | {len(ms)} | {sum(n)} | {t:g} | '
+                         + ' | '.join(shares) + f' | {nf} |')
+    lines.append(f'\nSkipped {skipped} file(s) without outcome classes.\n'
+                 if skipped else '')
+    return '\n'.join(lines)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument('--runs', nargs='+', default=['results/runs'])
@@ -358,6 +411,9 @@ def main(argv=None) -> int:
     p.add_argument('--pa-runs', default=None,
                    help='Person Activity result JSON folder (arm means with '
                         'bootstrap interval)')
+    p.add_argument('--rollout-runs', default=None,
+                   help='rollout result JSON folder, searched recursively '
+                        '(outcome-class shares per arm)')
     p.add_argument('--bootstrap-units', default='seed',
                    choices=('seed', 'seed,recording'),
                    help='resampling units for the --pa-runs arm means')
@@ -366,7 +422,7 @@ def main(argv=None) -> int:
     df = load_runs(args.runs)
     if args.cells and not df.empty:
         df = df[df['cell'].isin(args.cells.split(','))]
-    if df.empty and not (args.hpo_dir or args.pa_runs):
+    if df.empty and not (args.hpo_dir or args.pa_runs or args.rollout_runs):
         print(f'No run JSONs found in {args.runs}', file=sys.stderr)
         return 1
 
@@ -386,6 +442,8 @@ def main(argv=None) -> int:
         parts.append(hpo_fragility(args.hpo_dir))
     if args.pa_runs:
         parts.append(pa_arm_means(args.pa_runs, args.bootstrap_units))
+    if args.rollout_runs:
+        parts.append(rollout_outcome_classes(args.rollout_runs))
     report = '\n'.join(parts)
     md_path = os.path.join(args.out, 'summary.md')
     with open(md_path, 'w', encoding='utf-8') as f:

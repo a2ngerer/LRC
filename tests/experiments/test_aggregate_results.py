@@ -234,3 +234,49 @@ def test_pa_arm_means_hierarchical_bootstrap(tmp_path):
     row = pa_arm_means(d, 'seed,recording').splitlines()[-1]
     lo, hi = (float(v) for v in row.split('[')[1].rstrip('] |').split(','))
     assert '| cfc_lrc_dense3 | 5 | 0.6000 |' in row and lo < 0.6 < hi
+
+
+def _write_rollout(d, tag, seed, rates, sens, non_finite, n=16):
+    m = {'n_trajectories': n, 'tau_orb': 0.15, 'non_finite': non_finite,
+         **{f'rate_{c}': v for c, v in zip(('ok', 'bounded_wrong', 'unbounded'), rates)},
+         'outcome_classes_tau_0.30': {
+             f'rate_{c}': v for c, v in zip(('ok', 'bounded_wrong', 'unbounded'), sens)}}
+    with open(os.path.join(d, f'{tag}_seed{seed}.json'), 'w', encoding='utf-8') as f:
+        json.dump({'system': 'periodic_predator_prey', 'seed': seed,
+                   'rollout_metrics_test': m}, f)
+
+
+def test_rollout_outcome_classes_pool_trajectories_with_cp_and_flag_non_finite(
+        tmp_path):
+    """Class shares pool the test trajectories of all fits of an arm (exact
+    Clopper-Pearson), once at tau_orb and once at 0.30; a non-finite fit gives
+    the arm one label; files without outcome classes are skipped."""
+    from src.evaluation.stats import clopper_pearson
+    d = tmp_path / 'lv'
+    os.makedirs(d / 'sub')
+    _write_rollout(d, 'cfc_ncp_mixed', 0, (1, 0, 0), (1, 0, 0), False)
+    _write_rollout(d / 'sub', 'cfc_ncp_mixed', 1, (0.5, 0.25, 0.25),
+                   (0.75, 0, 0.25), True)
+    _write_rollout(d, 'gru_dense_mixed', 0, (0.5, 0.5, 0), (1, 0, 0), False)
+    (d / 'hpo_selection.json').write_text('{"task": "lv"}')
+    (d / 'old_seed0.json').write_text(
+        '{"system": "duffing", "seed": 0, "rollout_metrics_test": {"rate_drift": 1}}')
+    out = str(tmp_path / 'out')
+    assert main(['--runs', str(tmp_path / 'none'), '--out', out,
+                 '--rollout-runs', str(d)]) == 0
+    with open(os.path.join(out, 'summary.md'), encoding='utf-8') as f:
+        text = f.read()
+
+    def share(k, n):
+        lo, hi = clopper_pearson(k, n)
+        return f'{k / n:.2f} [{lo:.2f}, {hi:.2f}]'
+
+    lo, hi = clopper_pearson(1, 2)
+    label = f'at least 1 of 2 fits non-finite (1/2 [{lo:.2f}, {hi:.2f}])'
+    assert (f'| periodic_predator_prey | cfc_ncp_mixed | 2 | 32 | 0.15 | '
+            f'{share(24, 32)} | {share(4, 32)} | {share(4, 32)} | {label} |') in text
+    assert (f'| periodic_predator_prey | cfc_ncp_mixed | 2 | 32 | 0.3 | '
+            f'{share(28, 32)} | {share(0, 32)} | {share(4, 32)} | {label} |') in text
+    assert (f'| periodic_predator_prey | gru_dense_mixed | 1 | 16 | 0.15 | '
+            f'{share(8, 16)} | {share(8, 16)} | {share(0, 16)} | — |') in text
+    assert 'Skipped 2 file(s) without outcome classes.' in text
