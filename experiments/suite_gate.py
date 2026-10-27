@@ -10,10 +10,10 @@ cluster/submit_suite.sh) and checks the S0 criteria:
                     by suite_manifest) has exactly one fit; fits of other arms
                     (e.g. the consensus smoke) are listed and checked, not
                     failed
-  config            config.effective (or the top level, where the runners
-                    write weights_path) carries ode_unfolds, dt_scale, forcing
-                    (rollout tasks) and a weights_path; the committee runner
-                    has no dt_scale (closed-form cells)
+  config            config.effective carries ode_unfolds, dt_scale, forcing
+                    and anchors (rollout tasks), and the fit a weights_path
+                    (top level, where the runners write it); the committee
+                    runner has no dt_scale (closed-form cells)
   protocol_version  set on every fit, one value across all fits
   metrics           rollouts: rollout_metrics_{val,test} with
                     vpt_multi_median, vpt_anchor_{8,16,24,32},
@@ -75,9 +75,11 @@ from src.evaluation.rollout_metrics import ANCHORS  # noqa: E402
 SMOKE = [os.path.join(ROOT, "configs", "suite", f"smoke_{t}.yaml")
          for t in ("lv", "duffing", "mt", "pa")]
 TASKS = {"lotka_volterra": "lv", "person_activity": "pa", "committee": "co"}
-CONFIG_KEYS = {"lv": ("ode_unfolds", "dt_scale", "forcing", "weights_path"),
+CONFIG_KEYS = {"lv": ("ode_unfolds", "dt_scale", "forcing", "anchors",
+                      "weights_path"),
                "pa": ("ode_unfolds", "dt_scale", "weights_path"),
                "co": ("ode_unfolds", "weights_path")}
+TOP_LEVEL = "weights_path"         # written by the runners next to config
 ROLLOUT_KEYS = ("vpt_multi_median", *(f"vpt_anchor_{a}" for a in ANCHORS),
                 "nrmse_32_anchor_8", "rate_ok", "rate_bounded_wrong",
                 "rate_unbounded")
@@ -96,8 +98,9 @@ def _eff(rec):
 
 
 def _field(rec, key):
-    """(present, value) of key in config.effective, else at the top level."""
-    for d in (_eff(rec), rec):
+    """(present, value) of key in config.effective; only weights_path falls
+    back to the top level of the record."""
+    for d in (_eff(rec), rec) if key == TOP_LEVEL else (_eff(rec),):
         if key in d:
             return True, d[key]
     return False, None
@@ -239,8 +242,8 @@ def check_fit(fit):
 
 
 DESCRIPTION = {
-    "config": "config.effective: ode_unfolds, dt_scale, forcing (rollouts), "
-              "weights_path",
+    "config": "config.effective: ode_unfolds, dt_scale, forcing, anchors "
+              "(rollouts); weights_path",
     "protocol_version": "protocol_version on every fit, one value",
     "metrics": "rollout keys, outcome rates, non_finite false; PA/committee "
                "primary metric finite",

@@ -54,7 +54,8 @@ def _fit(key, cell, wiring):
            'budget_deviation': 0.01, 'weights_path': 'weights.h5',
            'config': {'effective': eff}}
     if task == 'lotka_volterra':
-        eff.update(dt_scale=12.8, forcing='mixed', data_seed=DATA_SEED)
+        eff.update(dt_scale=12.8, forcing='mixed', data_seed=DATA_SEED,
+                   anchors=[8, 16, 24, 32])
         rec.update(system=key, data_seed=DATA_SEED,
                    rollout_metrics_val=_rollout_metrics(),
                    rollout_metrics_test=_rollout_metrics())
@@ -136,6 +137,12 @@ def _eff(fits, key, arm):
     return _arm(fits, key, arm)['config']['effective']
 
 
+def _to_top(fits, key, arm, field):
+    """Move a config.effective field to the top level of the record (only
+    weights_path is read there)."""
+    _arm(fits, key, arm)[field] = _eff(fits, key, arm).pop(field)
+
+
 LV, DUF, MT = ROLLOUT
 FAILURES = {
     'missing arm': ('arms', lambda f, p, fl: f.pop(('pa', 'gru_ncp', FOLDER))),
@@ -148,8 +155,15 @@ FAILURES = {
         f, 'pa', 'cfc_dense').__setitem__('weights_path', None)),
     'no forcing': ('config', lambda f, p, fl: _eff(f, MT, 'gru_ncp').pop(
         'forcing')),
+    'no anchors': ('config', lambda f, p, fl: _eff(f, DUF, 'lstm_ncp').pop(
+        'anchors')),
+    'dt_scale only at the top level': ('config', lambda f, p, fl: _to_top(
+        f, 'pa', 'gru_ncp', 'dt_scale')),
     'no protocol_version': ('protocol_version', lambda f, p, fl: _eff(
         f, DUF, 'lrc_ncp').pop('protocol_version')),
+    'protocol_version only at the top level': (
+        'protocol_version', lambda f, p, fl: _to_top(
+            f, LV, 'gru_ncp', 'protocol_version')),
     'two protocol versions': ('protocol_version', lambda f, p, fl: _eff(
         f, LV, 'lrc_ncp').__setitem__('protocol_version', 'F1-2026-10-27')),
     'no anchor key': ('metrics', lambda f, p, fl: _arm(
