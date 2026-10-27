@@ -64,8 +64,8 @@ def test_stage1_top2_then_mean_over_both_seeds(tmp_path, monkeypatch):
     assert (sel['task'], sel['system'], sel['cell'], sel['wiring']) == (
         'lv', 'duffing', 'cfc_lrc', 'dense3')
     assert sel['grid_extended'] is False and sel['lr_at_grid_edge'] is False
-    assert sel['select_on'] == 'rollout_metrics_val.vpt_median'
-    assert sel['tie_break'] == 'rollout_metrics_val.nrmse_32_median'
+    assert sel['select_on'] == 'rollout_metrics_val.vpt_multi_median'
+    assert sel['tie_break'] == 'rollout_metrics_val.nrmse_32_anchor_8'
     assert sel['tuning_seeds'] == [100, 101]
     assert sel['data_seeds'] == [1100, 1101]
     assert len(sel['candidates']) == 10
@@ -104,8 +104,9 @@ def test_edge_rule_extends_once(edge, ext, ext_scores, lr, at_edge,
 
 
 def test_tie_break_lower_nrmse32_wins(tmp_path, monkeypatch):
-    # equal VPT everywhere in the top 2: the lower nrmse_32 wins although grid
-    # order (stable sort) would keep 1e-3 first
+    # equal multi-anchor VPT everywhere in the top 2: the lower
+    # nrmse_32_anchor_8 wins although grid order (stable sort) would keep 1e-3
+    # first
     table = _table({(1e-3, None): (60, 60, 0.3),
                     (3e-3, None): (60, 60, 0.2)})
     sel, _ = _hpo(tmp_path, monkeypatch, table)
@@ -126,7 +127,19 @@ def test_select_on_override_minimize(tmp_path, monkeypatch):
     table = _table({(3e-3, None): (0, 0, 0.1)})  # lowest nrmse_32
     sel, _ = _hpo(tmp_path, monkeypatch, table, '--select-on',
                   'rollout_metrics_val.nrmse_32_median', '--minimize')
-    assert (sel['lr'], sel['maximize'], sel['tie_break']) == (3e-3, False, None)
+    assert (sel['lr'], sel['maximize']) == (3e-3, False)
+    assert sel['tie_break'] == 'rollout_metrics_val.nrmse_32_anchor_8'
+
+
+def test_select_on_keeps_the_tie_break(tmp_path, monkeypatch):
+    # --select-on no longer disables the tie-break (#62): equal scores, the
+    # lower nrmse_32_anchor_8 wins over grid order
+    table = _table({(1e-3, None): (60, 60, 0.3),
+                    (3e-3, None): (60, 60, 0.2)})
+    sel, _ = _hpo(tmp_path, monkeypatch, table, '--select-on',
+                  'rollout_metrics_val.vpt_median')
+    assert sel['select_on'] == 'rollout_metrics_val.vpt_median'
+    assert [r['lr'] for r in sel['ranking']] == [3e-3, 1e-3]
 
 
 def test_failed_fit_aborts(tmp_path, monkeypatch):
@@ -160,7 +173,8 @@ def test_runners_apply_global_clipnorm(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, 'argv', [
         'run_lotka_volterra_benchmark.py', '--wiring', 'dense', '--cell', 'gru',
         '--size', '4', '--epochs', '1', '--n-trajectories', '10',
-        '--seq-len', '8', '--clipnorm', '1.0', '--outdir', str(tmp_path)])
+        '--seq-len', '8', '--anchors', '2,4', '--horizon', '4',
+        '--clipnorm', '1.0', '--outdir', str(tmp_path)])
     lv_runner.main()
     _assert_global_clip(built, tmp_path / 'gru_dense_seed0.json', 1.0)
 

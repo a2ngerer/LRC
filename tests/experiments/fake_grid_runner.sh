@@ -24,5 +24,6 @@ read -r score tie <<<"$row"
 mkdir -p "$outdir"
 cat > "$outdir/fake.json" <<JSON
 {"system": $system, "data_seed": $((1000 + seed)), "val_macro_f1": $score,
- "rollout_metrics_val": {"vpt_median": $score, "nrmse_32_median": $tie}}
+ "rollout_metrics_val": {"vpt_multi_median": $score, "nrmse_32_anchor_8": $tie,
+                         "vpt_median": $score, "nrmse_32_median": $tie}}
 JSON
