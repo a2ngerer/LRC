@@ -26,8 +26,8 @@ import warnings
 
 import tensorflow as tf
 
-from src.neurons import (CTRNN_Cell, LRC_Cell, LTC_Cell, MM_LRC_Cell,
-                         MM_LTC_Cell)
+from src.neurons import (CTRNN_Cell, LRC_Cell, LTC_Cell, MLP_Cell,
+                         MM_LRC_Cell, MM_LTC_Cell)
 from src.neurons.base_cell import BaseCell
 from src.wirings import (CorticalColumnCell, CorticalColumnV2Cell, NCPWiring,
                          PARTITIONS, COUPLINGS, READOUTS, multi_column_head)
@@ -162,6 +162,16 @@ def _reject_multi_state(cell_cls, cell_kwargs):
             f"(state_size == units); {cell_cls.__name__} has state_size "
             f"{probe.state_size}. Multi-state cells (lstm, mm_*) do not fit "
             "the composite state; run them on dense, dense3 or ncp.")
+
+
+def _reject_stateless(cell_cls, wiring):
+    """Fail fast on the stateless mlp control (issue #60) for any wiring but
+    'dense': the other wirings exist to compare recurrent topologies, which a
+    memoryless cell does not have."""
+    if issubclass(cell_cls, MLP_Cell) and wiring != "dense":
+        raise ValueError(
+            f"cell mlp is the stateless control of the 'dense' wiring; "
+            f"wiring {wiring!r} is not supported.")
 
 
 def dt_feature_applies(cell, dt_feature=True):
@@ -401,6 +411,7 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
     if wiring not in WIRINGS:
         raise ValueError(f"wiring must be one of {WIRINGS}, got {wiring!r}")
     cell_cls = _resolve_cell_cls(cell)
+    _reject_stateless(cell_cls, wiring)
     if wiring in COMPOSITE_WIRINGS:
         _reject_multi_state(cell_cls, cell_kwargs)
 

@@ -26,7 +26,7 @@ from src.tasks.person_activity.model import (
     default_readout,
     ncp_layer_sizes,
     scaled_lamina_units, scaled_time, stacked_dense, _resolve_cell_cls,
-    _reject_multi_state)
+    _reject_multi_state, _reject_stateless)
 from src.tasks.active_sensing.model import TBT_MODES
 
 # The Lotka-Volterra / duffing trajectory task compares the thesis-core topology
@@ -60,7 +60,8 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
                       (3-input, with the phase-space location signal).
         cell:         _CELL_REGISTRY key (e.g. 'cfc_lrc', 'gru', 'lstm') or
                       BaseCell subclass; the composite wirings (cncp, tbt_cncp*)
-                      take single-state cells only.
+                      take single-state cells only, the stateless control
+                      'mlp' runs on 'dense' only (issue #60).
         size:         the arm's width knob. dense/dense3: RNN units per layer;
                       ncp: inter=size, command=motor=size//2; cncp/tbt: lamina
                       widths scaled by size/16 (person_activity.
@@ -100,6 +101,7 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
     if wiring not in LV_WIRINGS:
         raise ValueError(f"wiring must be one of {LV_WIRINGS}, got {wiring!r}")
     cell_cls = _resolve_cell_cls(cell)
+    _reject_stateless(cell_cls, wiring)
     if wiring in COMPOSITE_WIRINGS or wiring in TBT_MODES:
         _reject_multi_state(cell_cls, cell_kwargs)
 

@@ -101,6 +101,8 @@ CELL_REGISTRY: dict[str, CellConfig] = {
     'cfc_mm_lrc': CellConfig(kwargs=dict(_ASYM)),
     'cfc_mm_ltc': CellConfig(),          # CfC inner cell rejects elastance_type
     'ctrnn': CellConfig(),               # classical CT baseline, no extra kwargs
+    # stateless control of the rollout tasks, 'dense' wiring only (#60)
+    'mlp': CellConfig(),
     # --- v3.3 param-matched capacity control (the only width override) ------
     'lrc_pm': CellConfig(
         kwargs=dict(_ASYM),
