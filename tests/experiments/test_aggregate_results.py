@@ -8,7 +8,7 @@ import pytest
 
 from experiments.aggregate_results import (BONFERRONI_FAMILIES, _test_block,
                                            consensus_family, load_runs, main,
-                                           pa_arm_means)
+                                           not_learned, pa_arm_means)
 from src.evaluation.stats import kendall_tau_b, p_a_gt_b
 
 
@@ -293,6 +293,89 @@ def test_rollout_outcome_classes_pool_trajectories_with_cp_and_flag_non_finite(
     assert 'lr0.01' not in text
     assert 'Skipped 3 file(s) without outcome classes.' in text
     assert 'Left out 1 tuning-seed fit(s) (seed outside 0..9).' in text
+
+
+FLOOR_DRAW = {'system': 'periodic_predator_prey', 'n_trajectories': 10,
+              'seq_len': 32, 'split': [6, 2, 2], 't_span': [0.0, 10.0],
+              'ic_spread': 0.4}
+
+
+def _write_floor_fit(d, cell, wiring, seed, vpt, data_seed):
+    """A rollout fit with the #62 multi-anchor keys (anchor 8, horizon 16)."""
+    m = {'vpt_multi_median': vpt, 'anchors': [8], 'anchor_horizon': 16,
+         'anchor_theta': 0.5}
+    eff = {**FLOOR_DRAW, 'data_seed': data_seed}
+    with open(os.path.join(d, f'{cell}_{wiring}_seed{seed}_mixed.json'), 'w',
+              encoding='utf-8') as f:
+        json.dump({'system': eff['system'], 'cell': cell, 'wiring': wiring,
+                   'seed': seed, 'rollout_metrics_test': m,
+                   'config': {'effective': eff}}, f)
+
+
+def test_seed_rule_more_than_a_fifth_of_the_seeds():
+    assert [not_learned(k, 5) for k in (0, 1, 2)] == [False, False, True]
+    assert [not_learned(k, 10) for k in (2, 3)] == [False, True]
+
+
+def test_floors_json_marks_arms_by_the_seed_rule_and_flags_contrasts(
+        tmp_path):
+    """floors.json: persistence/AR(1) per data seed (val and test) recomputed
+    from config.effective; each fit is compared with the test floor of its own
+    data draw; one of five seeds below keeps an arm above floor, two make it
+    not learned and every core contrast with it floor_bound. Tuning seeds and
+    files without the multi-anchor keys are left out."""
+    from src.evaluation.rollout_metrics import floor_lines
+    from src.tasks.lotka_volterra.datasets import (DATA_SEED_BASE,
+                                                   load_lotka_volterra)
+    d = tmp_path / 'lv'
+    os.makedirs(d / 'hpo')
+    floors = {}
+    for seed in range(5):
+        data = load_lotka_volterra(
+            n_trajectories=10, seq_len=32, split=(6, 2, 2),
+            seed=DATA_SEED_BASE + seed, system=FLOOR_DRAW['system'])
+        floors[seed] = floor_lines(data, (8,), 16)
+    for seed in range(5):
+        fl = floors[seed]['test']['floor']
+        for wiring, n_below in (('ncp', 0), ('dense3', 1), ('cncp', 2)):
+            _write_floor_fit(d, 'cfc_lrc', wiring, seed,
+                             fl - 1 if seed < n_below else fl,
+                             DATA_SEED_BASE + seed)
+    _write_floor_fit(d / 'hpo', 'cfc_lrc', 'ncp', 100, 0, DATA_SEED_BASE + 999)
+    (d / 'old_seed0.json').write_text(json.dumps(
+        {'system': 'duffing', 'seed': 0, 'rollout_metrics_test': {'vpt': 3}}))
+    out = str(tmp_path / 'out')
+    assert main(['--runs', str(tmp_path / 'none'), '--out', out,
+                 '--rollout-runs', str(d), '--floors']) == 0
+    with open(os.path.join(out, 'floors.json'), encoding='utf-8') as f:
+        got = json.load(f)
+    assert sorted(x['data_seed'] for x in got['floors']) == [
+        DATA_SEED_BASE + s for s in range(5)]
+    for x in got['floors']:
+        ref = floors[x['data_seed'] - DATA_SEED_BASE]
+        for split in ('val', 'test'):
+            for line in ('persistence', 'ar1'):
+                assert x[split][line]['vpt_multi_median'] == \
+                    ref[split][line]['vpt_multi_median']
+            assert x[split]['floor'] == ref[split]['floor']
+    arms = {a['arm']: a for a in got['arms']}
+    assert set(arms) == {f'cfc_lrc_{w}_mixed' for w in ('ncp', 'dense3', 'cncp')}
+    assert arms['cfc_lrc_dense3_mixed']['seeds_below'] == [0]
+    assert [arms[f'cfc_lrc_{w}_mixed']['above_floor']
+            for w in ('ncp', 'dense3', 'cncp')] == [True, True, False]
+    hc = {c['a'][1]: c['floor_bound'] for c in got['contrasts']
+          if c['family'] == 'H-c'}
+    assert hc == {'ncp': False, 'cncp': True}
+    assert all(c['task'] == 'periodic_predator_prey' for c in got['contrasts'])
+    with open(os.path.join(out, 'summary.md'), encoding='utf-8') as f:
+        text = f.read()
+    assert '| periodic_predator_prey | cfc_lrc_cncp_mixed | 5 | [0, 1] ' \
+        '| NO (not learned) |' in text
+
+
+def test_floors_needs_rollout_runs(tmp_path):
+    with pytest.raises(SystemExit):
+        main(['--out', str(tmp_path), '--floors'])
 
 
 def _write_co(dirpath, wiring, seed, f1_m15, auc_m0, auc_m15, view_average='off',
