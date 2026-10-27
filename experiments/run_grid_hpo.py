@@ -40,6 +40,16 @@ lies at an edge of the final grid), ranking (the stage-2 configs best first:
 lr, clipnorm, score = mean over the tuning seeds, per-seed scores) and
 candidates (every fit with its metrics and result path).
 
+Person Activity chance guard (protocol freeze F1-2026-10-26, issue #80):
+every PA candidate carries one_class_macro_f1, the macro-F1 of always
+predicting the majority class of the validation split (from the loader's class
+counts on the split and split_seed of its result JSON, --data-path as passed to
+the runner), and at_chance (its val_macro_f1 <= that value + 0.01). When every
+stage-1 candidate is at chance, the arm never left the one-class plateau: the
+selection sets not_learned true and names the plateau in reason; there is no
+edge extension and no stage 2, and lr / clipnorm are the stage-1 ranking's
+first entry (exact ties in grid order). Else not_learned is false, reason null.
+
 Usage:
     uv run python experiments/run_grid_hpo.py --task lv --cell cfc_lrc \
         --wiring dense3 --param-budget 4000 --tuning-seeds 100 101 --outdir D
@@ -52,8 +62,10 @@ import math
 import os
 import shlex
 import subprocess
-from functools import reduce
+from functools import lru_cache, reduce
 from glob import glob
+
+from src.evaluation.metrics import CHANCE_MARGIN, at_chance, one_class_macro_f1
 
 GRID_LR = (1e-4, 1e-3, 3e-3, 1e-2)
 GRID_CLIP = (None, 1.0)
@@ -85,6 +97,17 @@ def _metric(record, key, path):
         raise SystemExit(f"{path}: no selection key {key!r}") from None
 
 
+@lru_cache(maxsize=None)
+def pa_one_class_val(split, split_seed, data_path=None):
+    """One-class macro-F1 of the Person Activity validation split (#80)."""
+    import numpy as np
+    from src.tasks.person_activity.datasets import load_person_activity
+    data = load_person_activity(data_path=data_path, split=split,
+                                split_seed=split_seed)
+    return one_class_macro_f1(np.bincount(data.val_y.ravel(),
+                                          minlength=data.num_classes))
+
+
 class GridHPO:
     def __init__(self, args, runner_args):
         self.a, self.runner_args = args, runner_args
@@ -92,6 +115,9 @@ class GridHPO:
         if args.select_on:
             self.select_on = args.select_on
         self.fits = {}                          # (lr, clip, seed) -> fit
+        dp = argparse.ArgumentParser(add_help=False)
+        dp.add_argument("--data-path", default=None)
+        self.data_path = dp.parse_known_args(runner_args)[0].data_path
 
     def fit(self, lr, clip, seed):
         """Run one candidate (or reuse its result JSON); return its metrics."""
@@ -128,7 +154,17 @@ class GridHPO:
             "tie_break": (_metric(rec, self.tie_break, path)
                           if self.tie_break else None),
             "result": os.path.relpath(path, a.outdir)}
+        if a.task == "pa":                      # chance guard (#80)
+            one = pa_one_class_val(rec.get("split"), rec.get("split_seed"),
+                                   self.data_path)
+            self.fits[key].update(one_class_macro_f1=one, at_chance=at_chance(
+                rec["val_macro_f1"], one))
         return self.fits[key]
+
+    def plateau(self):
+        """PA: every fit so far at chance (checked after stage 1)."""
+        return self.a.task == "pa" and all(f["at_chance"]
+                                           for f in self.fits.values())
 
     def summary(self, lr, clip, seeds):
         """Mean score / tie-break of one config over the given seeds."""
@@ -153,11 +189,12 @@ class GridHPO:
 
     def select(self, grid):
         """Stage 1 on s1 over the grid, stage 2 (top 2) ranked by the mean
-        over s1 and s2; a single tuning seed ranks stage 1 only."""
+        over s1 and s2; a single tuning seed or a PA plateau (every stage-1
+        fit at chance) ranks stage 1 only."""
         s1, *s2 = self.a.tuning_seeds
         stage1 = self._rank([self.summary(lr, c, [s1])
                              for lr in grid for c in self.a.grid_clip])
-        if not s2:
+        if not s2 or self.plateau():
             return stage1
         return self._rank([self.summary(r["lr"], r["clipnorm"], [s1, *s2])
                            for r in stage1[:TOP_K]])
@@ -165,8 +202,9 @@ class GridHPO:
     def run(self):
         grid = sorted(self.a.grid_lr)
         ranking = self.select(grid)
-        best = ranking[0]["lr"]
-        extended = best in EDGE_EXTENSION and best in (grid[0], grid[-1])
+        best, plateau = ranking[0]["lr"], self.plateau()
+        extended = (not plateau and best in EDGE_EXTENSION
+                    and best in (grid[0], grid[-1]))
         if extended:                             # edge rule, once
             grid = sorted(grid + [EDGE_EXTENSION[best]])
             ranking = self.select(grid)
@@ -178,6 +216,12 @@ class GridHPO:
             guard = {"epochs_guard_triggered": hit,
                      "final_epochs": (EPOCHS_GUARD_FINAL if hit
                                       else fits[0]["epochs"])}
+        elif a.task == "pa":
+            one = fits[0]["one_class_macro_f1"]
+            guard = {"not_learned": plateau, "reason": (
+                "one-class plateau: every stage-1 candidate at chance "
+                f"(val_macro_f1 <= one-class {one:.4f} + {CHANCE_MARGIN:g}); "
+                "no edge extension, no stage 2" if plateau else None)}
         return {
             "task": a.task, "system": fits[0]["system"], "cell": a.cell,
             "wiring": a.wiring, "param_budget": a.param_budget,
@@ -185,7 +229,8 @@ class GridHPO:
             "select_on": self.select_on, "maximize": not a.minimize,
             "tie_break": self.tie_break,
             "tuning_seeds": a.tuning_seeds,
-            "data_seeds": [next(f["data_seed"] for f in fits if f["seed"] == s)
+            "data_seeds": [next((f["data_seed"] for f in fits
+                                 if f["seed"] == s), None)  # None: not fit
                            for s in a.tuning_seeds],
             "grid_lr": grid, "grid_clip": a.grid_clip,
             "grid_extended": extended,
@@ -278,7 +323,8 @@ def main(argv=None):
     print(f"chosen lr {best['lr']:g} clipnorm {best['clipnorm']} "
           f"({sel['select_on']} mean {best['score']:g}); grid_extended "
           f"{sel['grid_extended']}, lr_at_grid_edge {sel['lr_at_grid_edge']}"
-          f" -> {path}")
+          + (f"; NOT LEARNED: {sel['reason']}" if sel.get("not_learned")
+             else "") + f" -> {path}")
 
 
 if __name__ == "__main__":

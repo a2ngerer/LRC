@@ -145,6 +145,18 @@ s2, the better mean wins; a winner at 1e-4 / 1e-2 extends the grid once by
 under `results/`, next to `results/hpo_selection.json`; a requeued job reuses
 the finished fits.
 
+Person Activity chance guard (#80): every PA candidate in
+`hpo_selection.json` carries `one_class_macro_f1` (the macro-F1 of always
+predicting the majority class of the validation split, from the loader's
+class counts, so the driver reads the PA data file like the runner) and
+`at_chance` (`val_macro_f1` <= that value + 0.01). When every stage-1
+candidate is at chance, the selection sets `not_learned: true` and names the
+one-class plateau in `reason`; it runs no edge extension and no stage 2 (8
+fits) and keeps the first stage-1 grid point (exact ties in grid order).
+`aggregate_results.py --contrasts` marks a PA contrast `floor_bound` when an
+arm's test macro-F1 lies at most 0.01 above the one-class value of the test
+split (or below it) in more than one of five seeds (decision f's seed rule).
+
 ```bash
 GH_TASK=lv GH_CELL=cfc_lrc GH_WIRING=ncp GH_SYSTEM=duffing ./cluster/submit_grid_hpo.sh <label>
 GH_TASK=pa GH_CELL=gru GH_WIRING=ncp ./cluster/submit_grid_hpo.sh --dry-run <label>
@@ -427,7 +439,7 @@ go criteria with the frozen thresholds (test split for the rollouts):
 | G1 duffing | as G1 lv | DECISION (exit 0): Duffing stays in the plan, H-b/H-c Duffing contrasts floor-bound, H-c conjunction over LV and PA (F1 section 7); FAIL only when a cfc_lrc/ncp seed is missing, has a non-finite VPT or no floor line (operational rule, #77) |
 | G1 multitimescale_lib | cfc/ncp >= 2 x persistence in >= 2 of 3 seeds, `rate_unbounded` 0 on every cfc/ncp fit | spread 0.25 or 256 steps, repeat once (F1 section 7) |
 | G0-E per task | an (arm, seed) qualifies when the mean of the last tenth of `val_loss_curve` (lower is better) or `val_macro_f1_curve` (Person Activity, higher is better) beats its value at 2/3 of the epochs by > 5 % relative; `ceil(2n/3)` of the task's n pilot arms (LV, Duffing 4 of 5; MT, PA 2 of 2; the dt_scale control not counted) with >= 2 qualifying seeds give the DECISION "epochs x1.5 (300 to 450)" or "epochs x2 (50 to 100)", else "epochs unchanged"; the summary reads "k of n arms qualify, needs t" | a fit without the curve fails the row (operational rule, #75) |
-| G2 pa | median test macro-F1 of cfc_lrc/ncp >= 0.60, every lrc/ncp fit finite (`training_diverged` false); `wallclock_s` of both arms listed | stop, find the cause before S2 (F1 section 7) |
+| G2 pa | median test macro-F1 of cfc_lrc/ncp >= 0.60, every lrc/ncp fit finite (`training_diverged` false); `wallclock_s` of both arms listed; reported, not gated (#80): every PA fit's test macro-F1 against the one-class value of the test split (from `test_confusion_by_recording`), an arm at most 0.01 above it in >= 2 of 3 seeds listed as "at chance" in the summary | stop, find the cause before S2 (F1 section 7) |
 | G3 lv | descriptive: median VPT of the dt_scale=1 control next to the main arm | never fails |
 | GK co | per arm the fit with the best `val_macro_f1_mean`: validation macro-F1 at m=0 >= 0.60; test macro-F1 degrades over the fault grid: no step m -> m' with MF1(m') - MF1(m) above one paired bootstrap SE (10 000 resamples of the test recordings in `test_confusion_by_recording_by_fault`, fixed seed, macro-F1 of the summed confusions) and MF1(m_max) < MF1(0); without the confusions the strict check (`test_macro_f1_by_fault` non-increasing), said so in the detail line; ncp_cons `vote_lambda_final` in (0.05, 0.95) | ncp_cons below 0.60 at m=0: architecture check (width, backbone) before the consensus study (F1 section 7); another arm below 0.60: arm check (lr grid, head) before the consensus study (F1 section 10.5); no degradation: protocol check (fault mask, noise scale) before the consensus study (F1 section 10.5); vote_init check of one fit for lambda at the edges (F1 section 7) |
 

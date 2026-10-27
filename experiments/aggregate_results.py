@@ -40,7 +40,8 @@ Optional sections:
                    resample bootstrap interval, crossed over seeds x test
                    recordings on Person Activity, divergence rates, the
                    floor_bound flag of --floors or --floors-json and, with
-                   --hpo-dir, the tuning-seed sign stability), the H-c
+                   --hpo-dir, the tuning-seed sign stability; on Person
+                   Activity the chance marking of #80), the H-c
                    conjunction and every other arm pair descriptively;
                    <out>/contrasts.csv and <out>/sequence_runs.csv
   --robustness CSV  with --contrasts: the eval-only robustness rows of
@@ -76,6 +77,8 @@ from scipy.stats import wilcoxon
 # Allow running as a plain script (``src`` is the installed package).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.evaluation.metrics import (CHANCE_MARGIN, at_chance,  # noqa: E402
+                                    one_class_macro_f1)
 from src.evaluation.rollout_metrics import (SENSITIVITY_KEY,  # noqa: E402
                                             TAU_ORB_SENSITIVITY, floor_lines)
 from src.evaluation.stats import (bootstrap_mean_ci,  # noqa: E402
@@ -766,6 +769,38 @@ def merge_robustness(df, csv_paths) -> pd.DataFrame:
     return df.drop(columns='config_effective_sha256')
 
 
+def pa_chance_marking(df) -> dict:
+    """{arm: {'one_class', 'seeds_at_chance', 'fits'}} of the final Person
+    Activity fits (#80, the analogue of decision f): a fit is at chance when
+    its test macro-F1 is at most CHANCE_MARGIN above the one-class value of
+    its test split (at_chance; below it and non-finite included), that value
+    from its test confusions (row sums = the loader's test class counts).
+    None for an arm with a fit without confusions."""
+    f = df[(df['stage'] == 'final') & (df['system'] == 'pa')] \
+        if not df.empty else df
+    out = {}
+    for arm, g in f.groupby('arm'):
+        if not all(isinstance(c, np.ndarray) for c in g['confusion']):
+            out[arm] = None
+            continue
+        one = [one_class_macro_f1(c.sum(axis=(0, 2))) for c in g['confusion']]
+        out[arm] = {'one_class': sorted(set(one)), 'fits': len(g),
+                    'seeds_at_chance': sorted(int(s) for s, m, o in zip(
+                        g['seed'], g['metric'], one) if at_chance(m, o))}
+    return out
+
+
+def _chance_bound(chance, arm_a, arm_b):
+    """floor_bound of a Person Activity contrast: an arm not learned by the
+    seed rule (not_learned on its seeds at chance); None without both
+    markings."""
+    marks = [chance.get(arm_a), chance.get(arm_b)]
+    if None in marks:
+        return None
+    return any(not_learned(len(m['seeds_at_chance']), m['fits'])
+               for m in marks)
+
+
 def _paired(df, system, arm_a, arm_b):
     """The final fits of two arms of one task merged on seed (suffixes _a,
     _b), with the paired value 'v' (a diverged fit at the worst value)."""
@@ -844,9 +879,10 @@ def core_contrast_blocks(df, floors=None, hpo=None) -> pd.DataFrame:
     flag is diverged_robust (or a non-finite metric_robust), not the clean
     one: a fit diverged on the robustness set enters at the worst value.
 
-    floors: compute_floors output (floors.json, #67); a block takes the
-    floor_bound flag of its (family, task, A, B) entry (None without floors
-    or without an entry, e.g. Person Activity). hpo: load_hpo_selections
+    floors: compute_floors output (floors.json, #67); a rollout block takes
+    the floor_bound flag of its (family, task, A, B) entry (None without
+    floors or without an entry); a Person Activity block takes the chance
+    marking of its arms (pa_chance_marking, #80). hpo: load_hpo_selections
     output, for sign_stable_tuning. A block with an arm sized outside the
     budget tolerance (#59) is excluded; one without fits is missing."""
     hpo = hpo or {}
@@ -854,6 +890,7 @@ def core_contrast_blocks(df, floors=None, hpo=None) -> pd.DataFrame:
     for c in (floors or {}).get('contrasts', []):
         k = (c['family'], c['task'], tuple(c['a']), tuple(c['b']))
         fb[k] = fb.get(k, False) or c['floor_bound']
+    chance = pa_chance_marking(df)
     families = [(f, e, f, 'metric') for f, e in CORE_CONTRASTS.items()]
     if 'metric_robust' in df:
         families.append((ROBUSTNESS_FAMILY, CORE_CONTRASTS['H-c'], 'H-c',
@@ -866,7 +903,9 @@ def core_contrast_blocks(df, floors=None, hpo=None) -> pd.DataFrame:
             row = {'family': family, 'task': task, 'a': arm_a, 'b': arm_b,
                    'm': m, 'endpoint': col, 'n_pairs': 0,
                    'significant': False,
-                   'floor_bound': fb.get((floor_family, task, a, b)),
+                   'floor_bound': (_chance_bound(chance, arm_a, arm_b)
+                                   if task == 'pa' else
+                                   fb.get((floor_family, task, a, b))),
                    'sign_stable_tuning': _sign_stable_tuning(hpo, task, a, b)}
             d = df
             if col != 'metric':     # the fits with an eval-only row
@@ -987,8 +1026,29 @@ def contrast_report(df, blocks, desc) -> str:
               'Median difference: 10,000-resample percentile '
               'bootstrap. sign_stable_tuning: the sign of A - B on the '
               'validation scores of the selected configurations agrees '
-              'between the two tuning seeds.\n',
-              '## Descriptive pairs (no significance claim)\n',
+              'between the two tuning seeds.\n']
+    chance = pa_chance_marking(df)
+    if chance:
+        lines += [f'## Person Activity chance marking (#80: test macro-F1 '
+                  f'at most {CHANCE_MARGIN:g} above the one-class value of '
+                  'the test split; floor_bound of the contrasts)\n',
+                  '| Task | Arm | fits | one-class | seeds at chance '
+                  '| above chance |',
+                  '|------|-----|------|-----------|-----------------'
+                  '|--------------|']
+        for arm, m in sorted(chance.items()):
+            if m is None:
+                lines.append(f'| pa | {arm} | — | — | — | no test confusions |')
+                continue
+            nl = not_learned(len(m['seeds_at_chance']), m['fits'])
+            lines.append(
+                f"| pa | {arm} | {m['fits']} "
+                f"| {'/'.join(f'{v:.4f}' for v in m['one_class'])} "
+                f"| {m['seeds_at_chance'] or '—'} "
+                f"| {'NO (not learned)' if nl else 'yes'} |")
+        lines.append('\nSeed rule (decision f): not learned if at chance in '
+                     'more than one of five seeds (two of ten).\n')
+    lines += ['## Descriptive pairs (no significance claim)\n',
               '| Task | A | B | n pairs | median diff | P(A>B) [95% CI] |',
               '|------|---|---|---------|-------------|-----------------|']
     for r in desc.to_dict('records'):

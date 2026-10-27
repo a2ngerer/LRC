@@ -42,3 +42,23 @@ def macro_f1(confusion) -> float:
     denom = cm.sum(axis=0) + cm.sum(axis=1)  # 2 TP + FP + FN per class
     present = denom > 0
     return float(np.mean(2 * tp[present] / denom[present]))
+
+
+# Chance guard (protocol freeze F1-2026-10-26, issue #80): a macro-F1 at most
+# this far above the one-class value of its split counts as at chance.
+CHANCE_MARGIN = 0.01
+
+
+def one_class_macro_f1(counts) -> float:
+    """Macro-F1 of always predicting the majority class of a split with these
+    per-class label counts: (2p / (1 + p)) / C for majority share p and C
+    classes present (the plateau of a classifier that outputs the prior)."""
+    counts = np.asarray(counts, dtype=np.float64)
+    cm = np.zeros((counts.size, counts.size))
+    cm[:, counts.argmax()] = counts
+    return macro_f1(cm)
+
+
+def at_chance(f1, one_class) -> bool:
+    """f1 <= one_class + CHANCE_MARGIN; a non-finite f1 counts as at chance."""
+    return not f1 > one_class + CHANCE_MARGIN
