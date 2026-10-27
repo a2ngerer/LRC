@@ -23,8 +23,12 @@ _SYSTEMS = {
     # separatrix (see lotka_volterra.datasets.LIBRATION_H_MAX), and (0, 10) at
     # 128 steps samples the oscillation >= 10 times per period. 'spread' is the
     # initial-condition jitter the sequence loader uses for this system.
+    # 'rtol'/'atol' override the shared 1e-3/1e-6 integrator tolerances: at
+    # rtol 1e-3 DOP853 phase-flips some fast oscillations (errors up to the
+    # full y0 range); at 1e-8/1e-9 the error against a tight reference is
+    # ~5e-7 of the range (atol 1e-6 alone would cap it at ~5e-4).
     'multitimescale_lib': {'t_span': (0, 10), 'y0': [0.0, np.pi / 8],
-                           'spread': 0.3},
+                           'spread': 0.3, 'rtol': 1e-8, 'atol': 1e-9},
 }
 
 _A_SPIRAL = np.array([[-0.1, 3.0], [-3.0, -0.1]])
@@ -182,8 +186,8 @@ def generate_dataset(name: str, data_size: int = 1000,
         y0,
         method='DOP853',
         t_eval=t_eval,
-        rtol=1e-3,
-        atol=1e-6,
+        rtol=params.get('rtol', 1e-3),
+        atol=params.get('atol', 1e-6),
     )
 
     t = sol.t        # (data_size,)
