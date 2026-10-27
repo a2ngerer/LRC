@@ -33,6 +33,9 @@ configs/suite/{lv,duffing,mt,pa,co}_*.yaml, #71):
                                 # (true = bare flag); likewise a named arm's keys
     hpo_dir: results/01_lotka_volterra/<run>/results/hpo   # final only: the
                                 # fetched HPO run (cluster/fetch_run.sh)
+    fixed: {lr: 0.001, clipnorm: null}   # final only, instead of hpo_dir: one
+                                # lr and clipnorm (null: off) for every arm, no
+                                # hpo_selection.json (the S1 pilots)
     cluster: {runs_per_gpu: 4, mem: 32G, walltime: "12:00:00", cpus: 12,
               array_throttle: 8}                    # optional, see below
     heavy:                      # optional: arms with one of these cells,
@@ -47,7 +50,7 @@ experiments/run_grid_hpo.py call into results/hpo/<arm>/. Stage final gives one
 line per (arm, seed): one task-runner fit into results/ (flat, as
 experiments/aggregate_results.py reads it) with the lr and clipnorm of
 <hpo_dir>/<arm or its config_from reference>/hpo_selection.json (co: also its
-final_epochs, the epoch guard of #55).
+final_epochs, the epoch guard of #55), or of `fixed`.
 
 A line is {"id", "group", "argv", "outdir", "done"}; outdir and done are
 relative to the run folder's results/. A line whose results/<done> exists (the
@@ -56,8 +59,9 @@ name carries the budget-derived size) is done and skipped, so a requeue or a
 re-submit after a walltime kill only runs what is missing.
 
 --count prints the planned fits (an hpo line counts HPO_FITS of its task; with
-one tuning seed its stage-1 grid, --grid-lr x --grid-clip) of one or more YAMLs
-and needs no hpo_selection.json; the frozen fit counts per task:
+one tuning seed its stage-1 grid, --grid-lr x --grid-clip, default GRID_LR x
+GRID_CLIP of run_grid_hpo.py; an edge extension is not counted) of one or more
+YAMLs and needs no hpo_selection.json; the frozen fit counts per task:
     uv run python experiments/suite_manifest.py --count configs/suite/lv_*.yaml
 
 Usage:
@@ -79,6 +83,8 @@ import sys
 
 import yaml
 
+from experiments.run_grid_hpo import GRID_CLIP, GRID_LR
+
 RUNNERS = {"lv": "experiments/run_lotka_volterra_benchmark.py",
            "pa": "experiments/run_person_activity_benchmark.py",
            "co": "experiments/run_committee_benchmark.py"}
@@ -89,9 +95,14 @@ HPO_FITS = {"lv": 11, "pa": 11, "co": 6}
 LV_DEFAULT_SYSTEM = "periodic_predator_prey"   # run_lotka_volterra_benchmark.py
 KEYS = {"task", "system", "stage", "cells", "wirings", "arms", "param_budget",
         "seeds", "extra_seeds", "config_from", "epochs", "ode_unfolds",
-        "dt_scale", "extra_args", "per_cell", "hpo_dir", "cluster", "heavy",
-        "description"}
+        "dt_scale", "extra_args", "per_cell", "hpo_dir", "fixed", "cluster",
+        "heavy", "description"}
 CLUSTER_KEYS = ("runs_per_gpu", "mem", "walltime", "cpus", "array_throttle")
+
+
+def _positive(v):
+    # a YAML 1e-3 without a dot is a string (PyYAML): write 0.001 or 1.0e-3
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
 
 
 def load(path):
@@ -131,8 +142,20 @@ def load(path):
             set(cfg["seeds"])) != len(cfg["seeds"])):
         raise SystemExit(f"{path}: stage hpo takes one tuning seed or two "
                          "different tuning seeds")
-    if cfg["stage"] == "final" and not cfg.get("hpo_dir"):
-        raise SystemExit(f"{path}: stage final needs hpo_dir")
+    if cfg["stage"] == "final" and bool(cfg.get("hpo_dir")) == bool(
+            cfg.get("fixed")):
+        raise SystemExit(f"{path}: stage final needs exactly one of hpo_dir "
+                         "and fixed")
+    if cfg["stage"] == "hpo" and cfg.get("fixed"):
+        raise SystemExit(f"{path}: fixed applies to stage final only")
+    fixed = cfg.get("fixed")
+    if fixed and not (isinstance(fixed, dict)
+                      and set(fixed) == {"lr", "clipnorm"}
+                      and _positive(fixed["lr"])
+                      and (fixed["clipnorm"] is None
+                           or _positive(fixed["clipnorm"]))):
+        raise SystemExit(f"{path}: fixed must be {{lr: <number > 0>, "
+                         "clipnorm: <number > 0 or null>}")
     if cfg["stage"] == "hpo" and cfg.get("extra_seeds"):
         raise SystemExit(f"{path}: extra_seeds applies to stage final only")
     names = [a[0] for a in arms(cfg)]
@@ -224,7 +247,10 @@ def result_name(task, cell, wiring, seed, argv):
 
 
 def selection(cfg, name, cell, wiring):
-    """The hpo_selection.json of arm `name`, checked against the campaign."""
+    """The hpo_selection.json of arm `name`, checked against the campaign;
+    `fixed` instead when the campaign sets it."""
+    if cfg.get("fixed"):
+        return cfg["fixed"]
     path = os.path.join(cfg["hpo_dir"], name, "hpo_selection.json")
     if not os.path.exists(path):
         return None
@@ -264,18 +290,25 @@ def jobs(cfg):
     return out
 
 
+def grid(cfg, flags):
+    """(lrs, clips) of the stage-1 grid of one hpo line: --grid-lr and
+    --grid-clip of the campaign or the arm, else run_grid_hpo.py's GRID_LR x
+    GRID_CLIP (clips as given: 'off' or a number)."""
+    ap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    ap.add_argument("--grid-lr", type=float, nargs="+", default=list(GRID_LR))
+    ap.add_argument("--grid-clip", nargs="+", default=list(GRID_CLIP))
+    g, _ = ap.parse_known_args(
+        [*map(str, cfg.get("extra_args") or []), *_flags(flags)])
+    return g.grid_lr, g.grid_clip
+
+
 def _hpo_fits(cfg, flags):
     """Planned fits of one hpo line: HPO_FITS of the task; one tuning seed runs
-    stage 1 only (run_grid_hpo.py), one fit per --grid-lr x --grid-clip value
-    (defaults: its 4 x 2 grid)."""
+    stage 1 only (run_grid_hpo.py), one fit per grid() point."""
     if len(cfg["seeds"]) == 2:
         return HPO_FITS[cfg["task"]]
-    ap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
-    ap.add_argument("--grid-lr", nargs="+", default=[None] * 4)
-    ap.add_argument("--grid-clip", nargs="+", default=[None] * 2)
-    grid, _ = ap.parse_known_args(
-        [*map(str, cfg.get("extra_args") or []), *_flags(flags)])
-    return len(grid.grid_lr) * len(grid.grid_clip)
+    lrs, clips = grid(cfg, flags)
+    return len(lrs) * len(clips)
 
 
 def count(cfg, group=None):
