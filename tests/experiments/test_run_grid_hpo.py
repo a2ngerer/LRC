@@ -13,12 +13,23 @@ import pytest
 
 import src.tasks.person_activity as pa_pkg
 from experiments import run_committee_benchmark as co_runner
+from experiments import run_grid_hpo
 from experiments import run_lotka_volterra_benchmark as lv_runner
 from experiments import run_person_activity_benchmark as pa_runner
 from experiments.run_grid_hpo import GRID_LR, main, transfer_guard
 from tests.benchmark.test_checkpoints import T, _capture_builds, _pa_stub
 
 FAKE = Path(__file__).with_name('fake_grid_runner.sh')
+ONE_CLASS = 0.075        # synthetic one-class val macro-F1 of the PA tests
+
+
+@pytest.fixture()
+def one_class(monkeypatch):
+    """Stub the loader-based one-class value (#80); returns its calls."""
+    calls = []
+    monkeypatch.setattr(run_grid_hpo, 'pa_one_class_val',
+                        lambda *a: calls.append(a) or ONE_CLASS)
+    return calls
 
 
 def _hpo(tmp_path, monkeypatch, table, *extra, task='lv', seeds=(100, 101)):
@@ -176,13 +187,68 @@ def test_transfer_guard_5pp_on_m0_val_macro_f1(tmp_path):
     assert main(['--transfer-guard', sel, str(tmp_path / 'ok.json')]) == 0
 
 
-def test_pa_selects_on_val_macro_f1(tmp_path, monkeypatch):
+def test_pa_selects_on_val_macro_f1(tmp_path, monkeypatch, one_class):
     sel, fits = _hpo(tmp_path, monkeypatch,
                      _table({(1e-3, 1.0): (0.6, 0.7)}), task='pa')
     assert (sel['lr'], sel['clipnorm']) == (1e-3, 1.0)
     assert sel['select_on'] == 'val_macro_f1' and sel['tie_break'] is None
     assert sel['system'] is None                 # #29 labels the task 'pa'
     assert not any('--data-seed-offset' in f for f in fits)
+
+
+def test_pa_all_ties_on_the_plateau_are_not_learned(tmp_path, monkeypatch,
+                                                    one_class):
+    """#80: every stage-1 candidate at chance (val macro-F1 <= one-class +
+    0.01, here the exact tie 0.08 everywhere): not_learned, no edge
+    extension although grid order puts 1e-4 first, no stage 2."""
+    table = {k: (0.08, 0.08) for k in _table()}
+    sel, fits = _hpo(tmp_path, monkeypatch, table, task='pa')
+    assert len(fits) == 8 and {f[2] for f in fits} == {'100'}
+    assert sel['not_learned'] is True and 'one-class plateau' in sel['reason']
+    assert sel['grid_extended'] is False and sel['grid_lr'] == list(GRID_LR)
+    assert (sel['lr'], sel['clipnorm']) == (1e-4, None)  # grid order
+    assert len(sel['ranking']) == 8 and sel['data_seeds'] == [1100, None]
+    assert all(c['at_chance'] and c['one_class_macro_f1'] == ONE_CLASS
+               for c in sel['candidates'])
+    # the one-class value comes from the split of the result JSONs
+    assert set(one_class) == {('grouped', 0, None)}
+
+
+def test_pa_at_chance_flag_and_a_learning_arm_keeps_the_edge_rule(
+        tmp_path, monkeypatch, one_class):
+    """at_chance on every PA candidate: the learning one (0.6) is not, the
+    ones at 0 and at one-class + 0.005 are; one learning stage-1 candidate
+    keeps stage 2 and the edge rule; --data-path reaches the loader."""
+    table = _table({(1e-2, None): (0.6, 0.62), (3e-3, 1.0): (0.08, 0.08)})
+    table[(3e-2, None)], table[(3e-2, 1.0)] = (0.5, 0.5), (0.0, 0.0)
+    sel, fits = _hpo(tmp_path, monkeypatch, table, '--data-path', '/d.txt',
+                     task='pa')
+    assert sel['not_learned'] is False and sel['reason'] is None
+    assert sel['grid_extended'] is True and len(fits) == 8 + 2 + 2 + 1
+    assert (sel['lr'], sel['lr_at_grid_edge']) == (1e-2, False)
+    flags = {(c['lr'], c['clipnorm'], c['seed']): c['at_chance']
+             for c in sel['candidates']}
+    assert flags.pop((1e-2, None, 100)) is False
+    assert flags.pop((1e-2, None, 101)) is False
+    assert flags.pop((3e-2, None, 100)) is False
+    assert flags.pop((3e-2, None, 101)) is False
+    assert flags[(3e-3, 1.0, 100)] is True and all(flags.values())
+    assert set(one_class) == {('grouped', 0, '/d.txt')}
+
+
+def test_pa_one_class_val_from_the_loader_counts(monkeypatch):
+    """The validation split's class counts: majority share 0.5 over six
+    present classes gives (2 * 0.5 / 1.5) / 6."""
+    import numpy as np
+
+    import src.tasks.person_activity.datasets as ds
+
+    class Data:
+        num_classes = 7
+        val_y = np.repeat(np.arange(6), [10, 4, 2, 2, 1, 1]).reshape(2, 10)
+    monkeypatch.setattr(ds, 'load_person_activity', lambda **kw: Data)
+    got = run_grid_hpo.pa_one_class_val.__wrapped__('grouped', 0)
+    assert got == pytest.approx((2 * 0.5 / 1.5) / 6)
 
 
 def test_select_on_override_minimize(tmp_path, monkeypatch):
