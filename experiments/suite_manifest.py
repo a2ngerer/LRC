@@ -11,7 +11,8 @@ configs/suite/{lv,duffing,mt,pa,co}_*.yaml, #71):
     arms:                       # or named arms (co): name -> cell, wiring and
       ncp_lam0: {cell: cfc_lrc, wiring: ncp, vote_lambda: 0}   # runner flags
     param_budget: 4000          # optional
-    seeds: [0, 1]               # hpo: the two tuning seeds; final: the replicates
+    seeds: [0, 1]               # hpo: the two tuning seeds (one: stage 1 only,
+                                # the S0 smoke); final: the replicates
     extra_seeds:                # final only: more seeds for some arms, emitted
       seeds: [5, 6, 7, 8, 9]    # after every base line (the ten-seed arms)
       arms: [cfc_lrc_ncp]
@@ -54,8 +55,9 @@ fit's result JSON, or the arm's hpo_selection.json; co: a glob, the runner's
 name carries the budget-derived size) is done and skipped, so a requeue or a
 re-submit after a walltime kill only runs what is missing.
 
---count prints the planned fits (an hpo line counts HPO_FITS of its task) of one
-or more YAMLs and needs no hpo_selection.json; the frozen fit counts per task:
+--count prints the planned fits (an hpo line counts HPO_FITS of its task; with
+one tuning seed its stage-1 grid, --grid-lr x --grid-clip) of one or more YAMLs
+and needs no hpo_selection.json; the frozen fit counts per task:
     uv run python experiments/suite_manifest.py --count configs/suite/lv_*.yaml
 
 Usage:
@@ -125,8 +127,10 @@ def load(path):
         raise SystemExit(f"{path}: stage must be hpo or final")
     if cfg.get("system") and cfg["task"] != "lv":
         raise SystemExit(f"{path}: system applies to task lv only")
-    if cfg["stage"] == "hpo" and len(set(cfg["seeds"])) != 2:
-        raise SystemExit(f"{path}: stage hpo needs two different tuning seeds")
+    if cfg["stage"] == "hpo" and (len(cfg["seeds"]) > 2 or len(
+            set(cfg["seeds"])) != len(cfg["seeds"])):
+        raise SystemExit(f"{path}: stage hpo takes one tuning seed or two "
+                         "different tuning seeds")
     if cfg["stage"] == "final" and not cfg.get("hpo_dir"):
         raise SystemExit(f"{path}: stage final needs hpo_dir")
     if cfg["stage"] == "hpo" and cfg.get("extra_seeds"):
@@ -260,10 +264,24 @@ def jobs(cfg):
     return out
 
 
+def _hpo_fits(cfg, flags):
+    """Planned fits of one hpo line: HPO_FITS of the task; one tuning seed runs
+    stage 1 only (run_grid_hpo.py), one fit per --grid-lr x --grid-clip value
+    (defaults: its 4 x 2 grid)."""
+    if len(cfg["seeds"]) == 2:
+        return HPO_FITS[cfg["task"]]
+    ap = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    ap.add_argument("--grid-lr", nargs="+", default=[None] * 4)
+    ap.add_argument("--grid-clip", nargs="+", default=[None] * 2)
+    grid, _ = ap.parse_known_args(
+        [*map(str, cfg.get("extra_args") or []), *_flags(flags)])
+    return len(grid.grid_lr) * len(grid.grid_clip)
+
+
 def count(cfg, group=None):
-    """Planned fits (an hpo line: HPO_FITS of the task); no selection needed."""
-    return sum(HPO_FITS[cfg["task"]] if seed is None else 1
-               for _, g, seed in jobs(cfg) if group in (None, g))
+    """Planned fits (an hpo line: _hpo_fits); no selection needed."""
+    return sum(_hpo_fits(cfg, arm[3]) if seed is None else 1
+               for arm, g, seed in jobs(cfg) if group in (None, g))
 
 
 def _common(cfg):
