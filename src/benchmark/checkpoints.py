@@ -10,7 +10,9 @@ folder stays loadable) and ``config.effective``:
     ...          context the builder does not take (param budget, effective
                  backbone depth, LV system and data size, committee views)
 
-so post-hoc analyses rebuild the trained model without a refit.
+so post-hoc analyses rebuild the trained model without a refit. Since #53
+config.effective also carries protocol_version (PROTOCOL_VERSION) and
+config_hash (see stamp_protocol).
 
 Records written before the NCP self-recurrence flag (#23) lack
 build.self_recurrent: their NCP had none (self_recurrent=False), and as the
@@ -27,6 +29,11 @@ from src.tasks.committee.model import build_committee_model
 from src.tasks.lotka_volterra.model import build_lotka_volterra_model
 from src.tasks.person_activity.model import (backbone_override,
                                              build_person_activity_model)
+
+# The frozen final-suite protocol (protocol freeze F1-2026-10-26), stamped into
+# every config.effective and wandb run. Every change of the frozen protocol
+# after the smoke stage (S0) is a new version string here.
+PROTOCOL_VERSION = "F1-2026-10-26"
 
 BUILDERS = {"lotka_volterra": build_lotka_volterra_model,
             "person_activity": build_person_activity_model,
@@ -73,7 +80,16 @@ def rebuild_from_result(json_path, **cell_overrides) -> tf.keras.Model:
 
 def config_hash(effective) -> str:
     """sha256 of ``config.effective`` as canonical JSON (sorted keys, no
-    whitespace): post-hoc outputs store it to name the exact config they were
-    computed from."""
-    return hashlib.sha256(json.dumps(effective, sort_keys=True,
+    whitespace), its own ``config_hash`` key left out: post-hoc outputs store
+    it to name the exact config they were computed from. config.effective holds
+    no paths or timestamps (weights_path, timestamp and hostname live outside
+    it), so the hash is the same on every machine and rerun."""
+    rest = {k: v for k, v in effective.items() if k != "config_hash"}
+    return hashlib.sha256(json.dumps(rest, sort_keys=True,
                                      separators=(",", ":")).encode()).hexdigest()
+
+
+def stamp_protocol(effective) -> dict:
+    """``effective`` plus protocol_version and its config_hash (#53)."""
+    effective = {**effective, "protocol_version": PROTOCOL_VERSION}
+    return {**effective, "config_hash": config_hash(effective)}

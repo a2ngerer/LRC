@@ -90,8 +90,8 @@ def run(args):
     import tensorflow as tf
     from src.tasks.person_activity import (build_person_activity_model,
                                            load_person_activity)
-    from src.benchmark.tracking import keras_callbacks, track
-    from src.benchmark.checkpoints import save_weights
+    from src.benchmark.tracking import keras_callbacks, log_summary, track_fit
+    from src.benchmark.checkpoints import save_weights, stamp_protocol
     from src.wirings import param_counts, size_for_budget
 
     if args.deterministic:
@@ -158,11 +158,31 @@ def run(args):
           f"ode_unfolds={ode_unfolds} dt_scale={args.dt_scale} ===",
           flush=True)
 
+    effective = stamp_protocol({
+        "task": "person_activity", "param_budget": args.param_budget,
+        "deterministic": args.deterministic,
+        # training knobs and data split outside the builder (#53 config_hash)
+        "epochs": args.epochs, "batch_size": args.batch_size,
+        "clipnorm": args.clipnorm, "split": data.split,
+        "split_seed": data.split_seed,
+        "backbone_layers": bb_effective,
+        "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
+        "dt_scale": args.dt_scale,
+        "build": dict(wiring=args.wiring, cell=args.cell, size=args.size,
+                      seed=args.seed, num_classes=data.num_classes,
+                      feature_size=data.feature_size,
+                      seq_len=data.seq_len, lr=args.lr,
+                      dt_feature=dt_feature, dt_scale=args.dt_scale,
+                      self_recurrent=args.self_recurrent, **multi),
+        "elastance_type": cell_kwargs.get("elastance_type"),
+        "cell_kwargs": cell_kwargs})
     wandb_config = {
         "task": "person_activity",
+        "system": None,
         "cell": args.cell,
         "wiring": args.wiring,
         "seed": args.seed,
+        "data_seed": data.split_seed,     # the grouped split is the data draw
         "size": args.size,
         "param_budget": args.param_budget,
         "budget_deviation": budget_dev,
@@ -203,8 +223,8 @@ def run(args):
                               data.train_y[:b])
 
     t0 = time.time()
-    with track(args.wandb, group=args.cell, job_type=args.wiring, name=tag,
-               config=wandb_config) as run_:
+    with track_fit(args.wandb, task="person_activity", name=tag,
+                   config=wandb_config, effective=effective) as run_:
         hist = model.fit(
             x=(data.train_x, data.train_t),
             y=data.train_y,
@@ -215,12 +235,16 @@ def run(args):
             callbacks=[tf.keras.callbacks.LambdaCallback(on_epoch_end=evaluate),
                        *keras_callbacks(run_)] + ([diag] if diag else []),
         )
-    wall = time.time() - t0
+        wall = time.time() - t0
+        best = int(np.argmax(val_f1))
+        test_cm = sum(test_cms[best].values())
+        log_summary(run_, {"best_val_epoch": best + 1,
+                           "val_macro_f1": val_f1[best],
+                           "test_macro_f1": macro_f1(test_cm),
+                           "test_accuracy": accuracy(test_cm)})
 
     train_acc = [float(a)
                  for a in hist.history["sparse_categorical_accuracy"]]
-    best = int(np.argmax(val_f1))
-    test_cm = sum(test_cms[best].values())
 
     result = {
         "wiring": args.wiring,
@@ -277,20 +301,7 @@ def run(args):
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "hostname": socket.gethostname(),
         "training_diverged": not np.isfinite(hist.history["loss"][-1]),
-        "config": {"effective": {
-            "task": "person_activity", "param_budget": args.param_budget,
-            "deterministic": args.deterministic,
-            "backbone_layers": bb_effective,
-            "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
-            "dt_scale": args.dt_scale,
-            "build": dict(wiring=args.wiring, cell=args.cell, size=args.size,
-                          seed=args.seed, num_classes=data.num_classes,
-                          feature_size=data.feature_size,
-                          seq_len=data.seq_len, lr=args.lr,
-                          dt_feature=dt_feature, dt_scale=args.dt_scale,
-                          self_recurrent=args.self_recurrent, **multi),
-            "elastance_type": cell_kwargs.get("elastance_type"),
-            "cell_kwargs": cell_kwargs}},
+        "config": {"effective": effective},
     }
 
     if diag is not None:

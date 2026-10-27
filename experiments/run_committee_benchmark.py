@@ -38,6 +38,11 @@ test-time sweep over --drop-fracs (or --test-corruption noise with
 --noise-sigmas), which only runs when its levels are given and writes the
 drop_* fields.
 
+--wandb logs the fit to Weights & Biases (src/benchmark/tracking.py track_fit,
+#53): K, the rho grid, vote_lambda, consensus, view_mode and the corruption
+settings in the run config, the test macro-F1 per fault count in the run
+summary.
+
 Usage:
     uv run python experiments/run_committee_benchmark.py \
         --wiring ncp --n-columns 30 --param-budget 30000 --seed 0
@@ -57,7 +62,8 @@ import tensorflow as tf
 
 from src.evaluation.metrics import confusion_matrix, macro_f1
 from src.wirings import param_counts, size_for_budget
-from src.benchmark.checkpoints import save_weights
+from src.benchmark.checkpoints import save_weights, stamp_protocol
+from src.benchmark.tracking import keras_callbacks, log_summary, track_fit
 from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
 from src.tasks.person_activity.datasets import load_person_activity
 from src.tasks.committee.views import (
@@ -341,6 +347,9 @@ def main():
                     default=True,
                     help="write <stem>.weights.h5 (best epoch) next to the "
                          "result JSON")
+    ap.add_argument("--wandb", action="store_true",
+                    help="log this run to Weights & Biases (needs the "
+                         "'tracking' extra; use WANDB_MODE=offline on cluster)")
     args = ap.parse_args()
     if args.size is None and args.param_budget is None:
         args.size = DEFAULT_SIZE
@@ -409,6 +418,53 @@ def main():
     pc = param_counts(model)
     params = pc['params_effective']
 
+    effective = stamp_protocol({
+        "task": "committee", "param_budget": args.param_budget,
+        "backbone_layers": bb_effective,
+        # training, data split and corruption knobs outside the builder
+        # (#53 config_hash)
+        "epochs": args.epochs, "batch_size": args.batch_size,
+        "split": d.split, "split_seed": d.split_seed,
+        "train_corruption": args.train_corruption,
+        "corruption_seed": args.corruption_seed, "val_seed": args.val_seed,
+        "test_seeds": test_seeds,
+        # no --ode-unfolds here: the cell constructor default applies
+        "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
+        "views": dict(n_columns=K, mode=args.view_mode,
+                      overlap=args.overlap, noise=args.noise,
+                      seed=args.view_seed, average=args.view_average,
+                      rho_grid=rho_grid, noise_frac=args.noise_frac),
+        "build": dict(wiring=args.wiring, n_columns=n_cols,
+                      cell=args.cell, size=args.size, feature_size=F,
+                      seq_len=args.seq_len, num_classes=C, lr=args.lr,
+                      clipnorm=args.clipnorm,
+                      seed=args.seed, vote_lambda=args.vote_lambda,
+                      consensus=args.consensus,
+                      dense_vote_units=args.dense_vote_units,
+                      train_drop=args.train_drop,
+                      train_noise=args.train_noise,
+                      column_loop=args.column_loop),
+        "elastance_type": cell_kwargs.get("elastance_type"),
+        "cell_kwargs": cell_kwargs})
+    wandb_config = {
+        "task": "committee", "system": None, "cell": args.cell,
+        "wiring": args.wiring, "seed": args.seed, "data_seed": d.split_seed,
+        "split": d.split, "n_columns": K, "model_columns": n_cols,
+        "size": args.size, "param_budget": args.param_budget,
+        "budget_deviation": budget_dev,
+        "budget_above_tolerance": over_budget, "lr": args.lr,
+        "clipnorm": args.clipnorm, "batch_size": args.batch_size,
+        "epochs": args.epochs, "view_mode": args.view_mode,
+        "view_average": args.view_average, "vote_lambda": args.vote_lambda,
+        "consensus": args.consensus,
+        "dense_vote_units": args.dense_vote_units,
+        # corruption protocol (issue #55)
+        "rho_grid": rho_grid, "fault_counts": grid,
+        "noise_frac": args.noise_frac,
+        "train_corruption": args.train_corruption,
+        "corruption_seed": args.corruption_seed, "val_seed": args.val_seed,
+        "test_seeds": test_seeds, **pc}
+
     on = args.train_corruption == "on"
     train = CorruptedBatches(
         d.train_x, d.train_t, d.train_y, K, grid if on else [0],
@@ -422,38 +478,52 @@ def main():
     def epoch_end(epoch, logs):
         train.on_epoch_end()
         lam_curve.append(vote_strength(model))
-    hist = model.fit(train.dataset(), epochs=args.epochs, verbose=args.verbose,
-                     callbacks=[gv, tf.keras.callbacks.LambdaCallback(
-                         on_epoch_end=epoch_end)])
-    wall = time.time() - t0      # gv restored the best-epoch weights
-    diverged = not np.isfinite(hist.history["loss"][-1])
-    best = gv.best_epoch or len(gv.curve)
 
     def predict(views, t):
         return model.predict((views, t), batch_size=args.batch_size,
                              verbose=0).argmax(-1)
 
-    # Test per fault count: pooled over --test-seeds fixed draws; confusions
-    # per position (curve) and per recording (bootstrap units).
-    T, recs = d.test_y.shape[1], np.unique(d.test_rec)
-    by_fault, per_rec, cm_rec, pos_f1, acc_m0 = [], [], [], [], None
-    for m in grid:
-        cms = np.zeros((T, C, C), np.int64)
-        rec_cms = {str(r): np.zeros((C, C), np.int64) for r in recs}
-        for s in test_seeds:
-            pred = predict(draw(d.test_x, m, _rng(s, m)), d.test_t)
-            cms += np.stack([confusion_matrix(d.test_y[:, t], pred[:, t], C)
-                             for t in range(T)])
-            for r in recs:
-                sel = d.test_rec == r
-                rec_cms[str(r)] += confusion_matrix(d.test_y[sel], pred[sel], C)
-        pooled = cms.sum(axis=0)
-        if acc_m0 is None:
-            acc_m0 = float(np.trace(pooled) / pooled.sum())
-        by_fault.append(macro_f1(pooled))
-        per_rec.append({r: macro_f1(c) for r, c in rec_cms.items()})
-        cm_rec.append({r: c.tolist() for r, c in rec_cms.items()})
-        pos_f1.append(np.array([macro_f1(c) for c in cms]))
+    with track_fit(args.wandb, task="committee",
+                   name=result_filename(args)[:-len(".json")],
+                   config=wandb_config, effective=effective) as run_:
+        hist = model.fit(train.dataset(), epochs=args.epochs,
+                         verbose=args.verbose,
+                         callbacks=[gv, tf.keras.callbacks.LambdaCallback(
+                             on_epoch_end=epoch_end), *keras_callbacks(run_)])
+        wall = time.time() - t0      # gv restored the best-epoch weights
+        diverged = not np.isfinite(hist.history["loss"][-1])
+        best = gv.best_epoch or len(gv.curve)
+
+        # Test per fault count: pooled over --test-seeds fixed draws;
+        # confusions per position (curve) and per recording (bootstrap units).
+        T, recs = d.test_y.shape[1], np.unique(d.test_rec)
+        by_fault, per_rec, cm_rec, pos_f1, acc_m0 = [], [], [], [], None
+        for m in grid:
+            cms = np.zeros((T, C, C), np.int64)
+            rec_cms = {str(r): np.zeros((C, C), np.int64) for r in recs}
+            for s in test_seeds:
+                pred = predict(draw(d.test_x, m, _rng(s, m)), d.test_t)
+                cms += np.stack([confusion_matrix(d.test_y[:, t], pred[:, t],
+                                                  C) for t in range(T)])
+                for r in recs:
+                    sel = d.test_rec == r
+                    rec_cms[str(r)] += confusion_matrix(d.test_y[sel],
+                                                        pred[sel], C)
+            pooled = cms.sum(axis=0)
+            if acc_m0 is None:
+                acc_m0 = float(np.trace(pooled) / pooled.sum())
+            by_fault.append(macro_f1(pooled))
+            per_rec.append({r: macro_f1(c) for r, c in rec_cms.items()})
+            cm_rec.append({r: c.tolist() for r, c in rec_cms.items()})
+            pos_f1.append(np.array([macro_f1(c) for c in cms]))
+        log_summary(run_, {
+            "best_val_epoch": best,
+            "val_macro_f1_mean": gv.best if gv.best_epoch else float("nan"),
+            "test_macro_f1_mean_grid": float(np.mean(by_fault)),
+            **{f"test_macro_f1_m{m}": f for m, f in zip(grid, by_fault)},
+            **{f"test_per_position_macro_f1_auc_m{m}": float(c.mean())
+               for m, c in zip(grid, pos_f1)},
+            "vote_lambda_final": vote_strength(model)})
 
     # Correlated failure: one coordinate zeroed in every column, at m = 0.
     chan = {}
@@ -527,27 +597,7 @@ def main():
         "vote_lambda_curve": lam_curve,
         "wallclock_s": round(wall, 1),
         "training_diverged": diverged,
-        "config": {"effective": {
-            "task": "committee", "param_budget": args.param_budget,
-            "backbone_layers": bb_effective,
-            # no --ode-unfolds here: the cell constructor default applies
-            "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
-            "views": dict(n_columns=K, mode=args.view_mode,
-                          overlap=args.overlap, noise=args.noise,
-                          seed=args.view_seed, average=args.view_average,
-                          rho_grid=rho_grid, noise_frac=args.noise_frac),
-            "build": dict(wiring=args.wiring, n_columns=n_cols,
-                          cell=args.cell, size=args.size, feature_size=F,
-                          seq_len=args.seq_len, num_classes=C, lr=args.lr,
-                          clipnorm=args.clipnorm,
-                          seed=args.seed, vote_lambda=args.vote_lambda,
-                          consensus=args.consensus,
-                          dense_vote_units=args.dense_vote_units,
-                          train_drop=args.train_drop,
-                          train_noise=args.train_noise,
-                          column_loop=args.column_loop),
-            "elastance_type": cell_kwargs.get("elastance_type"),
-            "cell_kwargs": cell_kwargs}},
+        "config": {"effective": effective},
     }
 
     # Exploratory July sweep (not part of the suite): whole-channel dropout or
