@@ -591,7 +591,8 @@ def test_core_contrast_blocks_exact_wilcoxon_family_and_effects(tmp_path):
 def test_core_contrast_blocks_undecidable_budget_floor_and_sign(tmp_path):
     """Below eight pairs the block is undecidable (never significant); an
     arm above the budget tolerance excludes the block; floor_bound comes
-    from floors.json; sign stability compares the two tuning seeds."""
+    from floors.json (rollouts) or the chance marking (Person Activity, both
+    arms above chance here); sign stability compares the two tuning seeds."""
     from experiments.aggregate_results import (core_contrast_blocks,
                                                hc_conjunction,
                                                load_sequence_runs)
@@ -621,7 +622,7 @@ def test_core_contrast_blocks_undecidable_budget_floor_and_sign(tmp_path):
     assert hb.loc['duffing', 'p_raw'] == pytest.approx(2 / 128)
     assert not hb['significant'].any()
     assert hb.loc['duffing', 'floor_bound'] is True
-    assert hb.loc['pa', 'floor_bound'] is None
+    assert hb.loc['pa', 'floor_bound'] is False
     assert hb.loc['duffing', 'sign_stable_tuning'] is False
     assert hb.loc['pa', 'sign_stable_tuning'] is True
     hc = blocks[(blocks['family'] == 'H-c')
@@ -629,6 +630,55 @@ def test_core_contrast_blocks_undecidable_budget_floor_and_sign(tmp_path):
     assert (hc['status'] == 'excluded: arm above budget tolerance').sum() == 1
     assert hc_conjunction(blocks) == {'cfc_lrc/cncp': False,
                                       'cfc_lrc/ncp': False}
+
+
+def test_one_class_macro_f1_and_the_chance_margin():
+    """#80: always predicting the majority class gives (2p / (1 + p)) / C
+    over the C classes present; at chance is at most 0.01 above it (or
+    below, or non-finite)."""
+    from src.evaluation.metrics import at_chance, one_class_macro_f1
+    p = 0.3565                          # a 7-class split, majority share p
+    counts = [3565, 2000, 1500, 1200, 900, 500, 335]
+    assert one_class_macro_f1(counts) == pytest.approx((2 * p / (1 + p)) / 7)
+    assert one_class_macro_f1([6, 4, 0]) == pytest.approx(0.375)  # C = 2
+    assert at_chance(0.08, 0.075) and at_chance(0.01, 0.075)
+    assert at_chance(float('nan'), 0.075) and not at_chance(0.086, 0.075)
+
+
+def _write_chance_suite(pa, n_at_chance):
+    """Five seeds: cfc_lrc/ncp learns; lrc/ncp predicts the majority class
+    of every recording (one-class macro-F1 0.375 of the 2-class test split)
+    in n_at_chance seeds and learns in the others."""
+    learned = {f'r{i}': [[5, 1], [1, 3]] for i in range(4)}
+    plateau = {f'r{i}': [[6, 0], [4, 0]] for i in range(4)}
+    for s in range(5):
+        _write_pa_fit(pa, 'cfc_lrc', 'ncp', s, None, learned)
+        _write_pa_fit(pa, 'lrc', 'ncp', s, None,
+                      plateau if s < n_at_chance else learned)
+
+
+@pytest.mark.parametrize('n_at_chance, bound', [(1, False), (2, True)])
+def test_pa_contrast_floor_bound_at_two_of_five_seeds(n_at_chance, bound,
+                                                      tmp_path):
+    """#80: a Person Activity contrast is floor_bound when an arm's test
+    macro-F1 lies within 0.01 of the one-class value of the test split (from
+    the confusions) in >= 2 of 5 seeds; the contrast table and the chance
+    marking show it."""
+    pa = tmp_path / 'pa'
+    _write_chance_suite(pa, n_at_chance)
+    out = tmp_path / 'out'
+    assert main(['--runs', str(tmp_path / 'none'), '--out', str(out),
+                 '--pa-runs', str(pa), '--contrasts']) == 0
+    blocks = pd.read_csv(out / 'contrasts.csv')
+    hb = blocks[(blocks['family'] == 'H-b') & (blocks['task'] == 'pa')]
+    assert hb['floor_bound'].item() == bound
+    text = (out / 'summary.md').read_text()
+    row = next(r for r in text.splitlines() if r.startswith('| H-b | 2 | pa '))
+    assert '| 5 | undecidable |' in row and row.endswith(f'| {bound} | — |')
+    seeds = list(range(n_at_chance))
+    assert (f"| pa | lrc/ncp | 5 | 0.3750 | {seeds} "
+            f"| {'NO (not learned)' if bound else 'yes'} |") in text
+    assert '| pa | cfc_lrc/ncp | 5 | 0.3750 | — | yes |' in text
 
 
 def test_hc_conjunction_skips_floor_bound_tasks():
