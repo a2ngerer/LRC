@@ -6,6 +6,7 @@
 # a slow determinism probe is a DECISION, a missing probe fails. S1 pilot gate
 # (#75): a synthetic set of the 61 pilot fits passes; one fixture per gate
 # branch (PASS, FAIL and the G0-E epoch DECISION) built from synthetic records.
+# #76: a pilot fit without config.effective.deterministic true fails S1.
 import copy
 import json
 import math
@@ -261,7 +262,8 @@ def test_one_failure_per_check_class(case, tmp_path, suite):
 DS0 = 20261700                     # data seed of pilot seed 0 (any value)
 FLOOR, PERSISTENCE = 10.0, 5.0     # test floor lines of every pilot draw
 LV_ARMS = ('cfc_lrc_ncp', 'gru_ncp', 'gru_dense3', 'cfc_ncp', 'lrc_ncp')
-GATES = (('fits', 'all'), ('floors', 'rollouts'), ('G1', 'lv'),
+GATES = (('fits', 'all'), ('config', 'all'), ('floors', 'rollouts'),
+         ('G1', 'lv'),
          ('G1', 'duffing'), ('G1', 'multitimescale_lib'), ('G0-E', 'lv'),
          ('G0-E', 'duffing'), ('G0-E', 'multitimescale_lib'), ('G0-E', 'pa'),
          ('G2', 'pa'), ('G3', 'lv'), ('GK', 'co'))
@@ -284,11 +286,13 @@ def _pilot_fit(key, arm, seed, tag):
                    test_macro_f1_by_fault=[0.64, 0.6, 0.52] if best
                    else [0.3, 0.4, 0.5],
                    vote_lambda_final=0.4 if best else 0.99, corruption_seed=0,
-                   config={'effective': {'task': 'committee'}})
+                   config={'effective': {'task': 'committee',
+                                         'deterministic': True}})
     elif key == 'pa':
         rec.update(val_macro_f1=0.6, test_macro_f1=0.63,
                    val_macro_f1_curve=[0.6] * 50,
-                   config={'effective': {'task': 'person_activity'}})
+                   config={'effective': {'task': 'person_activity',
+                                         'deterministic': True}})
     else:
         rec.update(system=key, data_seed=DS0 + seed,
                    rollout_metrics_test={'vpt_multi_median': 20.0,
@@ -296,7 +300,7 @@ def _pilot_fit(key, arm, seed, tag):
                    val_loss_curve=[1.0] * 300,
                    config={'effective': {
                        'task': 'lotka_volterra', 'data_seed': DS0 + seed,
-                       'dt_scale': 1 if tag else 12.8}})
+                       'dt_scale': 1 if tag else 12.8, 'deterministic': True}})
     return rec
 
 
@@ -349,7 +353,7 @@ def test_s1_passing_fixture(tmp_path, pilot):
     assert code == 0, report
     assert report.startswith('# S1 pilot gate: PASS')
     assert _only(rows, 'PASS'), rows
-    assert '61/61 present' in report
+    assert '61/61 present' in report and '61/61 fits deterministic' in report
     assert 'epochs unchanged (0 of 5 arms qualify)' in report
     assert '- lrc_ncp seed 2: test macro-F1 0.630, wallclock_s 102.0' in report
     assert ('- ncp_cons: best lr 0.001 (val_macro_f1_mean 0.600), val '
@@ -438,6 +442,22 @@ def test_s1_one_failure_per_gate_branch(case, tmp_path, pilot):
     section = report.split(f'## FAIL: {row[0]} {row[1]}\n')[1].split('## ')[0]
     assert f'- Consequence (F1 section 7): ' in section
     assert consequence in section
+
+
+def test_s1_config_requires_op_determinism(tmp_path, pilot):
+    """A pilot fit with deterministic false, or without the key (a committee
+    fit before #76), fails the config row and is listed."""
+    fits = pilot[0]
+    fits['pa', 'lrc_ncp', 1, '']['config']['effective']['deterministic'] = False
+    del fits['co', 'avg_in', 100, 'lr 0.001']['config']['effective'][
+        'deterministic']
+    code, report, rows = _s1(tmp_path, *pilot)
+    assert code == 1 and _only(rows, 'FAIL', ('config', 'all')), rows
+    assert '59/61 fits deterministic' in report
+    section = report.split('## FAIL: config all\n')[1].split('## ')[0]
+    assert '- pa/lrc_ncp seed 1: deterministic False' in section
+    assert '- co/avg_in seed 100 (lr 0.001): deterministic None' in section
+    assert 'rerun the offending fits with --deterministic' in section
 
 
 def test_s1_one_seed_below_the_floor_passes(tmp_path, pilot):
