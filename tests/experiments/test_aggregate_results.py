@@ -322,15 +322,16 @@ def test_floors_json_marks_arms_by_the_seed_rule_and_flags_contrasts(
     """floors.json: persistence/AR(1) per data seed (val and test) recomputed
     from config.effective; each fit is compared with the test floor of its own
     data draw; one of five seeds below keeps an arm above floor, two make it
-    not learned and every core contrast with it floor_bound. Tuning seeds and
-    files without the multi-anchor keys are left out."""
+    not learned and every core contrast with it floor_bound. A tuning seed
+    gets the floor line of its draw but no arm marking (#72); files without
+    the multi-anchor keys are left out."""
     from src.evaluation.rollout_metrics import floor_lines
     from src.tasks.lotka_volterra.datasets import (DATA_SEED_BASE,
                                                    load_lotka_volterra)
     d = tmp_path / 'lv'
     os.makedirs(d / 'hpo')
     floors = {}
-    for seed in range(5):
+    for seed in (*range(5), 999):
         data = load_lotka_volterra(
             n_trajectories=10, seq_len=32, split=(6, 2, 2),
             seed=DATA_SEED_BASE + seed, system=FLOOR_DRAW['system'])
@@ -350,7 +351,7 @@ def test_floors_json_marks_arms_by_the_seed_rule_and_flags_contrasts(
     with open(os.path.join(out, 'floors.json'), encoding='utf-8') as f:
         got = json.load(f)
     assert sorted(x['data_seed'] for x in got['floors']) == [
-        DATA_SEED_BASE + s for s in range(5)]
+        DATA_SEED_BASE + s for s in (*range(5), 999)]
     for x in got['floors']:
         ref = floors[x['data_seed'] - DATA_SEED_BASE]
         for split in ('val', 'test'):
