@@ -36,6 +36,15 @@ and config.effective without training, keeps the training fields, records the
 largest relative change of the previously stored scalar metrics as
 eval_only.max_rel_dev and writes the JSON into --outdir (default: in place).
 
+--eval-only ... --rq4-dynamics (#66, protocol freeze F1-2026-10-26, RQ4) adds
+rq4_dynamics to the JSON, both on the test split from the same anchors and
+horizon: lyapunov, the largest Lyapunov exponent (Benettin, 1/step) of the
+alpha = 0 forced-wrapper free run after each anchor's teacher-forced warm-up
+(lambda_max_median over trajectories x anchors, lambda_max_anchor_<a>;
+FORCEABLE_WIRINGS, else None), and solver, the anchor_metrics dict (VPT and
+NRMSE@32 per anchor) of the trained weights re-run at k in {1, 2, 6, 12}
+Euler substeps, keyed by k (numerical ODE cells, else None).
+
 Forcing (#25): --forcing teacher (default) trains the plain model on the true
 state at every step, as before. --forcing mixed trains the same weights through
 a ForcedRolloutCell, input alpha * y_t + (1 - alpha) * yhat_{t-1}, with alpha
@@ -64,6 +73,8 @@ Usage:
         --wiring cncp --cell cfc_lrc --seed 0 --epochs 300 --param-budget 4000
     uv run python experiments/run_lotka_volterra_benchmark.py \
         --eval-only results/.../cfc_lrc_ncp_seed0_mixed.json --outdir D
+    uv run python experiments/run_lotka_volterra_benchmark.py \
+        --eval-only results/.../lrc_ncp_seed0_mixed.json --rq4-dynamics
 """
 from __future__ import annotations
 
@@ -102,6 +113,9 @@ from src.evaluation.rollout_metrics import (ANCHOR_HORIZON, ANCHORS, TAU_ORB,
                                             make_norm_stats,
                                             rollout_metrics)
 from src.evaluation.gradient_flow import RQ4Diagnostics
+from src.evaluation.lyapunov import largest_lyapunov
+
+SOLVER_KS = (1, 2, 6, 12)
 
 
 def closed_loop_rollout(model, data, needs_loc: bool = False,
@@ -173,6 +187,66 @@ def anchored_rollouts(model, data, split, needs_loc, anchors, horizon,
         pred = view((tf.constant(x[:, :n]), tf.constant(t[:, :n]),
                      tf.constant(force)), training=False).numpy()
         out[a] = pred[:, a:]            # output k is the prediction of k + 1
+    return out
+
+
+def free_run_map(model, data, split, anchor):
+    """(step, z_a): the multi-anchor free run of a FORCEABLE_WIRINGS model as
+    an autonomous map. z concatenates every state of the alpha = 0 forced
+    wrapper (core states, last prediction, started flag); step(z) is z after
+    one free-run step; z_a is the state after the true inputs y_0..y_a (the
+    teacher-forced state at the anchor). The elapsed time stays the scaled
+    dt_a: the rollout tasks have a constant step."""
+    view = forced_rollout_model(model)
+    cell = next(l for l in view.layers
+                if isinstance(l, tf.keras.layers.RNN)).cell
+    scale = [l for l in model.layers if l.name == "dt_scale"]
+    x = tf.constant(getattr(data, f"{split}_x")[:, :anchor + 1])
+    t = tf.constant(getattr(data, f"{split}_t")[:, :anchor + 1])
+    t = scale[0](t) if scale else t
+    sizes = [int(n) for n in tf.nest.flatten(cell.state_size)]
+    ones = tf.ones([x.shape[0], 1])
+
+    def step(z, y=tf.zeros_like(x[:, 0]), dt=t[:, anchor], force=0.0 * ones):
+        _, new = cell((y, dt, force), tf.split(z, sizes, axis=-1))
+        return tf.concat(new, axis=-1)
+
+    z = tf.concat(cell.get_initial_state(batch_size=x.shape[0],
+                                         dtype=tf.float32), axis=-1)
+    for k in range(anchor + 1):
+        z = step(z, x[:, k], t[:, k], ones)
+    return step, z
+
+
+def lyapunov_diagnostic(model, data, anchors, horizon, split="test"):
+    """Largest Lyapunov exponent (1/step) of the free run after each anchor
+    over ``horizon`` steps, median over trajectories (per anchor) and over
+    trajectories x anchors."""
+    out, per = {"split": split, "horizon": horizon, "unit": "1/step"}, []
+    for a in anchors:
+        per.append(largest_lyapunov(*free_run_map(model, data, split, a),
+                                    horizon))
+        out[f"lambda_max_anchor_{a}"] = float(np.median(per[-1]))
+    out["lambda_max_median"] = float(np.median(per))
+    return out
+
+
+def solver_sweep(path, data, wiring, anchors, horizon, theta, ks=SOLVER_KS,
+                 split="test"):
+    """{k: anchor_metrics of ``split``} with the fit's trained weights re-run
+    at k Euler substeps per input step (numerical ODE cells)."""
+    norm_stats = make_norm_stats(data.train_traj, data.mean, data.std)
+    out = {}
+    for k in ks:
+        model = rebuild_from_result(path, ode_unfolds=k)
+        view = (forced_rollout_model(model) if wiring in FORCEABLE_WIRINGS
+                else None)
+        preds = anchored_rollouts(model, data, split, wiring in TBT_MODES,
+                                  anchors, horizon, view)
+        out[str(k)] = anchor_metrics(
+            getattr(data, f"{split}_traj"),
+            {a: data.denormalise(p) for a, p in preds.items()}, norm_stats,
+            theta)
     return out
 
 
@@ -421,10 +495,11 @@ def write_result(record, path, outdir):
     return out
 
 
-def eval_only(path, outdir, anchors, horizon, theta):
+def eval_only(path, outdir, anchors, horizon, theta, dynamics=False):
     """--eval-only: rebuild the fit of result JSON ``path`` from its weights
     and config.effective, recompute every evaluation field and write the
-    updated JSON to ``outdir`` (None: in place)."""
+    updated JSON to ``outdir`` (None: in place); ``dynamics`` (--rq4-dynamics)
+    adds rq4_dynamics (Lyapunov estimate, solver sweep)."""
     with open(path) as f:
         record = json.load(f)
     eff = record["config"]["effective"]
@@ -438,6 +513,15 @@ def eval_only(path, outdir, anchors, horizon, theta):
     stale = {k: record[k] for k in fresh if k in record}
     record.update(fresh)
     record["eval_only"] = {"max_rel_dev": _rel_dev(stale, fresh)}
+    if dynamics:
+        t0, wiring = time.time(), eff["build"]["wiring"]
+        record["rq4_dynamics"] = {
+            "lyapunov": (lyapunov_diagnostic(model, data, anchors, horizon)
+                         if wiring in FORCEABLE_WIRINGS else None),
+            "solver": (solver_sweep(path, data, wiring, anchors, horizon,
+                                    theta)
+                       if eff.get("ode_unfolds") is not None else None)}
+        record["rq4_dynamics"]["wallclock_s"] = round(time.time() - t0, 1)
     out = write_result(record, path, outdir)
     print(f"eval-only {path}: max relative change of the stored metrics "
           f"{record['eval_only']['max_rel_dev']:.2e} -> {out}")
@@ -511,6 +595,10 @@ def main():
                     help="no training: recompute every evaluation field of "
                          "this result JSON from its weights.h5 and "
                          "config.effective")
+    ap.add_argument("--rq4-dynamics", action="store_true",
+                    help="with --eval-only: also the largest Lyapunov exponent "
+                         "of the free run and the solver sweep k in "
+                         f"{SOLVER_KS} (result key rq4_dynamics, #66)")
     ap.add_argument("--elastance-type", default=None,
                     help="override the registry elastance_type of the "
                          "LRC-family cells (RQ2/RQ5 mechanism); default: the "
@@ -560,9 +648,11 @@ def main():
     args = ap.parse_args()
     if min(args.anchors) < 0 or args.horizon < 1 or args.theta <= 0:
         ap.error("--anchors must be >= 0, --horizon >= 1, --theta > 0")
+    if args.rq4_dynamics and not args.eval_only:
+        ap.error("--rq4-dynamics needs --eval-only")
     if args.eval_only:
         eval_only(args.eval_only, args.outdir, args.anchors, args.horizon,
-                  args.theta)
+                  args.theta, args.rq4_dynamics)
         return
     if args.wiring is None:
         ap.error("--wiring is required")

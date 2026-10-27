@@ -49,8 +49,11 @@ def save_weights(model, json_path, enabled=True):
     return os.path.basename(path)
 
 
-def rebuild_from_result(json_path) -> tf.keras.Model:
-    """Rebuild the compiled model of a result JSON and load its trained weights."""
+def rebuild_from_result(json_path, **cell_overrides) -> tf.keras.Model:
+    """Rebuild the compiled model of a result JSON and load its trained weights.
+
+    ``cell_overrides`` replace cell_kwargs entries that create no weights,
+    e.g. ``ode_unfolds=k`` to re-run trained solver weights at k substeps."""
     with open(json_path) as f:
         record = json.load(f)
     eff = record["config"]["effective"]
@@ -61,6 +64,7 @@ def rebuild_from_result(json_path) -> tf.keras.Model:
         if "backbone_layers" not in cell_kwargs:
             cell_kwargs.update(backbone_override(
                 build["cell"], eff.get("backbone_layers")))
+    cell_kwargs.update(cell_overrides)
     model = BUILDERS[eff["task"]](**build, **cell_kwargs)
     _layers_only(model).load_weights(
         os.path.join(os.path.dirname(json_path), record["weights_path"]))
