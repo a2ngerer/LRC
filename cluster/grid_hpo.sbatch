@@ -29,12 +29,13 @@ cc_setup_tf_env 1                       # sequential fits: all CPUs to one run
 # A forwarded --wandb (GH_EXTRA) logs offline into the run folder.
 export WANDB_MODE=offline WANDB_DIR="$RUN_DIR/wandb" WANDB_SILENT=true
 
-TASK="${GH_TASK:?GH_TASK (lv|pa) not set}"
+TASK="${GH_TASK:?GH_TASK (lv|pa|co) not set}"
 CELL="${GH_CELL:?GH_CELL not set}"
 WIRING="${GH_WIRING:?GH_WIRING not set}"
 SEEDS="${GH_TUNING_SEEDS:-100 101}"   # disjoint from the final seeds 0..9
-# Thesis budgets: 4k for the rollouts, 30k for Person Activity.
-if [[ "$TASK" == pa ]]; then BUDGET="${GH_PARAM_BUDGET:-30000}"; else BUDGET="${GH_PARAM_BUDGET:-4000}"; fi
+# Thesis budgets: 4k for the rollouts, 30k for Person Activity and the
+# consensus study (co: pass one fixed --grid-clip in GH_EXTRA).
+if [[ "$TASK" == pa || "$TASK" == co ]]; then BUDGET="${GH_PARAM_BUDGET:-30000}"; else BUDGET="${GH_PARAM_BUDGET:-4000}"; fi
 SYSTEM_FLAG=""
 [[ -n "${GH_SYSTEM:-}" ]] && SYSTEM_FLAG="--system ${GH_SYSTEM}"
 # Driver flags (--grid-lr, --grid-clip, --select-on) and runner flags (e.g.
