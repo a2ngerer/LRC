@@ -7,7 +7,8 @@ the other so no two fits share the device. Per task it prints
   * the runtime ratio on/off: mean training wall time (result key wallclock_s)
     of the two "on" fits over the "off" fit;
   * |Delta| of each validation selection metric (run_grid_hpo.SELECT: LV
-    rollout_metrics_val.vpt_median and .nrmse_32_median, PA val_macro_f1)
+    rollout_metrics_val.vpt_multi_median and .nrmse_32_anchor_8, PA
+    val_macro_f1)
     between the two "on" fits, which must stay within --tol (1e-3).
 
 Decision rule of the protocol: ratio <= --max-ratio (1.3) on both tasks ->

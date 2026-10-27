@@ -14,7 +14,7 @@ from experiments import determinism_probe as probe
 ROOT = Path(__file__).resolve().parents[2]
 LV = ['--wiring', 'ncp', '--cell', 'cfc_lrc', '--seed', '0', '--size', '8',
       '--n-trajectories', '10', '--seq-len', '16', '--batch-size', '4',
-      '--no-save-weights']
+      '--no-save-weights', '--anchors', '2,4', '--horizon', '4']
 # PA on the synthetic stub of tests/benchmark/test_checkpoints.py
 PA_STUB = ("import sys; import src.tasks.person_activity as p; "
            "from tests.benchmark.test_checkpoints import _pa_stub; "
@@ -43,7 +43,7 @@ def test_lv_same_seed_reproduces_val_metric(tmp_path):
     for rec in (a, b):
         assert rec['config']['effective']['deterministic'] is True
         assert rec['wallclock_s'] > 0
-    for key in ('vpt_median', 'nrmse_32_median'):
+    for key in ('vpt_multi_median', 'nrmse_32_anchor_4'):
         assert abs(a['rollout_metrics_val'][key]
                    - b['rollout_metrics_val'][key]) <= 1e-3
     assert abs(a['best_val_teacher_forced_mse']
@@ -71,8 +71,8 @@ def _write(outdir, task, records):
 
 def test_probe_summary_reuses_fits(tmp_path, capsys):
     lv = lambda det, wall, vpt, nrmse: _record(  # noqa: E731
-        det, wall, rollout_metrics_val={'vpt_median': vpt,
-                                        'nrmse_32_median': nrmse})
+        det, wall, rollout_metrics_val={'vpt_multi_median': vpt,
+                                        'nrmse_32_anchor_8': nrmse})
     _write(tmp_path, 'lv', {'on1': lv(True, 12.0, 40.0, 0.3),
                             'on2': lv(True, 14.0, 40.0, 0.3004),
                             'off': lv(False, 10.0, 38.0, 0.31)})
