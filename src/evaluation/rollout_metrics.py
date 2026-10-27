@@ -17,11 +17,15 @@ skipped, inf = non-finite rollout).
   * invariant drift D_t = (E(yhat_t) - E(y_0)) / (E(y_0) - E_min): D_32, D_128,
     max_t |D_t| (keys inv_drift_*). A trajectory with an LV positivity
     violation (x <= 0 or y <= 0) or a non-finite D has D undefined.
-  * classes: unbounded (non-finite or max |yhat| > 10 * max |y_train|), else
-    bounded_wrong (NRMSE@128 > 1 or positivity violation) split into collapse
-    (amplitude ratio over the second half < 0.1) and drift, else ok.
-    rate_ok + rate_unbounded + rate_bounded_wrong = 1 and
-    rate_collapse + rate_drift = rate_bounded_wrong.
+  * outcome classes (protocol freeze F1-2026-10-26, decision i), three
+    disjoint labels per trajectory: unbounded (max |yhat| > 10 * max |y_train|,
+    a non-finite rollout included), else bounded_wrong (collapse: amplitude
+    ratio over the second half < 0.1, or orbit error > tau_orb, or an LV
+    positivity violation), else ok (on the orbit, possibly phase-shifted).
+    rate_ok + rate_unbounded + rate_bounded_wrong = 1 at tau_orb (default
+    0.15); the same rates at TAU_ORB_SENSITIVITY (0.30) are stored as
+    outcome_classes_tau_0.30. non_finite (NaN/Inf anywhere in the rollout) is a
+    fit-level flag, not a trajectory label.
 
 Pure numpy: src/evaluation/__init__ loads the TF-based GradientFlowTracker
 lazily, so this module imports without TensorFlow (CPU-only aggregation).
@@ -35,6 +39,9 @@ THETA_SENSITIVITY = (0.3, 1.0)
 HORIZONS = (16, 32, 128)
 UNBOUNDED_FACTOR = 10.0
 COLLAPSE_RATIO = 0.1
+TAU_ORB = 0.15
+TAU_ORB_SENSITIVITY = 0.30
+SENSITIVITY_KEY = f"outcome_classes_tau_{TAU_ORB_SENSITIVITY:.2f}"
 
 
 def _lv_energy(s):
@@ -100,7 +107,14 @@ def _summarise(out, name, values):
     out[f"{name}_mean"] = float(np.mean(v)) if v.size else float("nan")
 
 
-def rollout_metrics(y_true, y_pred, norm_stats, system) -> dict:
+def _class_rates(unbounded, wrong) -> dict:
+    return {"rate_ok": float((~unbounded & ~wrong).mean()),
+            "rate_unbounded": float(unbounded.mean()),
+            "rate_bounded_wrong": float((~unbounded & wrong).mean())}
+
+
+def rollout_metrics(y_true, y_pred, norm_stats, system,
+                    tau_orb=TAU_ORB) -> dict:
     """All #20 rollout metrics of one split (see module docstring).
 
     Args:
@@ -108,6 +122,7 @@ def rollout_metrics(y_true, y_pred, norm_stats, system) -> dict:
             rollout; column 0 is the initial state and is not scored.
         norm_stats: {"mean", "std", "train_abs_max"} (see make_norm_stats).
         system: neural_ode system name (selects the invariant).
+        tau_orb: orbit-error threshold of the bounded_wrong class.
     """
     y_true = np.asarray(y_true, dtype=np.float64)
     y_pred = np.asarray(y_pred, dtype=np.float64)
@@ -129,7 +144,8 @@ def rollout_metrics(y_true, y_pred, norm_stats, system) -> dict:
         amp_ratio = (np.sqrt(z_pred[:, half:].var(axis=1).mean(axis=-1))
                      / np.sqrt(z_true[:, half:].var(axis=1).mean(axis=-1)))
 
-    out = {"n_trajectories": n, "horizon": T}
+    out = {"n_trajectories": n, "horizon": T,
+           "non_finite": bool(not finite.all())}
     for theta in (THETA, *THETA_SENSITIVITY):
         exceed = err > theta
         vpt = np.where(exceed.any(axis=1), exceed.argmax(axis=1) + 1, T)
@@ -151,10 +167,9 @@ def rollout_metrics(y_true, y_pred, norm_stats, system) -> dict:
     out["positivity_violations"] = int(violations.sum())
 
     unbounded = z_abs_max > UNBOUNDED_FACTOR * norm_stats["train_abs_max"]
-    wrong = ~unbounded & ((nrmse[128] > 1.0) | (violations > 0))
-    collapse = wrong & (amp_ratio < COLLAPSE_RATIO)
-    for name, mask in (("ok", ~unbounded & ~wrong), ("unbounded", unbounded),
-                       ("bounded_wrong", wrong), ("collapse", collapse),
-                       ("drift", wrong & ~collapse)):
-        out[f"rate_{name}"] = float(mask.mean())
+    collapse_or_sign = (amp_ratio < COLLAPSE_RATIO) | (violations > 0)
+    out["tau_orb"] = tau_orb
+    out.update(_class_rates(unbounded, collapse_or_sign | (orbit > tau_orb)))
+    out[SENSITIVITY_KEY] = _class_rates(
+        unbounded, collapse_or_sign | (orbit > TAU_ORB_SENSITIVITY))
     return out

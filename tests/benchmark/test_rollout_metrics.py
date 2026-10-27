@@ -1,4 +1,5 @@
-"""Rollout endpoint metrics (#20): the pre-registered unit checks."""
+"""Rollout endpoint metrics (#20) and outcome classes (#63): the
+pre-registered unit checks."""
 import json
 import subprocess
 import sys
@@ -7,8 +8,9 @@ import numpy as np
 import pytest
 from scipy.integrate import solve_ivp
 
-from src.evaluation.rollout_metrics import (INVARIANTS, invariant_drift,
-                                            make_norm_stats, rollout_metrics)
+from src.evaluation.rollout_metrics import (INVARIANTS, SENSITIVITY_KEY,
+                                            invariant_drift, make_norm_stats,
+                                            rollout_metrics)
 from src.tasks.lotka_volterra.datasets import load_lotka_volterra
 from src.tasks.neural_ode.datasets import _ODE_FUNCS, _SYSTEMS
 
@@ -26,12 +28,16 @@ def _circle(shift=0):
 
 TRUTH = _circle()
 STATS = make_norm_stats(TRUTH)
+RADII = np.linspace(1.0, 1.5, 4)[:, None, None]
 
 
-def _metrics(pred, truth=TRUTH, stats=STATS, system="toy"):
-    m = rollout_metrics(truth, pred, stats, system)
-    assert m["rate_ok"] + m["rate_unbounded"] + m["rate_bounded_wrong"] == pytest.approx(1)
-    assert m["rate_collapse"] + m["rate_drift"] == pytest.approx(m["rate_bounded_wrong"])
+def _metrics(pred, truth=TRUTH, stats=STATS, system="toy", **kw):
+    m = rollout_metrics(truth, pred, stats, system, **kw)
+    # three disjoint classes at tau_orb and at the 0.30 sensitivity; no drift
+    for rates in (m, m[SENSITIVITY_KEY]):
+        assert rates["rate_ok"] + rates["rate_unbounded"] \
+            + rates["rate_bounded_wrong"] == pytest.approx(1)
+    assert not any("drift" in k and k.startswith("rate") for k in m)
     return m
 
 
@@ -40,7 +46,8 @@ def test_vpt_of_perfect_prediction_is_T():
     assert m["vpt_median"] == m["vpt_mean"] == T
     assert m["vpt_frac_median"] == 1.0
     assert m["nrmse_128_median"] == m["orbit_error_median"] == 0.0
-    assert m["rate_ok"] == 1.0
+    assert m["rate_ok"] == 1.0 and m["tau_orb"] == 0.15
+    assert m["non_finite"] is False
 
 
 def test_vpt_of_mean_prediction_is_1():
@@ -53,7 +60,30 @@ def test_phase_shift_has_zero_orbit_error_but_large_nrmse():
     m = _metrics(_circle(shift=21))                 # ~half a period
     assert m["orbit_error_median"] < 1e-9
     assert m["nrmse_128_median"] > 1.0
-    assert m["rate_drift"] == 1.0                   # bounded, right amplitude
+    assert m["rate_ok"] == 1.0                      # on the orbit, phase-shifted
+
+
+def test_lv_eight_step_delayed_copy_is_ok():
+    """A perfect copy of the true LV orbit delayed by 8 steps: NRMSE far above
+    1 (the old 'drift' case), orbit error ~0, so it is ok, not bounded_wrong
+    (protocol freeze F1-2026-10-26, decision i: a phase-shifted rollout on the
+    true orbit counts as ok)."""
+    data = load_lotka_volterra(n_trajectories=80, seed=0)
+    stats = make_norm_stats(data.train_traj, data.mean, data.std)
+    truth, delayed = data.test_traj[:, 8:], data.test_traj[:, :-8]
+    m = _metrics(delayed, truth, stats, "periodic_predator_prey")
+    assert m["nrmse_128_median"] > 1.2 and m["orbit_error_median"] < 1e-3
+    assert m["rate_ok"] == m[SENSITIVITY_KEY]["rate_ok"] == 1.0
+
+
+def test_off_orbit_is_bounded_wrong_at_015_and_ok_at_030():
+    """Every orbit widened by 0.4: orbit error 0.20 per trajectory."""
+    m = _metrics(TRUTH * (RADII + 0.4) / RADII)
+    assert m["orbit_error_median"] == pytest.approx(0.2, abs=0.01)
+    assert m["rate_bounded_wrong"] == 1.0
+    assert m[SENSITIVITY_KEY]["rate_ok"] == 1.0
+    m = _metrics(TRUTH * (RADII + 0.4) / RADII, tau_orb=0.3)
+    assert m["rate_ok"] == 1.0 and m["tau_orb"] == 0.3
 
 
 @pytest.mark.parametrize("system,fixed_point", [
@@ -86,22 +116,29 @@ def test_lv_positivity_violation_is_bounded_wrong():
     m = _metrics(pred, data.test_traj, stats, "periodic_predator_prey")
     assert m["positivity_violations"] == 1 and m["n_inv_drift_undefined"] == 1
     assert m["rate_bounded_wrong"] == 1 / len(pred)
+    assert m[SENSITIVITY_KEY]["rate_bounded_wrong"] == 1 / len(pred)
 
 
 def test_exploding_sequence_is_unbounded():
     growth = np.exp(np.linspace(0, 8, T + 1))[None, :, None]
     m = _metrics(TRUTH * growth)
-    assert m["rate_unbounded"] == 1.0
+    assert m["rate_unbounded"] == 1.0 and m["non_finite"] is False
     nonfinite = TRUTH.copy()
-    nonfinite[:, 60:] = np.nan
+    nonfinite[0, 60:] = np.nan
     m = _metrics(nonfinite)
-    assert m["rate_unbounded"] == 1.0 and m["nrmse_128_median"] == np.inf
-    assert m["vpt_median"] == 60                     # first non-finite step
+    # NaN is a fit-level flag; the trajectory itself is labelled unbounded
+    assert m["non_finite"] is True and m["rate_unbounded"] == 0.25
+    assert m["rate_ok"] == 0.75 and m["nrmse_128_mean"] == np.inf
+    assert rollout_metrics(TRUTH[:1], nonfinite[:1], STATS, "toy")[
+        "vpt_median"] == 60                          # first non-finite step
 
 
-def test_constant_sequence_is_collapse():
+def test_standstill_on_the_orbit_is_collapse():
+    """A constant prediction at a true orbit point has orbit error 0; only
+    the collapse criterion makes it bounded_wrong."""
     m = _metrics(np.repeat(TRUTH[:, :1], T + 1, axis=1))
-    assert m["rate_collapse"] == 1.0
+    assert m["orbit_error_median"] < 1e-9
+    assert m["rate_bounded_wrong"] == m[SENSITIVITY_KEY]["rate_bounded_wrong"] == 1.0
 
 
 def test_cli_recomputes_from_result_jsons(tmp_path):
@@ -116,6 +153,7 @@ def test_cli_recomputes_from_result_jsons(tmp_path):
     main([str(tmp_path / "*.json"), "--out", str(out)])
     lines = out.read_text().splitlines()
     assert len(lines) == 3 and "norm_stats_source" in lines[0]
+    assert f"{SENSITIVITY_KEY}.rate_ok" in lines[0].split(",")
     assert {"stored", "test_proxy"} <= set(",".join(lines[1:]).split(","))
 
 
@@ -138,10 +176,18 @@ def test_runner_stores_rollout_metrics(tmp_path, monkeypatch):
         assert m["horizon"] == 16 and m["n_trajectories"] == 2
         assert m["rate_ok"] + m["rate_unbounded"] + m["rate_bounded_wrong"] \
             == pytest.approx(1)
+        assert m["tau_orb"] == rec["config"]["effective"]["tau_orb"] == 0.15
+        assert m["non_finite"] in (True, False)
+        assert set(m[SENSITIVITY_KEY]) == {
+            "rate_ok", "rate_unbounded", "rate_bounded_wrong"}
+        assert "rate_drift" not in m and "rate_collapse" not in m
     again = rollout_metrics(rec["ground_truth_traj"], rec["closed_loop_traj"],
                             rec["norm_stats"], rec["system"])
     for k, v in rec["rollout_metrics_test"].items():
-        assert again[k] == pytest.approx(v, rel=1e-3, abs=1e-4, nan_ok=True), k
+        if k == SENSITIVITY_KEY:
+            assert again[k] == pytest.approx(v, abs=1e-9), k
+        else:
+            assert again[k] == pytest.approx(v, rel=1e-3, abs=1e-4, nan_ok=True), k
 
 
 def test_module_imports_without_tensorflow():

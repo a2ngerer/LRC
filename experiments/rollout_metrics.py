@@ -20,7 +20,8 @@ import json
 import sys
 from glob import glob
 
-from src.evaluation.rollout_metrics import make_norm_stats, rollout_metrics
+from src.evaluation.rollout_metrics import (TAU_ORB, make_norm_stats,
+                                            rollout_metrics)
 
 ID_KEYS = ("system", "cell", "wiring", "seed", "forcing", "param_budget",
            "backbone_layers", "epochs")
@@ -30,6 +31,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("globs", nargs="+", help="result JSON globs (** recurses)")
     ap.add_argument("--out", default="rollout_metrics.csv")
+    ap.add_argument("--tau-orb", type=float, default=TAU_ORB,
+                    help="orbit-error threshold of the bounded_wrong class")
     args = ap.parse_args(argv)
 
     rows = []
@@ -42,9 +45,15 @@ def main(argv=None):
         if stats is None:
             stats, source = make_norm_stats(r["ground_truth_traj"]), "test_proxy"
         metrics = rollout_metrics(r["ground_truth_traj"], r["closed_loop_traj"],
-                                  stats, r.get("system", "periodic_predator_prey"))
+                                  stats, r.get("system", "periodic_predator_prey"),
+                                  args.tau_orb)
+        # nested dicts (outcome_classes_tau_0.30) become <key>.<sub> columns
+        flat = {f"{k}.{kk}": vv for k, v in metrics.items()
+                if isinstance(v, dict) for kk, vv in v.items()}
         rows.append({"path": path, **{k: r.get(k) for k in ID_KEYS},
-                     "norm_stats_source": source, **metrics})
+                     "norm_stats_source": source,
+                     **{k: v for k, v in metrics.items()
+                        if not isinstance(v, dict)}, **flat})
     if not rows:
         sys.exit("no result JSON with closed_loop_traj matched")
     with open(args.out, "w", newline="") as f:
