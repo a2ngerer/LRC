@@ -510,18 +510,18 @@ def not_learned(n_below, n_fits) -> bool:
 
 
 def compute_floors(rollout_dir) -> dict:
-    """floors.json content for the final-seed rollout fits below rollout_dir.
+    """floors.json content for the rollout fits below rollout_dir.
 
     floors: per data draw (FLOOR_DATA_KEYS + anchors, horizon, theta of the
     fits' rollout_metrics_test) the persistence and AR(1) anchor_metrics on
-    val and test (src/evaluation/rollout_metrics.floor_lines). arms: per
-    (system, arm) the fits whose test vpt_multi_median lies below the floor of
+    val and test (src/evaluation/rollout_metrics.floor_lines), the draws of
+    tuning seeds included (the S0 smoke fits run on the tuning seed, #72).
+    arms: per final-seed (system, arm) the fits whose test vpt_multi_median lies below the floor of
     their own data draw (NaN counts as below) and above_floor by the seed rule
     (not_learned). contrasts: every rollout entry of CORE_CONTRASTS whose two
     arms lie in the same folder with the same file-name suffix (forcing,
     backbone), floor_bound if either arm is not above floor. Files without
-    the #62 multi-anchor keys or config.effective, and tuning seeds, are left
-    out."""
+    the #62 multi-anchor keys or config.effective are left out."""
     from src.tasks.lotka_volterra.datasets import load_lotka_volterra
 
     fits, draws = [], {}
@@ -531,8 +531,7 @@ def compute_floors(rollout_dir) -> dict:
             r = json.load(f)
         m = r.get('rollout_metrics_test') if isinstance(r, dict) else None
         eff = (r.get('config') or {}).get('effective') if m else None
-        if (not eff or 'vpt_multi_median' not in m
-                or r.get('seed') not in FINAL_SEEDS):
+        if not eff or 'vpt_multi_median' not in m:
             continue
         draw = {k: eff.get(k) for k in FLOOR_DATA_KEYS}
         draw.update(anchors=m['anchors'], anchor_horizon=m['anchor_horizon'],
@@ -547,6 +546,8 @@ def compute_floors(rollout_dir) -> dict:
             draws[key] = {**draw, **floor_lines(
                 data, draw['anchors'], draw['anchor_horizon'],
                 draw['anchor_theta'])}
+        if r.get('seed') not in FINAL_SEEDS:
+            continue                # a tuning draw: floor line, no marking
         floor = draws[key][FLOOR_SPLIT]['floor']
         arm, folder, tag = _rollout_arm(path, r, rollout_dir)
         fits.append({'system': r['system'], 'arm': arm, 'folder': folder,

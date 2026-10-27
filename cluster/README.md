@@ -284,3 +284,58 @@ on/off and the |Delta| of the validation selection metrics of the two "on" fits
 `DP_PA_ARGS` (e.g. `DP_LV_ARGS="--forcing mixed"`). Ratio at most 1.3 on both
 tasks: put `--deterministic` into the suite YAML's `extra_args`; every result
 records the setting as `config.effective.deterministic`.
+
+### S0 smoke (#72)
+
+Stage S0 of the frozen protocol smokes every arm-task once before any HPO fit
+is spent: `configs/suite/smoke_{lv,duffing,mt,pa}.yaml` (93 arm-tasks) and the
+consensus smoke `smoke_co.yaml` (the nine K = 3 arms) run each arm of the
+frozen `*_hpo.yaml` (same budget, `ode_unfolds`, `dt_scale`, forcing) for 3
+epochs as one `run_grid_hpo.py` fit: tuning seed 100 only (stage 1), one lr
+(1e-3), clip off. Submit order, all into `00_canary`:
+
+```bash
+uv run python experiments/suite_manifest.py --count configs/suite/smoke_{lv,duffing,mt,pa}.yaml   # 93
+BENCH=00_canary ./cluster/submit_suite.sh configs/suite/smoke_lv.yaml s0-smoke-lv
+BENCH=00_canary ./cluster/submit_suite.sh configs/suite/smoke_duffing.yaml s0-smoke-duffing
+BENCH=00_canary ./cluster/submit_suite.sh configs/suite/smoke_mt.yaml s0-smoke-mt
+BENCH=00_canary ./cluster/submit_suite.sh configs/suite/smoke_pa.yaml s0-smoke-pa
+BENCH=00_canary ./cluster/submit_suite.sh configs/suite/smoke_co.yaml s0-smoke-co
+DP_LV_ARGS="--forcing mixed" ./cluster/submit_determinism_probe.sh s0-determinism
+```
+
+Then fetch the six run folders, write the floor lines of each rollout smoke
+(`--floors` takes the tuning-seed draws for the floor lines, the arm marking
+stays on the final seeds) and run the gate:
+
+```bash
+D=<YYYY-MM-DD>
+for t in lv duffing mt pa co; do ./cluster/fetch_run.sh 00_canary ${D}_s0-smoke-$t; done
+./cluster/fetch_run.sh 00_canary ${D}_s0-determinism
+for t in lv duffing mt; do
+    uv run python experiments/aggregate_results.py --runs none \
+        --out results/00_canary/s0-gate/$t \
+        --rollout-runs results/00_canary/${D}_s0-smoke-$t --floors
+done
+uv run python experiments/suite_gate.py --stage s0 \
+    --runs results/00_canary/${D}_s0-smoke-{lv,duffing,mt,pa,co} \
+    --determinism results/00_canary/${D}_s0-determinism/results/determinism_probe.json \
+    --floors results/00_canary/s0-gate/{lv,duffing,mt}/floors.json \
+    --out results/00_canary/s0-gate/REPORT.md
+```
+
+`suite_gate.py` reads every `results/hpo/<arm>/lr*_clip*_seed*/*.json` below
+the run folders and checks the S0 go criteria: every arm-task of the four
+smoke YAMLs present with one fit; `config.effective` with `ode_unfolds`,
+`dt_scale`, `forcing` (rollouts), `weights_path` and one `protocol_version`;
+the rollout keys (`vpt_multi_median`, `vpt_anchor_{8,16,24,32}`,
+`nrmse_32_anchor_8`, outcome rates, `non_finite` false) or the finite primary
+metric (Person Activity, committee); no NaN/Inf (the `inv_drift_*` fields of
+`multitimescale_lib` are listed, not failed); `budget_above_tolerance` only on
+gru/dense3 and lstm/dense3; `elastance_type` asymmetric on the cells with an
+elastance in the registry (lrc, mm_lrc, cfc_lrc, cfc_lrc_outer, cfc_mm_lrc;
+mm_ltc and cfc_mm_ltc have none);
+`ode_unfolds` 6 on the solver cells; the determinism probe (ratio on/off at
+most 1.3, |Delta| of the "on" pair at most 1e-3, lv and pa) and a floor line
+per system and data seed. The report lists every check as PASS/FAIL with the
+offending arms; exit 0 only when all pass. A failed S0 is fixed and repeated.

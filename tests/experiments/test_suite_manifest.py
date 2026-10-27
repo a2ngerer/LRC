@@ -6,7 +6,8 @@
 # smoke checks config.effective of every arm. Issue #71: the frozen protocol
 # YAMLs (configs/suite/{lv,duffing,mt,pa,co}_*.yaml): fit counts per task,
 # endpoint flags, per-arm runs_per_gpu, config_from, committee result names and
-# resume per fit.
+# resume per fit. Issue #72: the S0 smoke YAMLs (configs/suite/smoke_*.yaml),
+# one stage-1 fit per arm of the frozen HPO YAMLs, 93 arm-tasks.
 import fnmatch
 import json
 from argparse import Namespace
@@ -161,6 +162,7 @@ def test_final_fails_on_a_missing_or_foreign_selection(tmp_path):
 
 @pytest.mark.parametrize('over, msg', [
     ({'seeds': [0, 0]}, 'two different tuning seeds'),
+    ({'seeds': [100, 101, 102]}, 'one tuning seed or two'),
     ({'stage': 'final'}, 'needs hpo_dir'),
     ({'task': 'pa'}, 'lv only'),
     ({'task': 'xx'}, 'task must be one of'),
@@ -338,7 +340,7 @@ def test_frozen_arm_matrix():
     assert set(names['duffing_hpo']) - set(names['lv_hpo']) == {
         'cfc_static_ncp', 'ltc_ncp', 'mm_ltc_ncp', 'cfc_mm_ltc_ncp'}
     for path in SUITE.glob('*.yaml'):
-        if path.stem.startswith('canary'):
+        if path.stem.startswith(('canary', 'smoke')):
             continue
         cfg = load(str(path))
         assert cfg['seeds'] == ([100, 101] if cfg['stage'] == 'hpo'
@@ -506,3 +508,72 @@ def test_resume_guard_fits_count_as_k30_finals(tmp_path):
     for line in guard:
         (results / line['done'].replace('*', '41.5')).write_text('{}')
     assert len(pending(k30, str(results))) == 63
+
+
+def test_count_one_tuning_seed_is_the_stage1_grid(tmp_path):
+    """One tuning seed runs stage 1 only: --grid-lr x --grid-clip fits per
+    arm (run_grid_hpo.py's 4 x 2 grid by default)."""
+    assert count(load(_cfg(tmp_path, seeds=[100]))) == 6 * 8
+    assert count(load(_cfg(tmp_path, seeds=[100], extra_args=[
+        '--grid-lr', '1e-3', '3e-3', '--grid-clip', 'off', '--forcing',
+        'mixed']))) == 6 * 2
+
+
+# --- S0 smoke (#72) ----------------------------------------------------------
+
+SMOKES = {'smoke_lv': 'lv_hpo', 'smoke_duffing': 'duffing_hpo',
+          'smoke_mt': 'mt_hpo', 'smoke_pa': 'pa_hpo', 'smoke_co': 'co_k3_hpo'}
+GRID = ['--grid-lr', '1e-3', '--grid-clip', 'off']
+
+
+def test_smoke_counts_93_arm_tasks_one_fit_each(capsys):
+    """The four rollout and Person Activity smokes: 93 fits, one --list line
+    per arm, each one stage-1 config for 3 epochs on tuning seed 100; the
+    consensus smoke adds its nine K = 3 arms."""
+    main(['--count', *(str(SUITE / f'{n}.yaml') for n in list(SMOKES)[:4])])
+    assert capsys.readouterr().out.strip() == '93'
+    for name in SMOKES:
+        cfg = _frozen(name)
+        lines = expand(cfg)
+        assert count(cfg) == len(lines) == len(arms(cfg))
+        for line in lines:
+            argv = line['argv']
+            for flag, value in (('--epochs', '3'), ('--tuning-seeds', '100'),
+                                ('--grid-lr', '1e-3'), ('--grid-clip', 'off')):
+                i = argv.index(flag)
+                assert argv[i + 1] == value
+                assert (argv + ['--'])[i + 2].startswith('--')  # one value
+    assert len(arms(_frozen('smoke_co'))) == 9
+
+
+def _without_grid(extra):
+    return [a for a in map(str, extra) if a not in GRID]
+
+
+@pytest.mark.parametrize('smoke', SMOKES)
+def test_smoke_matches_the_frozen_hpo_yaml(smoke):
+    """Same arms, budget, ode_unfolds, dt_scale and runner flags as the frozen
+    HPO YAML of the task: Duffing runs its config_from arms as ordinary arms;
+    multitimescale_lib adds cfc_static_w (mt_final_static_w.yaml's --size,
+    no budget: the runner takes one of the two); 6 fits per GPU (PA solver
+    arms on ncp 2), 1 h."""
+    s, f = _frozen(smoke), _frozen(SMOKES[smoke])
+    for k in ('task', 'system', 'ode_unfolds', 'dt_scale'):
+        assert s.get(k) == f.get(k)
+    assert not s.get('config_from')
+    assert _without_grid(s['extra_args']) == _without_grid(
+        f.get('extra_args') or [])
+    assert s['cluster'] == {'runs_per_gpu': 6, 'walltime': '01:00:00'}
+    if smoke != 'smoke_mt':
+        assert s['param_budget'] == f['param_budget']
+        assert arms(s) == arms(f)
+    else:
+        w = _frozen('mt_final_static_w')
+        assert arms(s) == [(n, c, wi, {'param_budget': f['param_budget']})
+                           for n, c, wi, _ in arms(f)] + [
+            ('cfc_static_w_ncp', 'cfc_static', 'ncp',
+             {'size': int(_flag_value(w['extra_args'], '--size'))})]
+        assert 'param_budget' not in s and 'param_budget' not in w
+    if smoke == 'smoke_pa':
+        assert s['heavy'] == {'arms': f['heavy']['arms'],
+                              'cluster': {'runs_per_gpu': 2}}
