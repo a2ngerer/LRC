@@ -34,15 +34,18 @@ cluster/submit_suite.sh) and checks the S0 criteria:
                     and cfc_mm_ltc have none and record None)
   ode_unfolds       6 on every solver cell (ODE_UNFOLD_CELLS: ctrnn, lrc,
                     mm_lrc, ltc, mm_ltc)
-  determinism       with --determinism (determinism_probe.json, #70): runtime
-                    ratio on/off <= 1.3 and |Delta| of the two "on" fits
-                    <= 1e-3 on lv and pa
+  determinism       --determinism (determinism_probe.json, #70; missing or
+                    unreadable: FAIL "not measured"): |Delta| of the two
+                    "on" fits <= 1e-3 on lv and pa; a runtime ratio on/off
+                    above 1.3 is reported as DECISION "op-determinism off
+                    for the suite" (F1 decision l), not as a failure
   floors            with --floors (aggregate_results.py --floors, one or more
                     floors.json): a floor line with a finite val and test
                     floor per rollout system and data seed of the fits
 
-The report (--out, Markdown, also printed) lists every check as PASS/FAIL with
-the offending arms; the exit code is 0 only when every check passes.
+The report (--out, Markdown, also printed) lists every check as PASS, FAIL or
+DECISION with the offending arms; the exit code is 0 only when no check
+fails.
 
 Usage:
     uv run python experiments/suite_gate.py --stage s0 \\
@@ -250,16 +253,17 @@ DESCRIPTION = {
 
 
 def gate(fits, expected, determinism=None, floors=None):
-    """[(check, description, [offending entries])], {arm label: exempt
-    paths}, {arm label: listed undefined inv_drift_* blocks}, [arm labels
-    outside the expected list]."""
+    """[(check, description, [offending entries], decision or None)], {arm
+    label: exempt paths}, {arm label: listed undefined inv_drift_* blocks},
+    [arm labels outside the expected list]. determinism None: not
+    measured (FAIL)."""
     n = Counter(f["arm"] for f in fits)
     missing = [a for a in expected if not n[a]]
     results = [("arms", f"{len(expected) - len(missing)}/{len(expected)} "
                 f"arm-tasks present, one fit each",
                 [f"{_label(a)}: no fit" for a in missing]
                 + [f"{_label(a)}: {k} fits" for a, k in sorted(n.items())
-                   if k > 1])]
+                   if k > 1], None)]
     per_check, exempt, listed = {k: [] for k in DESCRIPTION}, {}, {}
     for fit in fits:
         problems, ex, li = check_fit(fit)
@@ -278,9 +282,8 @@ def gate(fits, expected, determinism=None, floors=None):
     for k, desc in DESCRIPTION.items():
         if k == "protocol_version" and len(versions) == 1:
             desc += f" ({versions[0]})"
-        results.append((k, desc, per_check[k]))
-    if determinism is not None:
-        results.append(check_determinism(determinism))
+        results.append((k, desc, per_check[k], None))
+    results.append(check_determinism(determinism))
     if floors is not None:
         results.append(check_floors(fits, floors))
     unexpected = sorted(_label(a) for a in n if a not in expected)
@@ -288,8 +291,15 @@ def gate(fits, expected, determinism=None, floors=None):
 
 
 def check_determinism(probe):
-    """Runtime ratio and on-pair |Delta| of determinism_probe.json (#70)."""
-    bad, seen = [], []
+    """Runtime ratio and on-pair |Delta| of determinism_probe.json (#70);
+    probe None or not a JSON object: not measured. A ratio above MAX_RATIO
+    is F1 decision l (op-determinism off for the suite), not a failure."""
+    desc = (f"|Delta on| <= {MAX_DELTA:g} on lv and pa; ratio on/off > "
+            f"{MAX_RATIO}: op-determinism off (decision)")
+    if not isinstance(probe, dict):
+        return ("determinism", desc, ["not measured (no readable "
+                                      "--determinism probe file)"], None)
+    bad, seen, slow = [], [], []
     for task in ("lv", "pa"):
         s = (probe.get("tasks") or {}).get(task)
         if s is None:
@@ -298,13 +308,17 @@ def check_determinism(probe):
         ratio, delta = s.get("ratio_on_off"), s.get("max_abs_delta_on")
         seen.append(f"{task} ratio {ratio:.3g}, |Delta| {delta:.3g}"
                     if _finite(ratio) and _finite(delta) else task)
-        if not (_finite(ratio) and ratio <= MAX_RATIO):
-            bad.append(f"{task}: runtime ratio on/off {ratio} > {MAX_RATIO}")
+        if not _finite(ratio):
+            bad.append(f"{task}: runtime ratio on/off {ratio!r}")
+        elif ratio > MAX_RATIO:
+            slow.append(f"{task} {ratio:.3g}")
         if not (_finite(delta) and delta <= MAX_DELTA):
             bad.append(f"{task}: |Delta| of the on fits {delta} > "
                        f"{MAX_DELTA:g}")
-    return ("determinism", f"ratio <= {MAX_RATIO}, |Delta on| <= "
-            f"{MAX_DELTA:g} on lv and pa ({'; '.join(seen)})", bad)
+    decision = (f"op-determinism off for the suite (F1 decision l): runtime "
+                f"ratio on/off above {MAX_RATIO} on {', '.join(slow)}; seed "
+                f"noise is reported as a nuisance component" if slow else None)
+    return ("determinism", f"{desc} ({'; '.join(seen)})", bad, decision)
 
 
 def check_floors(fits, floors):
@@ -325,22 +339,26 @@ def check_floors(fits, floors):
                 bad.append(f"{system} data seed {seed}: no finite {split} "
                            f"floor")
     return ("floors", f"floor line per system and data seed, val and test "
-            f"({len(want)} draws)", bad)
+            f"({len(want)} draws)", bad, None)
 
 
 def report(results, exempt, listed, unexpected, runs, configs, n_fits):
-    ok = all(not bad for _, _, bad in results)
+    ok = all(not bad for _, _, bad, _ in results)
     lines = [f"# S0 smoke gate: {'PASS' if ok else 'FAIL'}\n",
              f"Runs: {', '.join(runs)}  ",
              f"Fit JSONs: {n_fits}; expected arm-tasks from "
              f"{', '.join(os.path.basename(c) for c in configs)}\n",
              "| Check | Result | Criterion | Offending |",
              "|-------|--------|-----------|-----------|"]
-    lines += [f"| {k} | {'FAIL' if bad else 'PASS'} | {desc} | {len(bad)} |"
-              for k, desc, bad in results]
-    for k, _, bad in results:
+    for k, desc, bad, decision in results:
+        status = "FAIL" if bad else "DECISION" if decision else "PASS"
+        cell = desc.replace("|", "\\|")      # |Delta| keeps the columns
+        lines.append(f"| {k} | {status} | {cell} | {len(bad)} |")
+    for k, _, bad, decision in results:
         if bad:
             lines += ["", f"## FAIL: {k}", ""] + [f"- {b}" for b in bad]
+        if decision:
+            lines += ["", f"## DECISION: {k}", "", f"- {decision}"]
     if exempt:
         lines += ["", f"## Exempt ({EXEMPT_SYSTEM} {EXEMPT_PREFIX}*, listed, "
                   "not failed)", ""]
@@ -366,7 +384,8 @@ def main(argv=None):
                     help="campaign YAMLs of the expected arm-tasks (default: "
                          "the four smoke YAMLs, 93 arm-tasks)")
     ap.add_argument("--determinism", default=None,
-                    help="determinism_probe.json of the S0 probe")
+                    help="determinism_probe.json of the S0 probe (without "
+                         "it the determinism check fails: not measured)")
     ap.add_argument("--floors", nargs="+", default=None,
                     help="floors.json of aggregate_results.py --floors")
     ap.add_argument("--out", required=True, help="Markdown report")
@@ -378,10 +397,15 @@ def main(argv=None):
     def read(path):
         with open(path, encoding="utf-8") as f:
             return json.load(f)
+
+    def probe(path):            # missing or unreadable: not measured (FAIL)
+        try:
+            return read(path) if path else None
+        except (OSError, ValueError):
+            return None
     fits = read_fits(a.runs)
     results, exempt, listed, unexpected = gate(
-        fits, expected_arms(a.configs),
-        read(a.determinism) if a.determinism else None,
+        fits, expected_arms(a.configs), probe(a.determinism),
         [read(p) for p in a.floors] if a.floors else None)
     text, ok = report(results, exempt, listed, unexpected, a.runs, a.configs,
                       len(fits))
