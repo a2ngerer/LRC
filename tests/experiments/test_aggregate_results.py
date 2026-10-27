@@ -164,11 +164,11 @@ def test_test_block_finite_pairs_and_family_alpha():
     text = _test_block(df, [('a vs b', {'cell': 'a', 'wiring': 'dense'},
                              {'cell': 'b', 'wiring': 'dense'})], 'T',
                        family='H-c')
-    assert 'Bonferroni m=12' in text
+    assert 'Bonferroni m=2' in text
     row = next(line for line in text.splitlines() if line.startswith('| a vs b'))
     cols = [c.strip() for c in row.strip('|').split('|')]
     assert cols[1:3] == ['7', '1']                       # n pairs, excluded
-    assert cols[6] == f'{0.05 / 12:.4g}'                 # alpha adj
+    assert cols[6] == f'{0.05 / 2:.4g}'                  # alpha adj
     assert cols[-1] == '1.00 [0.590, 1.000]'             # 7/7 wins, lower nrmse
 
 
@@ -425,3 +425,271 @@ def test_consensus_family_excludes_arm_above_budget(tmp_path):
     assert 'missing arm or arm above budget tolerance' in report
     assert main(['--runs', str(tmp_path / 'none'), '--co-runs', d,
                  '--out', str(tmp_path / 'out')]) == 0
+
+
+# --- sequence-runner suite (#57) -------------------------------------------
+
+def _write_lv_fit(d, system, cell, wiring, seed, vpt, rate_unbounded=0.0,
+                  non_finite=False, ode_unfolds=6, dt_scale=12.8,
+                  param_budget=4000, above=False, forcing='mixed'):
+    """A run_lotka_volterra_benchmark.py result JSON (flat, #62 keys)."""
+    os.makedirs(d, exist_ok=True)
+    m = {'vpt_multi_median': vpt, 'vpt_anchor_8': vpt + 1,
+         'nrmse_32_anchor_8': 0.5, 'theta_sensitivity': {'0.3': vpt - 1,
+                                                         '1.0': vpt + 2},
+         'rate_unbounded': rate_unbounded, 'non_finite': non_finite}
+    rec = {'wiring': wiring, 'cell': cell, 'seed': seed, 'system': system,
+           'param_budget': param_budget, 'budget_deviation': 0.01,
+           'budget_above_tolerance': above, 'epochs': 300, 'lr': 1e-3,
+           'clipnorm': None, 'params_effective': 3960, 'dt_scale': dt_scale,
+           'forcing': forcing, 'best_val_epoch': 250,
+           'rollout_metrics_test': m,
+           'config': {'effective': {'ode_unfolds': ode_unfolds}}}
+    with open(os.path.join(d, f'{cell}_{wiring}_seed{seed}_mixed.json'), 'w',
+              encoding='utf-8') as f:
+        json.dump(rec, f)
+
+
+def _write_pa_fit(d, cell, wiring, seed, f1, conf=None, above=False):
+    """A run_person_activity_benchmark.py result JSON (indented, no
+    system); with conf, test_macro_f1 is its pooled macro-F1."""
+    from src.evaluation.metrics import macro_f1
+    os.makedirs(d, exist_ok=True)
+    if conf is not None:
+        f1 = macro_f1(np.sum([np.array(c) for c in conf.values()], axis=0))
+    rec = {'wiring': wiring, 'cell': cell, 'seed': seed, 'epochs': 50,
+           'param_budget': 30000, 'budget_deviation': 0.02,
+           'budget_above_tolerance': above, 'lr': 3e-3, 'clipnorm': 1.0,
+           'params_effective': 29500, 'dt_scale': 3.7, 'best_val_epoch': 40,
+           'test_macro_f1': f1, 'config': {'effective': {'ode_unfolds': 6}}}
+    if conf is not None:
+        rec['test_confusion_by_recording'] = conf
+    with open(os.path.join(d, f'{cell}_{wiring}_seed{seed}.json'), 'w',
+              encoding='utf-8') as f:
+        json.dump(rec, f, indent=2)
+
+
+def test_load_sequence_runs_both_runner_layouts(tmp_path):
+    """One row per fit with the #57 columns; tuning seeds are stage hpo,
+    control arms carry their tag, other runners' JSONs and non-fit files are
+    skipped; a fit with every test rollout unbounded is diverged."""
+    from experiments.aggregate_results import (HIGHER_IS_BETTER,
+                                               load_sequence_runs)
+    lv, pa = tmp_path / 'lv', tmp_path / 'pa'
+    _write_lv_fit(lv, 'duffing', 'cfc_lrc', 'ncp', 0, 12.0)
+    _write_lv_fit(lv, 'duffing', 'lrc', 'ncp', 1, 3.0, rate_unbounded=1.0)
+    _write_lv_fit(lv / 'k1', 'duffing', 'lrc', 'ncp', 0, 5.0, ode_unfolds=1)
+    _write_lv_fit(lv / 'dt1', 'duffing', 'cfc_lrc', 'ncp', 0, 5.0,
+                  dt_scale=1.0)
+    _write_lv_fit(lv / 'w', 'multitimescale_lib', 'cfc_static', 'ncp', 0,
+                  5.0, param_budget=None)
+    _write_lv_fit(lv / 'hpo' / 'lr0.001_clipoff_seed100', 'duffing',
+                  'cfc_lrc', 'ncp', 100, 9.0)
+    (lv / 'hpo' / 'hpo_selection.json').write_text('{"task": "lv"}')
+    _write_pa_fit(pa, 'cfc_lrc', 'ncp', 0, 0.6,
+                  {'r2': [[1, 0], [0, 1]], 'r1': [[2, 0], [0, 2]]})
+    (pa / 'co_K30_seed0.json').write_text(json.dumps(
+        {'cell': 'cfc_lrc', 'wiring': 'ncp', 'seed': 0, 'n_columns': 30,
+         'test_macro_f1': 0.5}))
+    df = load_sequence_runs([str(lv)], 'lv')
+    assert len(df) == 6
+    for col in ('cell', 'wiring', 'task', 'system', 'seed', 'stage', 'metric',
+                'diverged', 'best_val_epoch', 'epochs', 'params_effective',
+                'budget_deviation', 'lr', 'clipnorm', 'vpt_anchor_8',
+                'nrmse_32_anchor_8', 'vpt_theta_0.3', 'rate_unbounded'):
+        assert col in df
+    row = df[(df['arm'] == 'cfc_lrc/ncp') & (df['stage'] == 'final')].iloc[0]
+    assert (row['task'], row['system'], row['metric'], row['diverged'],
+            row['vpt_theta_1.0'], row['epochs']) == (
+        'lv', 'duffing', 12.0, False, 14.0, 300)
+    assert df.loc[df['seed'] == 100, 'stage'].item() == 'hpo'
+    assert df.loc[(df['cell'] == 'lrc') & (df['seed'] == 1),
+                  'diverged'].item()
+    assert set(df.loc[df['control'], 'arm']) == {
+        'lrc/ncp [k=1]', 'cfc_lrc/ncp [dt_scale=1]',
+        'cfc_static/ncp [fixed width]'}
+    dp = load_sequence_runs(str(pa), 'pa')
+    assert len(dp) == 1 and dp['system'].item() == 'pa'
+    assert dp['metric'].item() == 1.0 and dp['clipnorm'].item() == 1.0
+    # recordings sorted: r1 first
+    assert dp['confusion'].item()[0].tolist() == [[2, 0], [0, 2]]
+    assert HIGHER_IS_BETTER['lv'] and HIGHER_IS_BETTER['pa']
+
+
+def test_load_sequence_runs_rejects_old_harness_and_duplicates(tmp_path):
+    from experiments.aggregate_results import load_sequence_runs
+    _write_run(str(tmp_path / 'old'), 'ltc', 0.0)
+    with pytest.raises(SystemExit, match='old single-step harness'):
+        load_sequence_runs(str(tmp_path / 'old'), 'lv')
+    (tmp_path / 'pre62').mkdir()
+    (tmp_path / 'pre62' / 'x_seed0.json').write_text(json.dumps(
+        {'cell': 'gru', 'wiring': 'ncp', 'seed': 0, 'system': 'duffing',
+         'rollout_metrics_test': {'vpt_median': 3}}))
+    with pytest.raises(SystemExit, match='pre-#62'):
+        load_sequence_runs(str(tmp_path / 'pre62'), 'lv')
+    for sub in ('a', 'b'):
+        _write_lv_fit(tmp_path / 'dup' / sub, 'duffing', 'gru', 'ncp', 0, 4.0)
+    with pytest.raises(SystemExit, match='two final fits'):
+        load_sequence_runs(str(tmp_path / 'dup'), 'lv')
+
+
+def _suite(tmp_path, n=10):
+    """n seeds: duffing cfc_lrc/ncp beats lrc/ncp (H-b) with distinct
+    differences, seed 0 of lrc/ncp unbounded; PA cfc_lrc/ncp beats lrc/ncp
+    with confusion matrices; cfc/ncp vs cfc_static/ncp on duffing tie in
+    half the pairs."""
+    lv, pa = tmp_path / 'lv', tmp_path / 'pa'
+    for s in range(n):
+        _write_lv_fit(lv, 'duffing', 'cfc_lrc', 'ncp', s, 20.0 + s)
+        _write_lv_fit(lv, 'duffing', 'lrc', 'ncp', s, 10.0 + s / 2,
+                      rate_unbounded=1.0 if s == 0 else 0.0)
+        _write_lv_fit(lv, 'duffing', 'cfc', 'ncp', s, 10.0 + (s % 2))
+        _write_lv_fit(lv, 'duffing', 'cfc_static', 'ncp', s, 10.0)
+        good = {f'r{i}': [[5, 1], [1, 5 + i + s]] for i in range(4)}
+        bad = {f'r{i}': [[3, 3], [2, 4 + i]] for i in range(4)}
+        _write_pa_fit(pa, 'cfc_lrc', 'ncp', s, 0.8 + s / 100, good)
+        _write_pa_fit(pa, 'lrc', 'ncp', s, 0.5, bad)
+    _write_lv_fit(lv / 'k1', 'duffing', 'lrc', 'ncp', 0, 7.0, ode_unfolds=1)
+    return lv, pa
+
+
+def test_core_contrast_blocks_exact_wilcoxon_family_and_effects(tmp_path):
+    """H-b on duffing and PA: ten positive differences give the exact
+    two-sided p 2/1024, x m=2; the unbounded fit enters at VPT 0 and is
+    counted; P(A>B) 10/10 with its Clopper-Pearson bound; the PA interval is
+    the crossed seeds x recordings bootstrap; ties switch to the normal
+    approximation; missing arms are reported as missing."""
+    from experiments.aggregate_results import (CORE_CONTRASTS,
+                                               core_contrast_blocks,
+                                               load_sequence_runs)
+    lv, pa = _suite(tmp_path)
+    df = pd.concat([load_sequence_runs(str(lv), 'lv'),
+                    load_sequence_runs(str(pa), 'pa')], ignore_index=True)
+    blocks = core_contrast_blocks(df)
+    assert len(blocks) == sum(len(e) for e in CORE_CONTRASTS.values()) == 14
+    hb = blocks[blocks['family'] == 'H-b'].set_index('task')
+    for task in ('duffing', 'pa'):
+        b = hb.loc[task]
+        assert (b['n_pairs'], b['status'], b['method'], b['m']) == (
+            10, 'tested', 'exact', 2)
+        assert b['p_raw'] == pytest.approx(2 / 1024)
+        assert b['p_adj'] == pytest.approx(4 / 1024) and b['significant']
+        assert b['p_a_gt_b'] == 1.0 and round(b['p_a_gt_b_lo'], 3) == 0.692
+        assert b['median_diff_lo'] <= b['median_diff'] <= b['median_diff_hi']
+    assert hb.loc['duffing', 'diverged_b'].startswith('1/10 ')
+    assert hb.loc['duffing', 'diverged_a'].startswith('0/10 ')
+    assert hb.loc['duffing', 'ci_units'] == 'seed'
+    assert hb.loc['pa', 'ci_units'] == 'seed x recording'
+    ha = blocks[blocks['family'] == 'H-a'].set_index('task')
+    assert ha.loc['duffing', 'method'] == 'approx'      # ties and zeros
+    assert ha.loc['multitimescale_lib', 'status'] == 'missing'
+    assert not blocks.loc[blocks['status'] == 'missing', 'significant'].any()
+    assert set(blocks['m']) == {2, 3}
+
+
+def test_core_contrast_blocks_undecidable_budget_floor_and_sign(tmp_path):
+    """Below eight pairs the block is undecidable (never significant); an
+    arm above the budget tolerance excludes the block; floor_bound comes
+    from floors.json; sign stability compares the two tuning seeds."""
+    from experiments.aggregate_results import (core_contrast_blocks,
+                                               hc_conjunction,
+                                               load_sequence_runs)
+    lv, pa = _suite(tmp_path, n=7)
+    for s in range(7):
+        _write_lv_fit(lv / 'ppp', 'periodic_predator_prey', 'cfc_lrc', 'ncp',
+                      s, 30)
+        _write_lv_fit(lv / 'ppp', 'periodic_predator_prey', 'cfc_lrc',
+                      'dense3', s, 10, above=s == 3)
+    df = pd.concat([load_sequence_runs(str(lv), 'lv'),
+                    load_sequence_runs(str(pa), 'pa')], ignore_index=True)
+    floors = {'contrasts': [{'family': 'H-b', 'task': 'duffing',
+                             'a': ['cfc_lrc', 'ncp'], 'b': ['lrc', 'ncp'],
+                             'floor_bound': True}]}
+    hpo = {('duffing', 'cfc_lrc', 'ncp'): {'ranking': [
+               {'scores': {'100': 5.0, '101': 6.0}}]},
+           ('duffing', 'lrc', 'ncp'): {'ranking': [
+               {'scores': {'100': 4.0, '101': 7.0}}]},
+           ('pa', 'cfc_lrc', 'ncp'): {'ranking': [
+               {'scores': {'100': 0.6, '101': 0.7}}]},
+           ('pa', 'lrc', 'ncp'): {'ranking': [
+               {'scores': {'100': 0.5, '101': 0.6}}]}}
+    blocks = core_contrast_blocks(df, floors, hpo)
+    hb = blocks[blocks['family'] == 'H-b'].set_index('task')
+    assert (hb.loc['duffing', 'status'], hb.loc['duffing', 'n_pairs']) == (
+        'undecidable', 7)
+    assert hb.loc['duffing', 'p_raw'] == pytest.approx(2 / 128)
+    assert not hb['significant'].any()
+    assert hb.loc['duffing', 'floor_bound'] is True
+    assert hb.loc['pa', 'floor_bound'] is None
+    assert hb.loc['duffing', 'sign_stable_tuning'] is False
+    assert hb.loc['pa', 'sign_stable_tuning'] is True
+    hc = blocks[(blocks['family'] == 'H-c')
+                & (blocks['task'] == 'periodic_predator_prey')]
+    assert (hc['status'] == 'excluded: arm above budget tolerance').sum() == 1
+    assert hc_conjunction(blocks) == {'cfc_lrc/cncp': False,
+                                      'cfc_lrc/ncp': False}
+
+
+def test_hc_conjunction_skips_floor_bound_tasks():
+    from experiments.aggregate_results import hc_conjunction
+    blocks = pd.DataFrame([
+        {'family': 'H-c', 'task': t, 'a': 'cfc_lrc/ncp', 'significant': sig,
+         'floor_bound': fb}
+        for t, sig, fb in (('periodic_predator_prey', True, False),
+                           ('duffing', False, True), ('pa', True, None))])
+    assert hc_conjunction(blocks) == {'cfc_lrc/ncp': True}
+    blocks.loc[1, 'floor_bound'] = False
+    assert hc_conjunction(blocks) == {'cfc_lrc/ncp': False}
+
+
+def test_robustness_family_runs_on_metric_robust(tmp_path):
+    from experiments.aggregate_results import (ROBUSTNESS_FAMILY,
+                                               core_contrast_blocks,
+                                               load_sequence_runs)
+    lv, _ = _suite(tmp_path)
+    df = load_sequence_runs(str(lv), 'lv')
+    assert ROBUSTNESS_FAMILY not in set(core_contrast_blocks(df)['family'])
+    rob = core_contrast_blocks(df.assign(metric_robust=df['metric']))
+    rob = rob[rob['family'] == ROBUSTNESS_FAMILY]
+    assert len(rob) == 6 and set(rob['m']) == {2}
+
+
+def test_main_contrasts_writes_csv_and_descriptive_pairs(tmp_path):
+    """--contrasts: contrasts.csv with one row per core contrast, the
+    descriptive table holds the other pairs (the k=1 control included) and
+    no core pair."""
+    lv, pa = _suite(tmp_path)
+    out = tmp_path / 'out'
+    assert main(['--runs', str(tmp_path / 'none'), '--out', str(out),
+                 '--rollout-runs', str(lv), '--pa-runs', str(pa),
+                 '--contrasts']) == 0
+    blocks = pd.read_csv(out / 'contrasts.csv')
+    assert len(blocks) == 14
+    runs = pd.read_csv(out / 'sequence_runs.csv')
+    assert 'confusion' not in runs and len(runs) == 61
+    text = (out / 'summary.md').read_text()
+    desc = text.split('## Descriptive pairs')[1]
+    assert '| duffing | lrc/ncp | lrc/ncp [k=1] | 1 |' in desc
+    assert '| duffing | cfc_lrc/ncp | lrc/ncp |' not in desc
+    assert '| H-b | 2 | duffing | cfc_lrc/ncp | lrc/ncp | 10 | tested | exact' \
+        in text
+    assert '- cfc_lrc/ncp vs cfc_lrc/dense3: **not supported**' in text
+
+
+def test_contrasts_needs_sequence_runs(tmp_path):
+    with pytest.raises(SystemExit):
+        main(['--out', str(tmp_path), '--contrasts'])
+
+
+def test_median_bootstrap_intervals():
+    from src.evaluation.stats import (bootstrap_median_ci,
+                                      crossed_median_diff_ci)
+    assert bootstrap_median_ci([2.0] * 5) == (2.0, 2.0)
+    lo, hi = bootstrap_median_ci(np.arange(10.0))
+    assert lo < 4.5 < hi
+    # identical fits on every seed: only the recording draw varies
+    a = np.array([[[[9, 1], [1, 9]], [[5, 5], [5, 5]]]] * 4, float)
+    b = np.array([[[[5, 5], [5, 5]], [[5, 5], [5, 5]]]] * 4, float)
+    lo, hi = crossed_median_diff_ci(a, b)
+    assert 0.0 <= lo < hi <= 0.4
+    assert crossed_median_diff_ci(a, a) == (0.0, 0.0)

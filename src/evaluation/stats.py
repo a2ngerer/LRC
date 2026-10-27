@@ -8,6 +8,10 @@
   - kendall_tau_b_se:  its standard error under no association for n items
   - bootstrap_mean_ci: percentile bootstrap of an arm mean over seeds, optionally
                        also over test recordings (crossed seeds x recordings)
+  - bootstrap_median_ci: percentile bootstrap of a median over seeds (the
+                       median paired difference of a contrast)
+  - crossed_median_diff_ci: its crossed seeds x test recordings version on
+                       pooled Person Activity confusion matrices
 """
 import numpy as np
 from scipy.stats import beta, kendalltau
@@ -75,3 +79,45 @@ def bootstrap_mean_ci(values, resample_cols=False, n_boot=10_000, alpha=0.05,
     means = m[rows[:, :, None], cols[:, None, :]].mean(axis=(1, 2))
     lo, hi = np.percentile(means, [100 * alpha / 2, 100 * (1 - alpha / 2)])
     return float(m.mean()), float(lo), float(hi)
+
+
+def _percentiles(stat, alpha):
+    lo, hi = np.percentile(stat, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    return float(lo), float(hi)
+
+
+def bootstrap_median_ci(values, n_boot=10_000, alpha=0.05, seed=0):
+    """Percentile bootstrap interval (lo, hi) of the median of one value per
+    seed (e.g. paired differences), resampling the seeds."""
+    v = np.asarray(values, float)
+    idx = np.random.default_rng(seed).integers(0, len(v), (n_boot, len(v)))
+    return _percentiles(np.median(v[idx], axis=1), alpha)
+
+
+def crossed_median_diff_ci(conf_a, conf_b, n_boot=10_000, alpha=0.05, seed=0):
+    """Crossed bootstrap interval (lo, hi) of the median paired macro-F1
+    difference A - B over seeds.
+
+    conf_a, conf_b: (seeds, recordings, C, C) test confusion matrices of the
+    paired fits, recordings in the same order. Each resample draws the seeds
+    and, independently, the test recordings (every seed sees the same
+    recordings), pools the drawn recordings' matrices per fit, scores its
+    macro-F1 (classes absent from labels and predictions left out, as
+    src/evaluation/metrics.macro_f1) and takes the median over the drawn
+    seeds of the paired difference."""
+    a, b = np.asarray(conf_a, float), np.asarray(conf_b, float)
+    s, r = a.shape[:2]
+    rng = np.random.default_rng(seed)
+    rows = rng.integers(0, s, (n_boot, s))
+    w = rng.multinomial(r, np.full(r, 1 / r), n_boot).astype(float)
+
+    def f1(c):                                     # (n_boot, s)
+        pooled = np.einsum('br,srij->bsij', w, c)
+        tp = np.diagonal(pooled, axis1=2, axis2=3)
+        denom = pooled.sum(axis=2) + pooled.sum(axis=3)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            return np.nanmean(np.where(denom > 0, 2 * tp / denom, np.nan),
+                              axis=2)
+    d = f1(a) - f1(b)
+    return _percentiles(np.median(np.take_along_axis(d, rows, axis=1),
+                                  axis=1), alpha)

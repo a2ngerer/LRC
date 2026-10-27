@@ -31,11 +31,30 @@ Optional sections:
                    per task, split and data seed on the multi-anchor endpoint,
                    the floor marking per arm and the floor_bound flag per core
                    contrast, written to <out>/floors.json (#67)
+  --contrasts      with --rollout-runs and/or --pa-runs (#57): the runner
+                   JSONs of both tasks (load_sequence_runs), every entry of
+                   CORE_CONTRASTS as a paired block over the final seeds
+                   (core_contrast_blocks: exact Wilcoxon without ties or
+                   zeros, Bonferroni within the family, n_pairs < 8
+                   undecidable, d_z, P(A>B), median difference with a 10,000
+                   resample bootstrap interval, crossed over seeds x test
+                   recordings on Person Activity, divergence rates, the
+                   floor_bound flag of --floors or --floors-json and, with
+                   --hpo-dir, the tuning-seed sign stability), the H-c
+                   conjunction and every other arm pair descriptively;
+                   <out>/contrasts.csv and <out>/sequence_runs.csv
 
 Usage:
     uv run python experiments/aggregate_results.py [--runs results/runs] [--out results]
-        [--hpo-dir DIR] [--pa-runs DIR [--bootstrap-units seed,recording]]
+        [--hpo-dir DIR ...] [--pa-runs DIR [--bootstrap-units seed,recording]]
         [--rollout-runs DIR [--floors]] [--co-runs DIR]
+        [--contrasts [--floors-json PATH]]
+
+    # the frozen suite: ROLLOUTS holds the final run folders of every rollout
+    # system (searched recursively), PA the Person Activity final run
+    uv run python experiments/aggregate_results.py --runs none --out OUT \
+        --rollout-runs ROLLOUTS --pa-runs PA --floors --contrasts \
+        --hpo-dir HPO_LV HPO_DUFFING HPO_MT HPO_PA
 """
 import argparse
 import json
@@ -54,34 +73,46 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.evaluation.rollout_metrics import (SENSITIVITY_KEY,  # noqa: E402
                                             TAU_ORB_SENSITIVITY, floor_lines)
-from src.evaluation.stats import (bootstrap_mean_ci, clopper_pearson,  # noqa: E402
-                                  p_a_gt_b)
+from src.evaluation.stats import (bootstrap_mean_ci,  # noqa: E402
+                                  bootstrap_median_ci, clopper_pearson,
+                                  crossed_median_diff_ci, p_a_gt_b)
 
 ALPHA = 0.05
 METRIC = 'nrmse'   # primary comparison metric (proposal: MSE/NRMSE)
-HIGHER_IS_BETTER = False   # METRIC orientation for P(A>B); load_runs metrics are errors
+# Metric orientation for P(A>B) and the worst value: 'harness' = load_runs
+# (errors), 'lv' = multi-anchor VPT, 'pa' = test macro-F1 (load_sequence_runs).
+HIGHER_IS_BETTER = {'harness': False, 'lv': True, 'pa': True}
 FINAL_SEEDS = range(10)   # final replicates, as in run_grid_hpo.py; tuning seeds lie outside
 GAMMA = 0.75       # P(A>B) reference line, printed for orientation only
+MIN_PAIRS = 8      # fewer complete seed pairs: the contrast is undecidable
+N_BOOT = 10_000    # bootstrap resamples of the median paired difference
 
-# Pre-registered core contrasts (Chapter 5 decision rules; H-a as revised in
-# #31): family -> [(task, arm A, arm B)], arm = (cell, wiring), A the arm the
-# hypothesis predicts to be better, task = rollout system name or 'pa'.
+# Pre-registered core contrasts (protocol freeze F1-2026-10-26, decisions f,
+# g, n and section 6): family -> [(task, arm A, arm B)], arm = (cell,
+# wiring), A the arm the hypothesis predicts to be better, task = rollout
+# system name or 'pa'.
 CORE_CONTRASTS = {
-    'H-a': [('duffing', ('cfc', 'ncp'), ('cfc_static', 'ncp')),
-            ('pa', ('cfc', 'dense'), ('cfc_static', 'dense')),
-            ('multitimescale', ('cfc', 'dense'), ('cfc_static', 'dense'))],
+    'H-a': [('multitimescale_lib', ('cfc', 'ncp'), ('cfc_static', 'ncp')),
+            ('duffing', ('cfc', 'ncp'), ('cfc_static', 'ncp')),
+            ('pa', ('cfc', 'dense'), ('cfc_static', 'dense'))],
     'H-b': [('duffing', ('cfc_lrc', 'ncp'), ('lrc', 'ncp')),
             ('pa', ('cfc_lrc', 'ncp'), ('lrc', 'ncp'))],
     'H-c': [(task, ('cfc_lrc', wiring), ('cfc_lrc', 'dense3'))
-            for wiring in ('ncp', 'cncp')
+            for task in ('periodic_predator_prey', 'duffing', 'pa')
+            for wiring in ('ncp', 'cncp')],
+    'RQ1': [(task, ('cfc_lrc', 'ncp'), ('gru', 'ncp'))
             for task in ('periodic_predator_prey', 'duffing', 'pa')],
 }
+# The H-c contrasts once more on the eval-only robustness endpoint (#34), a
+# second family; evaluated on the column 'metric_robust' when it is loaded.
+ROBUSTNESS_FAMILY = 'H-c robustness'
 # Bonferroni family sizes, the one place they are defined.
 BONFERRONI_FAMILIES = {
-    'H-a': len(CORE_CONTRASTS['H-a']),
-    'H-b': len(CORE_CONTRASTS['H-b']),
-    # 2 wirings x 3 tasks, each also on the eval-only robustness endpoint (#34)
-    'H-c': 2 * len(CORE_CONTRASTS['H-c']),
+    'H-a': 3,              # multitimescale_lib/ncp, duffing/ncp, pa/dense
+    'H-b': 2,              # duffing, pa
+    'H-c': 2,              # per task: ncp and cncp vs dense3 (conjunction over tasks)
+    ROBUSTNESS_FAMILY: 2,  # per task, as H-c
+    'RQ1': 3,              # cfc_lrc/ncp vs gru/ncp per task
     # {ncp, cncp} x {part i, part ii} at K=30 (consensus_family below)
     'H-d': 4,
 }
@@ -216,6 +247,20 @@ def _above_budget(df: pd.DataFrame, *keys) -> bool:
                       'budget_above_tolerance'].any() for k in keys)
 
 
+def wilcoxon_test(x, y, alternative='two-sided'):
+    """(p, method) of the paired Wilcoxon signed-rank test: the exact null
+    distribution without ties or zero differences, else scipy's normal
+    approximation (zeros dropped); (None, None) if every difference is zero."""
+    d = np.asarray(x, float) - np.asarray(y, float)
+    nz = d[d != 0]
+    if nz.size == 0:
+        return None, None
+    method = ('exact' if nz.size == d.size
+              and np.unique(np.abs(nz)).size == nz.size else 'approx')
+    return float(wilcoxon(x, y, alternative=alternative,
+                          method=method).pvalue), method
+
+
 def _cohens_d_paired(x: np.ndarray, y: np.ndarray) -> float:
     diff = x - y
     sd = diff.std(ddof=1)
@@ -231,7 +276,8 @@ def _test_block(df, pairs, title, family=None) -> str:
     the budget tolerance (budget_above_tolerance, #59) is excluded."""
     n_tests = BONFERRONI_FAMILIES[family] if family else len(pairs)
     alpha_adj = ALPHA / n_tests
-    sign = 1 if HIGHER_IS_BETTER else -1
+    higher = HIGHER_IS_BETTER['harness']
+    sign = 1 if higher else -1
     lines = [f'## {title} (Wilcoxon signed-rank, alpha={ALPHA}, metric={METRIC}, '
              f'Bonferroni m={n_tests})\n']
     lines.append('| Comparison | n pairs | excluded | median diff | p raw '
@@ -259,9 +305,8 @@ def _test_block(df, pairs, title, family=None) -> str:
             lines.append(f'| {label} | {len(x) + excl} | {excl} | — | — | — '
                          f'| {alpha_adj:.4g} | too few finite pairs | — | {win} |')
             continue
-        try:
-            stat, p = wilcoxon(x, y)
-        except ValueError:   # all differences zero
+        p, _ = wilcoxon_test(x, y)
+        if p is None:        # all differences zero
             lines.append(f'| {label} | {len(x) + excl} | {excl} | 0 | 1.0 | 1.0 '
                          f'| {alpha_adj:.4g} | no | 0 | {win} |')
             continue
@@ -272,7 +317,7 @@ def _test_block(df, pairs, title, family=None) -> str:
                      f'| {p:.4g} | {p_adj:.4g} | {alpha_adj:.4g} | {sig} | {d:+.3f} '
                      f'| {win} |')
     lines.append('')
-    lines.append(f'P(A>B): paired win fraction of A ({"higher" if HIGHER_IS_BETTER else "lower"} '
+    lines.append(f'P(A>B): paired win fraction of A ({"higher" if higher else "lower"} '
                  f'{METRIC} wins, ties 0.5, a diverged run loses, two diverged runs tie), '
                  f'exact Clopper-Pearson 95% CI; reference gamma = {GAMMA} for '
                  f'orientation only (the decision is the Wilcoxon).\n')
@@ -301,27 +346,31 @@ def statistics(df: pd.DataFrame) -> str:
     return '\n'.join(out)
 
 
-def load_hpo_selections(hpo_dir) -> dict:
-    """{(task, cell, wiring): selection} from every hpo_selection.json below hpo_dir.
+def load_hpo_selections(hpo_dirs) -> dict:
+    """{(task, cell, wiring): selection} from every hpo_selection.json below
+    hpo_dirs (one folder or a list, e.g. the HPO runs of several tasks).
 
     Keys read: task, system (rollouts; used as the task label), cell, wiring,
     lr_at_grid_edge, grid_extended, and ranking = the stage-2 configs best
-    first, each with its lr and its validation selection 'score'.
+    first, each with its lr, its validation selection 'score' and its
+    per-tuning-seed 'scores' (sign_stable_tuning).
     """
     sel = {}
-    for path in sorted(glob(os.path.join(hpo_dir, '**', 'hpo_selection.json'),
-                            recursive=True)):
+    paths = [path for d in ([hpo_dirs] if isinstance(hpo_dirs, str) else hpo_dirs)
+             for path in sorted(glob(os.path.join(d, '**', 'hpo_selection.json'),
+                                     recursive=True))]
+    for path in paths:
         with open(path, encoding='utf-8') as f:
             r = json.load(f)
         sel[(r.get('system') or r['task'], r['cell'], r['wiring'])] = r
     return sel
 
 
-def hpo_fragility(hpo_dir) -> str:
+def hpo_fragility(hpo_dirs) -> str:
     """Grid-edge flags per arm x task and, per core contrast, whether the sign
     of the validation-score difference A - B under the best configurations
     holds under the second-best configuration of both arms."""
-    sel = load_hpo_selections(hpo_dir)
+    sel = load_hpo_selections(hpo_dirs)
     lines = ['## HPO fragility (hpo_selection.json)\n',
              '| Task | Arm | lr | lr_at_grid_edge | grid_extended |',
              '|------|-----|----|-----------------|---------------|']
@@ -556,6 +605,335 @@ def floor_report(floors) -> str:
     return '\n'.join(lines)
 
 
+# The sequence-runner suite (#57): one row per fit of
+# experiments/run_lotka_volterra_benchmark.py ('lv', every rollout system) or
+# experiments/run_person_activity_benchmark.py ('pa').
+WORST = {'lv': 0.0, 'pa': 0.0}   # VPT 0, macro-F1 0: a diverged fit's value
+
+
+def _record_task(r):
+    """'lv' | 'pa' | 'co' | None: the runner that wrote a result record."""
+    if 'rollout_metrics_test' in r:
+        return 'lv'
+    if 'n_columns' in r:
+        return 'co'
+    return 'pa' if 'test_macro_f1' in r else None
+
+
+def _control_tag(r):
+    """The descriptive control arms of the protocol freeze F1-2026-10-26
+    (decisions a, d, g, h): ode_unfolds 1, dt_scale 1, a fixed width instead
+    of the budget (cfc_static_w), and teacher forcing on the rollouts."""
+    eff = (r.get('config') or {}).get('effective') or {}
+    tags = []
+    if eff.get('ode_unfolds') == 1:
+        tags.append('k=1')
+    if r.get('dt_scale') == 1:
+        tags.append('dt_scale=1')
+    if r.get('param_budget') is None:
+        tags.append('fixed width')
+    if 'rollout_metrics_test' in r and r.get('forcing') != 'mixed':
+        tags.append(f"forcing={r.get('forcing')}")
+    return ', '.join(tags)
+
+
+def load_sequence_runs(runs_dirs, task) -> pd.DataFrame:
+    """One row per fit of the task's runner JSONs below runs_dirs (searched
+    recursively; other runners' JSONs and non-fit files are skipped).
+
+    Columns: cell, wiring, task, system ('pa' on Person Activity), seed,
+    stage ('final' for seeds in FINAL_SEEDS, else 'hpo'), arm ('cell/wiring',
+    a control arm with its tag in brackets, so it never pairs as a
+    confirmatory arm), control, metric (lv: rollout_metrics_test.
+    vpt_multi_median, pa: test_macro_f1), diverged (lv:
+    rate_unbounded == 1 or non_finite; any task: non-finite metric),
+    best_val_epoch, epochs, params_effective, budget_deviation,
+    budget_above_tolerance, lr, clipnorm, file; lv also the secondary
+    columns vpt_anchor_<a>, nrmse_32_anchor_<a>, vpt_theta_<theta> and
+    rate_unbounded; pa the test confusion matrices (recordings sorted) for
+    the crossed bootstrap. An old single-step-harness JSON, a pre-#62 rollout
+    JSON and two final fits of one arm and seed raise SystemExit."""
+    rows = []
+    for d in [runs_dirs] if isinstance(runs_dirs, str) else runs_dirs:
+        for path in sorted(glob(os.path.join(d, '**', '*.json'),
+                                recursive=True)):
+            with open(path, encoding='utf-8') as f:
+                r = json.load(f)
+            if not isinstance(r, dict):
+                continue
+            if 'run' in r and 'evaluation' in r:
+                raise SystemExit(
+                    f'{path}: old single-step harness record (run/evaluation, '
+                    'NRMSE); load_sequence_runs reads the Lotka-Volterra and '
+                    'Person Activity runner JSONs, load_runs the old harness')
+            if _record_task(r) != task:
+                continue
+            if task == 'lv':
+                m = r['rollout_metrics_test']
+                if 'vpt_multi_median' not in m:
+                    raise SystemExit(f'{path}: no rollout_metrics_test.'
+                                     'vpt_multi_median (pre-#62 runner JSON)')
+                metric, system = m['vpt_multi_median'], r['system']
+                diverged = m.get('rate_unbounded') == 1 or bool(
+                    m.get('non_finite'))
+                extra = {k: v for k, v in m.items() if k.startswith(
+                    ('vpt_anchor_', 'nrmse_32_anchor_'))}
+                extra.update({f'vpt_theta_{th}': v for th, v in
+                              (m.get('theta_sensitivity') or {}).items()})
+                extra['rate_unbounded'] = m.get('rate_unbounded')
+            else:
+                metric, system, diverged = r['test_macro_f1'], 'pa', False
+                cms = r.get('test_confusion_by_recording')
+                extra = {'confusion': (np.array([cms[k] for k in sorted(cms)],
+                                                float) if cms else None)}
+            metric = float('nan') if metric is None else float(metric)
+            tag = _control_tag(r)
+            rows.append({
+                'cell': r['cell'], 'wiring': r['wiring'], 'task': task,
+                'system': system, 'seed': r['seed'],
+                'stage': 'final' if r['seed'] in FINAL_SEEDS else 'hpo',
+                'arm': f"{r['cell']}/{r['wiring']}" + (f' [{tag}]' if tag
+                                                       else ''),
+                'control': bool(tag), 'metric': metric,
+                'diverged': bool(diverged or not np.isfinite(metric)),
+                **{k: r.get(k) for k in ('best_val_epoch', 'epochs',
+                                         'params_effective',
+                                         'budget_deviation', 'lr',
+                                         'clipnorm')},
+                'budget_above_tolerance': bool(r.get('budget_above_tolerance')),
+                **extra, 'file': path})
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    final = df[df['stage'] == 'final']
+    dup = final[final.duplicated(['system', 'arm', 'seed'], keep=False)]
+    if not dup.empty:
+        raise SystemExit('two final fits of one arm and seed (load the run '
+                         'folders of one protocol, or give the control its '
+                         'own run): ' + ', '.join(dup['file']))
+    return df
+
+
+def _paired(df, system, arm_a, arm_b):
+    """The final fits of two arms of one task merged on seed (suffixes _a,
+    _b), with the paired value 'v' (a diverged fit at the worst value)."""
+    f = df[(df['stage'] == 'final') & (df['system'] == system)]
+    f = f.assign(v=np.where(f['diverged'], f['task'].map(WORST), f['metric']))
+    return f[f['arm'] == arm_a].merge(f[f['arm'] == arm_b], on='seed',
+                                      suffixes=('_a', '_b')).sort_values('seed')
+
+
+def _rate(k, n):
+    lo, hi = clopper_pearson(k, n)
+    return f'{k}/{n} [{lo:.2f}, {hi:.2f}]'
+
+
+def _pair_stats(p, task, m=1, alternative='two-sided') -> dict:
+    """Statistics of one paired block (a _paired frame, n >= 1): Wilcoxon
+    (exact without ties or zeros; undecidable below MIN_PAIRS pairs), d_z,
+    P(A>B) with its Clopper-Pearson interval, the median difference with its
+    bootstrap interval (Person Activity: crossed seeds x test recordings when
+    every fit has its confusion matrices and none diverged; else seeds), the
+    divergence rates of both arms."""
+    x, y = p['v_a'].to_numpy(float), p['v_b'].to_numpy(float)
+    sign = 1 if HIGHER_IS_BETTER[task] else -1
+    pw, lo, hi = p_a_gt_b(sign * p['metric_a'].to_numpy(float),
+                          sign * p['metric_b'].to_numpy(float),
+                          p['diverged_a'].to_numpy(bool),
+                          p['diverged_b'].to_numpy(bool))
+    crossed = (task == 'pa' and not (p['diverged_a'] | p['diverged_b']).any()
+               and all(isinstance(c, np.ndarray) for c in
+                       (*p['confusion_a'], *p['confusion_b']))
+               and len({c.shape for c in (*p['confusion_a'],
+                                          *p['confusion_b'])}) == 1)
+    ci = (crossed_median_diff_ci(np.stack(p['confusion_a']),
+                                 np.stack(p['confusion_b']), N_BOOT)
+          if crossed else bootstrap_median_ci(x - y, N_BOOT))
+    n = len(x)
+    p_raw, method = wilcoxon_test(x, y, alternative) if n else (None, None)
+    p_adj = None if p_raw is None else min(1.0, p_raw * m)
+    status = 'undecidable' if n < MIN_PAIRS else 'tested'
+    return {'n_pairs': n, 'status': status, 'method': method,
+            'p_raw': p_raw, 'p_adj': p_adj,
+            'significant': (status == 'tested' and p_adj is not None
+                            and p_adj < ALPHA),
+            'd_z': _cohens_d_paired(x, y) if n > 1 else float('nan'),
+            'p_a_gt_b': pw, 'p_a_gt_b_lo': lo, 'p_a_gt_b_hi': hi,
+            'median_diff': float(np.median(x - y)),
+            'median_diff_lo': ci[0], 'median_diff_hi': ci[1],
+            'ci_units': 'seed x recording' if crossed else 'seed',
+            'diverged_a': _rate(int(p['diverged_a'].sum()), n),
+            'diverged_b': _rate(int(p['diverged_b'].sum()), n)}
+
+
+def _sign_stable_tuning(hpo, task, a, b):
+    """Whether the validation score difference A - B of the two selected
+    configurations has the same sign on both tuning seeds (None without
+    both selections or both per-seed scores)."""
+    ra, rb = hpo.get((task, *a)), hpo.get((task, *b))
+    if not ra or not rb:
+        return None
+    sa, sb = ra['ranking'][0].get('scores', {}), rb['ranking'][0].get(
+        'scores', {})
+    seeds = [s for s in sa if s in sb]
+    if len(seeds) < 2:
+        return None
+    s1, s2 = (np.sign(sa[s] - sb[s]) for s in seeds[:2])
+    return bool(s1 == s2)
+
+
+def core_contrast_blocks(df, floors=None, hpo=None) -> pd.DataFrame:
+    """Every entry of CORE_CONTRASTS as a paired block over the final seeds,
+    Bonferroni over its family size (BONFERRONI_FAMILIES), two-sided. The
+    H-c entries run once more as ROBUSTNESS_FAMILY on the column
+    'metric_robust' when df carries it (#34).
+
+    floors: compute_floors output (floors.json, #67); a block takes the
+    floor_bound flag of its (family, task, A, B) entry (None without floors
+    or without an entry, e.g. Person Activity). hpo: load_hpo_selections
+    output, for sign_stable_tuning. A block with an arm sized outside the
+    budget tolerance (#59) is excluded; one without fits is missing."""
+    hpo = hpo or {}
+    fb = {}
+    for c in (floors or {}).get('contrasts', []):
+        k = (c['family'], c['task'], tuple(c['a']), tuple(c['b']))
+        fb[k] = fb.get(k, False) or c['floor_bound']
+    families = [(f, e, f, 'metric') for f, e in CORE_CONTRASTS.items()]
+    if 'metric_robust' in df:
+        families.append((ROBUSTNESS_FAMILY, CORE_CONTRASTS['H-c'], 'H-c',
+                         'metric_robust'))
+    rows = []
+    for family, entries, floor_family, col in families:
+        m = BONFERRONI_FAMILIES[family]
+        for task, a, b in entries:
+            arm_a, arm_b = '/'.join(a), '/'.join(b)
+            row = {'family': family, 'task': task, 'a': arm_a, 'b': arm_b,
+                   'm': m, 'endpoint': col, 'n_pairs': 0,
+                   'significant': False,
+                   'floor_bound': fb.get((floor_family, task, a, b)),
+                   'sign_stable_tuning': _sign_stable_tuning(hpo, task, a, b)}
+            p = (_paired(df.assign(metric=df[col]), task, arm_a, arm_b)
+                 if not df.empty else pd.DataFrame())
+            if p.empty:
+                row['status'] = 'missing'
+            elif (p['budget_above_tolerance_a'] | p['budget_above_tolerance_b']
+                  ).any():
+                row.update(n_pairs=len(p),
+                           status='excluded: arm above budget tolerance')
+            else:
+                row.update(_pair_stats(p, p['task_a'].iloc[0], m))
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def hc_conjunction(blocks) -> dict:
+    """{A arm: supported} for H-c (decision n): supported if the contrast is
+    significant on every task whose block is not floor-bound (a missing
+    floor marking counts as passed)."""
+    hc = blocks[blocks['family'] == 'H-c']
+    out = {}
+    for arm, g in hc.groupby('a'):
+        g = g[g['floor_bound'] != True]   # noqa: E712 (None counts as passed)
+        out[arm] = bool(len(g)) and bool(g['significant'].all())
+    return out
+
+
+def descriptive_pairs(df) -> pd.DataFrame:
+    """Every other pair of arms within a task (control arms included): n
+    pairs, median difference and P(A>B); no test, no significance claim."""
+    core = {(t, '/'.join(a), '/'.join(b)) for e in CORE_CONTRASTS.values()
+            for t, a, b in e}
+    f = df[df['stage'] == 'final'] if not df.empty else df
+    rows = []
+    for system in sorted(f['system'].unique()) if not f.empty else ():
+        for a, b in combinations(sorted(f.loc[f['system'] == system,
+                                              'arm'].unique()), 2):
+            if (system, a, b) in core or (system, b, a) in core:
+                continue
+            p = _paired(df, system, a, b)
+            if p.empty:
+                continue
+            x, y = p['v_a'].to_numpy(float), p['v_b'].to_numpy(float)
+            sign = 1 if HIGHER_IS_BETTER[p['task_a'].iloc[0]] else -1
+            pw, lo, hi = p_a_gt_b(sign * p['metric_a'].to_numpy(float),
+                                  sign * p['metric_b'].to_numpy(float),
+                                  p['diverged_a'].to_numpy(bool),
+                                  p['diverged_b'].to_numpy(bool))
+            rows.append({'task': system, 'a': a, 'b': b, 'n_pairs': len(p),
+                         'median_diff': float(np.median(x - y)),
+                         'p_a_gt_b': pw, 'p_a_gt_b_lo': lo, 'p_a_gt_b_hi': hi})
+    return pd.DataFrame(rows)
+
+
+def _fmt(v, spec='.4g'):
+    return '—' if v is None or (isinstance(v, float) and np.isnan(v)) \
+        else format(v, spec)
+
+
+def contrast_report(df, blocks, desc) -> str:
+    """Markdown of the arm table, the contrast blocks, the H-c conjunction
+    and the descriptive pairs."""
+    f = df[df['stage'] == 'final']
+    lines = ['## Sequence-suite arms (final seeds; metric: multi-anchor VPT '
+             'median on the rollouts, test macro-F1 on Person Activity)\n',
+             '| Task | Arm | fits | median metric | diverged [95% CP] '
+             '| budget above tolerance |',
+             '|------|-----|------|---------------|-------------------'
+             '|------------------------|']
+    for (system, arm), g in f.groupby(['system', 'arm']):
+        lines.append(f"| {system} | {arm} | {len(g)} "
+                     f"| {_fmt(float(np.median(g['metric'])))} "
+                     f"| {_rate(int(g['diverged'].sum()), len(g))} "
+                     f"| {'YES' if g['budget_above_tolerance'].any() else 'no'} |")
+    lines += ['', f'## Pre-registered contrasts (paired over seeds, two-sided '
+              f'Wilcoxon, alpha={ALPHA}, Bonferroni within the family; '
+              f'n_pairs < {MIN_PAIRS}: undecidable)\n',
+              '| Family | m | Task | A | B | n pairs | status | method | p raw '
+              '| p adj | significant | d_z | P(A>B) [95% CI] '
+              '| median diff [95% CI] | diverged A | diverged B '
+              '| floor_bound | sign_stable_tuning |',
+              '|--------|---|------|---|---|---------|--------|--------|-------'
+              '|-------|-------------|-----|-----------------'
+              '|----------------------|------------|------------'
+              '|-------------|--------------------|']
+    for b in blocks.to_dict('records'):
+        if b['status'] in ('tested', 'undecidable'):
+            stats = (f"| {b['n_pairs']} | {b['status']} | {b['method'] or '—'} "
+                     f"| {_fmt(b['p_raw'])} | {_fmt(b['p_adj'])} "
+                     f"| {'YES' if b['significant'] else 'no'} "
+                     f"| {_fmt(b['d_z'], '+.3f')} "
+                     f"| {b['p_a_gt_b']:.2f} [{b['p_a_gt_b_lo']:.3f}, "
+                     f"{b['p_a_gt_b_hi']:.3f}] "
+                     f"| {b['median_diff']:+.4g} [{b['median_diff_lo']:+.4g}, "
+                     f"{b['median_diff_hi']:+.4g}] ({b['ci_units']}) "
+                     f"| {b['diverged_a']} | {b['diverged_b']} ")
+        else:
+            stats = (f"| {b['n_pairs']} | {b['status']} | — | — | — | — | — "
+                     "| — | — | — | — ")
+        lines.append(f"| {b['family']} | {b['m']} | {b['task']} | {b['a']} "
+                     f"| {b['b']} {stats}| {_fmt(b['floor_bound'], '')} "
+                     f"| {_fmt(b['sign_stable_tuning'], '')} |")
+    lines += ['', 'H-c conjunction (significant on every task that is not '
+              'floor-bound):']
+    lines += [f'- {a} vs cfc_lrc/dense3: **{"supported" if s else "not supported"}**'
+              for a, s in hc_conjunction(blocks).items()]
+    lines += ['', 'A diverged fit (non-finite, or every test rollout '
+              'unbounded) enters the pairing with the worst value (VPT 0, '
+              'macro-F1 0). Median difference: 10,000-resample percentile '
+              'bootstrap. sign_stable_tuning: the sign of A - B on the '
+              'validation scores of the selected configurations agrees '
+              'between the two tuning seeds.\n',
+              '## Descriptive pairs (no significance claim)\n',
+              '| Task | A | B | n pairs | median diff | P(A>B) [95% CI] |',
+              '|------|---|---|---------|-------------|-----------------|']
+    for r in desc.to_dict('records'):
+        lines.append(f"| {r['task']} | {r['a']} | {r['b']} | {r['n_pairs']} "
+                     f"| {r['median_diff']:+.4g} | {r['p_a_gt_b']:.2f} "
+                     f"[{r['p_a_gt_b_lo']:.3f}, {r['p_a_gt_b_hi']:.3f}] |")
+    lines.append('')
+    return '\n'.join(lines)
+
+
 def _co_arm(r):
     """'cons' | 'lam0' | 'avg_in' | None for a committee result record of the
     suite protocol (identical views, training corruption on)."""
@@ -600,15 +978,16 @@ def load_consensus_runs(co_dir) -> dict:
 
 
 def _one_sided(a, b, j):
-    """(n pairs, median diff, one-sided p) of a > b on component j, paired
-    by seed; p None below 5 pairs or with all differences zero."""
+    """(n pairs, median diff, one-sided p, Wilcoxon method) of a > b on
+    component j, paired by seed; p None below MIN_PAIRS pairs (undecidable)
+    or with all differences zero."""
     seeds = sorted(set(a) & set(b))
     x = np.array([a[s][j] for s in seeds])
     y = np.array([b[s][j] for s in seeds])
-    if len(seeds) < 5 or np.all(x == y):
-        return len(seeds), (float(np.median(x - y)) if seeds else None), None
-    return len(seeds), float(np.median(x - y)), float(
-        wilcoxon(x, y, alternative='greater').pvalue)
+    med = float(np.median(x - y)) if seeds else None
+    if len(seeds) < MIN_PAIRS:
+        return len(seeds), med, None, None
+    return (len(seeds), med, *wilcoxon_test(x, y, alternative='greater'))
 
 
 def consensus_family(co_dir) -> str:
@@ -619,9 +998,9 @@ def consensus_family(co_dir) -> str:
     lines = [f'## H-d consensus family (K={HD_K}, one-sided Wilcoxon over '
              f'seeds, Bonferroni m={n_tests}, alpha={ALPHA})\n',
              '| Cell | Wiring | Part | Contrast | n pairs | median diff '
-             '| p one-sided | p Bonferroni | significant |',
+             '| p one-sided | p Bonferroni | method | significant |',
              '|------|--------|------|----------|---------|-------------'
-             '|-------------|--------------|-------------|']
+             '|-------------|--------------|--------|-------------|']
     flags = []
     for cell in sorted({c for c, _, _ in runs}):
         for w in HD_WIRINGS:
@@ -635,21 +1014,23 @@ def consensus_family(co_dir) -> str:
                            f'm in {set(HD_AUC_M)}', lam0, 1)):
                 if cons is None or b is None:
                     lines.append(f'| {cell} | {w} | {part} | {label} | 0 '
-                                 '| — | — | — | missing arm or arm above '
+                                 '| — | — | — | — | missing arm or arm above '
                                  'budget tolerance |')
                     continue
-                n, med, p = _one_sided(cons, b, j)
+                n, med, p, method = _one_sided(cons, b, j)
                 if p is None:
+                    why = ('undecidable' if n < MIN_PAIRS
+                           else 'all differences zero')
                     lines.append(f'| {cell} | {w} | {part} | {label} | {n} '
                                  f'| {med if med is None else f"{med:+.4f}"} '
-                                 '| — | — | too few pairs |')
+                                 f'| — | — | — | {why} |')
                     continue
                 p_adj = min(1.0, p * n_tests)
                 lines.append(f'| {cell} | {w} | {part} | {label} | {n} '
                              f'| {med:+.4f} | {p:.4g} | {p_adj:.4g} '
-                             f'| {"YES" if p_adj < ALPHA else "no"} |')
+                             f'| {method} | {"YES" if p_adj < ALPHA else "no"} |')
             if cons is not None and lam0 is not None:
-                n, med, p = _one_sided(cons, lam0, 0)
+                n, med, p, _ = _one_sided(cons, lam0, 0)
                 attr = ('consensus' if p is not None and p < ALPHA
                         else 'late fusion')
                 flags.append(f'- {cell}/{w}: learned lambda vs lambda=0 at '
@@ -669,9 +1050,10 @@ def main(argv=None) -> int:
     p.add_argument('--cells', default=None,
                    help='comma-separated cell-variant subset, e.g. '
                         '"ltc,mm_ltc,ltc+clip"')
-    p.add_argument('--hpo-dir', default=None,
-                   help='folder searched recursively for hpo_selection.json '
-                        '(HPO-fragility flags)')
+    p.add_argument('--hpo-dir', nargs='+', default=None,
+                   help='folder(s) searched recursively for '
+                        'hpo_selection.json (HPO-fragility flags; with '
+                        '--contrasts also sign_stable_tuning)')
     p.add_argument('--pa-runs', default=None,
                    help='Person Activity result JSON folder (arm means with '
                         'bootstrap interval)')
@@ -682,6 +1064,13 @@ def main(argv=None) -> int:
     p.add_argument('--floors', action='store_true',
                    help='with --rollout-runs: floor lines, floor marking and '
                         'floor_bound contrasts into <out>/floors.json')
+    p.add_argument('--contrasts', action='store_true',
+                   help='with --rollout-runs and/or --pa-runs: the sequence '
+                        'loader, the pre-registered contrast blocks and the '
+                        'descriptive pairs (contrasts.csv, sequence_runs.csv)')
+    p.add_argument('--floors-json', default=None,
+                   help='with --contrasts and without --floors: a floors.json '
+                        'whose floor_bound flags the contrast blocks carry')
     p.add_argument('--co-runs', default=None,
                    help='committee result JSON folder (H-d consensus family)')
     p.add_argument('--bootstrap-units', default='seed',
@@ -690,6 +1079,8 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     if args.floors and not args.rollout_runs:
         p.error('--floors needs --rollout-runs')
+    if args.contrasts and not (args.rollout_runs or args.pa_runs):
+        p.error('--contrasts needs --rollout-runs and/or --pa-runs')
 
     df = load_runs(args.runs)
     if args.cells and not df.empty:
@@ -717,12 +1108,31 @@ def main(argv=None) -> int:
         parts.append(pa_arm_means(args.pa_runs, args.bootstrap_units))
     if args.rollout_runs:
         parts.append(rollout_outcome_classes(args.rollout_runs))
+    floors = None
     if args.floors:
         floors = compute_floors(args.rollout_runs)
         with open(os.path.join(args.out, 'floors.json'), 'w',
                   encoding='utf-8') as f:
             json.dump(floors, f, indent=1)
         parts.append(floor_report(floors))
+    elif args.floors_json:
+        with open(args.floors_json, encoding='utf-8') as f:
+            floors = json.load(f)
+    if args.contrasts:
+        seq = pd.concat([load_sequence_runs(d, t) for d, t in (
+            (args.rollout_runs, 'lv'), (args.pa_runs, 'pa')) if d],
+            ignore_index=True)
+        if seq.empty:
+            print('--contrasts: no sequence-runner JSONs found',
+                  file=sys.stderr)
+            return 1
+        blocks = core_contrast_blocks(
+            seq, floors, load_hpo_selections(args.hpo_dir)
+            if args.hpo_dir else None)
+        blocks.to_csv(os.path.join(args.out, 'contrasts.csv'), index=False)
+        seq.drop(columns='confusion', errors='ignore').to_csv(
+            os.path.join(args.out, 'sequence_runs.csv'), index=False)
+        parts.append(contrast_report(seq, blocks, descriptive_pairs(seq)))
     if args.co_runs:
         parts.append(consensus_family(args.co_runs))
     report = '\n'.join(parts)
