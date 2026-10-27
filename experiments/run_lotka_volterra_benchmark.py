@@ -288,6 +288,10 @@ def main():
                     metavar=("T0", "T1"),
                     help="override the system's time span (dt = (T1-T0)/seq_len); "
                          "default: the system's own")
+    ap.add_argument("--ic-spread", type=float, default=None,
+                    help="initial-condition spread (box base +/- spread * "
+                         "max(|base|, 0.5)); default: the system's own "
+                         "(multitimescale_lib 0.3, else 0.4)")
     ap.add_argument("--seed", type=int, default=0)
     data_seed = ap.add_mutually_exclusive_group()
     data_seed.add_argument("--data-seed", type=int, default=None,
@@ -384,10 +388,12 @@ def main():
                  else DATA_SEED_BASE + args.data_seed_offset + args.seed)
     data = load_lotka_volterra(n_trajectories=args.n_trajectories,
                                seq_len=args.seq_len, seed=data_seed,
-                               system=args.system, t_span=args.t_span)
+                               system=args.system, t_span=args.t_span,
+                               spread=args.ic_spread)
     split = [len(data.train_x), len(data.val_x), len(data.test_x)]
     print(f"[{args.system}] train/val/test {split} trajectories (data seed "
-          f"{data_seed}), seq_len {data.seq_len}, dt {data.dt:.4f}, "
+          f"{data_seed}, ic spread {data.spread:g}), seq_len "
+          f"{data.seq_len}, dt {data.dt:.4f}, "
           f"loc_dim {data.loc_dim}")
 
     def build(size):
@@ -422,6 +428,7 @@ def main():
 
     wandb_config = {
         "task": "lotka_volterra", "system": args.system,
+        "ic_spread": data.spread,
         "cell": args.cell, "wiring": args.wiring, "seed": args.seed,
         "size": args.size, "param_budget": args.param_budget,
         "budget_deviation": budget_dev,
@@ -497,6 +504,7 @@ def main():
     record = {
         "wiring": args.wiring, "cell": args.cell, "seed": args.seed,
         "system": args.system, "t_span": list(data.t_span),
+        "ic_spread": data.spread,
         "size": args.size, "param_budget": args.param_budget,
         "budget_deviation": budget_dev,
         "budget_above_tolerance": over_budget, "epochs": args.epochs,
@@ -528,7 +536,7 @@ def main():
         "alpha_curve": _round(schedule.curve, 6) if mixed else None,
         "config": {"effective": {
             "task": "lotka_volterra", "system": args.system,
-            "t_span": list(data.t_span),
+            "t_span": list(data.t_span), "ic_spread": data.spread,
             "n_trajectories": args.n_trajectories, "seq_len": args.seq_len,
             "data_seed": data_seed, "split": split,
             "param_budget": args.param_budget, "backbone_layers": bb_effective,

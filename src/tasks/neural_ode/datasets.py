@@ -11,7 +11,20 @@ _SYSTEMS = {
     # eps-ablation: confirmatory headline host. Coexisting slow (0.05) and fast
     # (8) timescales give the inner liquid-elastance gate a timescale-separation
     # structure to exploit (spec section 2.2).
+    # Deprecated for new runs (#64): around y0 = [1, 0] the pendulum below
+    # rotates, the fast component is sampled 1.5-3 times per period at 128
+    # steps and y1 ramps without bound. Kept so the eps and cfc_lrc_gate
+    # campaigns stay reproducible; the final suite uses multitimescale_lib.
     'multitimescale': {'t_span': (0, 20), 'y0': [1.0, 0.0]},
+    # Same dynamics in the libration regime (#64, protocol freeze
+    # F1-2026-10-26). With phi = 8 y1 the system is the damped pendulum
+    # phi'' = 64 sin(phi) - 0.1 phi' - 0.0025 phi, stable at phi = pi; the box
+    # around (0, pi/8) at spread 0.3 keeps every initial state inside the
+    # separatrix (see lotka_volterra.datasets.LIBRATION_H_MAX), and (0, 10) at
+    # 128 steps samples the oscillation >= 10 times per period. 'spread' is the
+    # initial-condition jitter the sequence loader uses for this system.
+    'multitimescale_lib': {'t_span': (0, 10), 'y0': [0.0, np.pi / 8],
+                           'spread': 0.3},
 }
 
 _A_SPIRAL = np.array([[-0.1, 3.0], [-3.0, -0.1]])
@@ -81,6 +94,7 @@ _ODE_FUNCS = {
     'limited_predator_prey': _limited_predator_prey,
     'nonlinear_predator_prey': _nonlinear_predator_prey,
     'multitimescale': _multitimescale,
+    'multitimescale_lib': _multitimescale,
 }
 
 # eps-ablation: register the four stiff_linear systems (closures over kappa).
@@ -115,7 +129,7 @@ def generate_dataset(name: str, data_size: int = 1000,
         name: one of 'spiral', 'duffing', 'periodic_sinusoidal',
               'periodic_predator_prey', 'limited_predator_prey',
               'nonlinear_predator_prey', 'multitimescale',
-              'stiff_linear_k1', 'stiff_linear_k10', 'stiff_linear_k100',
+              'multitimescale_lib', 'stiff_linear_k1', 'stiff_linear_k10', 'stiff_linear_k100',
               'stiff_linear_k1000'
         data_size: number of time points
         y0: optional initial state override (length-2 sequence). Defaults to the
