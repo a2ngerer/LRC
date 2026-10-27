@@ -8,7 +8,9 @@
 #     time constant) and equals feeding 2 * dt, for every cell and the dt
 #     feature; the default 1.0 adds no layer;
 #   - both runners record ode_unfolds and dt_scale in the result JSON, and
-#     every runner (LV, PA, committee) reports config.effective.ode_unfolds.
+#     every runner (LV, PA, committee) reports config.effective.ode_unfolds;
+#   - --dt-scale auto resolves to 1 / the task's dt (LV 12.8, Duffing 5.12,
+#     PA 1 / median train dt) and lands in config.effective.dt_scale (#68).
 import json
 import sys
 
@@ -20,10 +22,12 @@ from experiments import run_committee_benchmark as co_runner
 from experiments import run_lotka_volterra_benchmark as lv_runner
 from experiments import run_person_activity_benchmark as pa_runner
 from src.tasks.lotka_volterra.model import build_lotka_volterra_model
+from src.tasks.person_activity import load_person_activity
 from src.tasks.person_activity.model import (DEFAULT_ODE_UNFOLDS,
                                              build_person_activity_model,
                                              effective_ode_unfolds,
-                                             ode_unfolds_override)
+                                             ode_unfolds_override,
+                                             resolve_dt_scale)
 from tests.benchmark.test_checkpoints import _pa_stub
 from tests.tasks.person_activity.test_person_activity import _write_stub
 
@@ -193,3 +197,64 @@ def test_committee_runner_reports_effective_ode_unfolds(tmp_path, monkeypatch):
     (path,) = tmp_path.glob("*.json")
     rec = json.loads(path.read_text())
     assert rec["config"]["effective"]["ode_unfolds"] == 1
+
+
+# --dt-scale auto (issue #68, protocol freeze F1-2026-10-26 h): 1 / the task's
+# own dt, resolved by the runner and recorded as a number.
+
+def test_resolve_dt_scale():
+    assert resolve_dt_scale("auto", 0.078125) == 12.8
+    assert resolve_dt_scale(2.5, 0.1) == 2.5
+    with pytest.raises(ValueError):
+        resolve_dt_scale("auto", 0.0)
+
+
+def _effective_dt_scale(rec):
+    eff = rec["config"]["effective"]
+    values = {rec["dt_scale"], eff["dt_scale"], eff["build"]["dt_scale"]}
+    assert len(values) == 1
+    return values.pop()
+
+
+@pytest.mark.parametrize("flags,expected", [
+    ([], 12.8),                                     # Lotka-Volterra, t in (0, 10)
+    (["--system", "duffing"], 5.12),                # t in (0, 25)
+    # the multitimescale_lib time span (0, 10)
+    (["--system", "multitimescale", "--t-span", "0", "10"], 12.8),
+])
+def test_lv_runner_resolves_dt_scale_auto(flags, expected, tmp_path,
+                                          monkeypatch):
+    monkeypatch.setattr(sys, "argv", [
+        "run_lotka_volterra_benchmark.py", "--wiring", "dense", "--cell",
+        "cfc_lrc", "--epochs", "1", "--n-trajectories", "6", "--size", "4",
+        "--dt-scale", "auto", "--no-save-weights", "--outdir", str(tmp_path),
+        *flags])
+    lv_runner.main()
+    rec = json.loads((tmp_path / "cfc_lrc_dense_seed0.json").read_text())
+    assert rec["seq_len"] == 128
+    assert _effective_dt_scale(rec) == pytest.approx(expected, rel=1e-12)
+
+
+def _stub_200ms(path):
+    """The PA stub with 200 ms instead of 100 ms between rows (dt 2)."""
+    rows = [line.split(",") for line in
+            _write_stub(path).read_text().splitlines()]
+    t0 = int(rows[0][2])
+    for row in rows:
+        row[2] = str(t0 + 2 * (int(row[2]) - t0))
+    path.write_text("".join(",".join(row) + "\n" for row in rows))
+    return path
+
+
+def test_pa_runner_resolves_dt_scale_auto(tmp_path, monkeypatch):
+    stub = _stub_200ms(tmp_path / "ConfLongDemo_JSI.txt")
+    train_t = load_person_activity(data_path=str(stub)).train_t
+    assert np.median(train_t) == pytest.approx(2.0)
+    monkeypatch.setattr(sys, "argv", [
+        "run_person_activity_benchmark.py", "--wiring", "dense", "--cell",
+        "cfc_lrc", "--size", "4", "--epochs", "1", "--batch-size", "32",
+        "--dt-scale", "auto", "--no-save-weights", "--data-path", str(stub),
+        "--outdir", str(tmp_path)])
+    pa_runner.main()
+    rec = json.loads((tmp_path / "cfc_lrc_dense_seed0.json").read_text())
+    assert _effective_dt_scale(rec) == pytest.approx(0.5)

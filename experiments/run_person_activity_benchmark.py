@@ -21,9 +21,10 @@ val macro-F1 is selected and the test values are read at that epoch.
 Elapsed time: the discrete cells (gru, lstm) ignore the time input, so with
 --dt-feature on (default) they get dt as an extra input feature (issue #27).
 --dt-scale multiplies dt before it reaches any cell or that feature (default
-1.0 = unchanged); the numerical ODE cells (ltc, lrc, lrc_pm, ctrnn, mm_ltc,
-mm_lrc) take --ode-unfolds explicit Euler sub-steps per input step (default
-6). Both are recorded in the result JSON (issues #28, #56).
+1.0 = unchanged; auto = 1 / the median dt of the train split, #68); the
+numerical ODE cells (ltc, lrc, lrc_pm, ctrnn, mm_ltc, mm_lrc) take
+--ode-unfolds explicit Euler sub-steps per input step (default 6). Both are
+recorded in the result JSON (issues #28, #56).
 
 Mirrors the run + JSON-result-file structure of run_mujoco_benchmark.py /
 run_campaign.py: one JSON per run under --outdir, containing the config,
@@ -58,7 +59,7 @@ from src.tasks.person_activity.model import (  # noqa: E402
     dt_feature_applies,
     effective_backbone_layers, effective_self_recurrent, add_multi_column_args,
     multi_column_config, multi_column_suffix, ode_unfolds_override,
-    effective_ode_unfolds, DEFAULT_ODE_UNFOLDS)
+    effective_ode_unfolds, DEFAULT_ODE_UNFOLDS, dt_scale_arg, resolve_dt_scale)
 
 DEFAULT_SIZE = 64
 BUDGET_TOLERANCE = 0.05
@@ -100,6 +101,7 @@ def run(args):
           f"clamped): train {data.train_x.shape} val {data.val_x.shape} "
           f"test {data.test_x.shape} features={data.feature_size} "
           f"classes={data.num_classes}", flush=True)
+    args.dt_scale = resolve_dt_scale(args.dt_scale, np.median(data.train_t))
 
     # Majority-class share of the test labels: the trivial-accuracy floor a
     # trained model must clear.
@@ -277,6 +279,7 @@ def run(args):
             "task": "person_activity", "param_budget": args.param_budget,
             "backbone_layers": bb_effective,
             "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
+            "dt_scale": args.dt_scale,
             "build": dict(wiring=args.wiring, cell=args.cell, size=args.size,
                           seed=args.seed, num_classes=data.num_classes,
                           feature_size=data.feature_size,
@@ -342,10 +345,11 @@ def main():
                         "receives features; no-op for continuous-time cells. "
                         "Person Activity only: the LV / Duffing runners have "
                         "no such flag, dt is constant there.")
-    p.add_argument("--dt-scale", type=float, default=1.0,
+    p.add_argument("--dt-scale", type=dt_scale_arg, default=1.0,
                    help="multiply the elapsed time by this factor before it "
                         "reaches any cell (and the dt feature); task-level "
-                        "time unit, 1.0 = unchanged")
+                        "time unit, 1.0 = unchanged, auto = 1 / the median "
+                        "dt of the train split")
     p.add_argument("--ode-unfolds", type=int, default=DEFAULT_ODE_UNFOLDS,
                    help="explicit Euler sub-steps per input step for the "
                         "numerical ODE cells (ltc, lrc, lrc_pm, ctrnn, "

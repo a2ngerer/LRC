@@ -215,6 +215,10 @@ manifest line per task: stage `hpo` one `run_grid_hpo.py` call per arm into
 `--array=0-(T-1)%8` with its own `runs_per_gpu`, `mem`, `walltime` and `cpus`;
 `cluster/suite_array.sbatch` runs `RUNS_PER_GPU` lines per GPU (`cc_launch_bundle`)
 and writes per-fit logs to `<run>/logs/run-<job>_idx<line>.log`.
+Every campaign sets `ode_unfolds` (6) and `dt_scale` (`auto` = 1 / the task's
+dt: 12.8 Lotka-Volterra, 5.12 Duffing, 1 / the median train dt for Person
+Activity) explicitly; the manifest passes both to every runner call, and the
+runners record the numeric value in `config.effective.dt_scale`.
 
 ```bash
 uv run python experiments/suite_manifest.py configs/suite/canary_lv_hpo.yaml --list
