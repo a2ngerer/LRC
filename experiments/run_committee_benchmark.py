@@ -47,17 +47,24 @@ summary.
 the model is built, as in the LV and PA runners (#70); the record carries it as
 config.effective.deterministic (protocol freeze F1-2026-10-26 l, #76).
 
+--eval-only --weights <stem>.weights.h5 re-scores a stored fit without
+training (#81, eval_only): per-seed test confusions and further validation
+draws, written to <stem>.evalonly.json; its own flags, see --eval-only --help.
+
 Usage:
     uv run python experiments/run_committee_benchmark.py \
         --wiring ncp --n-columns 30 --param-budget 30000 --seed 0
     uv run python experiments/run_committee_benchmark.py \
         --wiring ncp --n-columns 30 --param-budget 30000 --view-average mean
+    uv run python experiments/run_committee_benchmark.py --eval-only \
+        --weights results/.../<stem>.weights.h5 --val-draws 5 --out <folder>
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import sys
 import time
 import warnings
 
@@ -66,7 +73,8 @@ import tensorflow as tf
 
 from src.evaluation.metrics import confusion_matrix, macro_f1
 from src.wirings import param_counts, size_for_budget
-from src.benchmark.checkpoints import save_weights, stamp_protocol
+from src.benchmark.checkpoints import (config_hash, rebuild_from_result,
+                                       save_weights, stamp_protocol)
 from src.benchmark.tracking import keras_callbacks, log_summary, track_fit
 from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
 from src.tasks.person_activity.datasets import load_person_activity
@@ -82,6 +90,7 @@ from src.tasks.person_activity.model import (
 DEFAULT_SIZE = 48
 BUDGET_TOLERANCE = 0.05
 PLATEAU = 8          # steps_to_90 reference: mean of the last 8 positions (25-32)
+VAL_DRAW_STRIDE = 1000   # --eval-only: validation draw k: val_seed + 1000 k
 
 
 def position_metrics(pred, y, num_classes):
@@ -248,7 +257,137 @@ def _floats(s):
     return [float(x) for x in s.split(",") if x.strip()]
 
 
+def eval_only(argv):
+    """--eval-only (#81): re-score a stored fit without training.
+
+    The model is rebuilt from the record's config.effective with its weights
+    (rebuild_from_result); views, fault grid and batch size come from
+    config.effective, the noise scale from the record's noise_sigma. Refused
+    (exit 1) when config.effective does not hash to its config_hash or the
+    weights file is not the record's weights_path. The draws are the
+    runner's: test _rng(seed, m) per test seed; validation draw k
+    _rng(val_seed + VAL_DRAW_STRIDE * k, m), so draw 0 is the stored
+    validation draw and draws k >= 1 (val_seed + 1000, + 2000, ...) differ
+    from the test seeds 0-4 and from val_seed. Writes
+    <out>/<stem>.evalonly.json (confusions: rows true, columns predicted):
+
+      test_confusion_by_recording_by_fault_by_seed
+          {str(test seed): [{recording: confusion} per fault count]}: one
+          seed's entry has the layout of test_confusion_by_recording_by_fault
+      test_confusion_by_recording_by_fault, test_macro_f1_by_fault,
+      test_macro_f1_per_recording_by_fault
+          from the per-seed confusions summed over eval_test_seeds, as the
+          runner computes them (comparable with the source record's keys)
+      val_confusion_by_fault_by_draw
+          [[confusion per fault count] per draw], draw k from
+          eval_val_draw_seeds[k]; val_macro_f1_by_fault_by_draw its macro-F1
+
+    plus source_record, source_config_hash, fault_counts, eval_test_seeds,
+    eval_val_draws and eval_val_draw_seeds."""
+    ap = argparse.ArgumentParser(
+        prog="run_committee_benchmark.py --eval-only",
+        description="Re-score a stored committee fit without training (#81).")
+    ap.add_argument("--eval-only", action="store_true")
+    ap.add_argument("--weights", required=True,
+                    help="the fit's <stem>.weights.h5")
+    ap.add_argument("--record", default=None,
+                    help="the fit's result JSON (default: <stem>.json next "
+                         "to the weights)")
+    ap.add_argument("--test-seeds", default=None,
+                    help="test draws per fault count (default: the record's "
+                         "test_seeds)")
+    ap.add_argument("--val-draws", type=int, default=1,
+                    help="validation draws per fault count; draw 0 is the "
+                         "stored one")
+    ap.add_argument("--out", default=None,
+                    help="output folder (default: the record's folder; pass "
+                         "one outside a read-only results tree)")
+    ap.add_argument("--data-path", default=None)
+    args = ap.parse_args(argv)
+    if args.val_draws < 1:
+        ap.error("--val-draws must be >= 1")
+    path = args.record or args.weights.removesuffix(".weights.h5") + ".json"
+    with open(path) as f:
+        record = json.load(f)
+    eff, name = record["config"]["effective"], os.path.basename(args.weights)
+    if eff.get("config_hash") != config_hash(eff):
+        sys.exit(f"eval-only refused: config.effective of {path} hashes to "
+                 f"{config_hash(eff)}, its config_hash is "
+                 f"{eff.get('config_hash')!r}")
+    if name != record.get("weights_path") or not os.path.samefile(
+            args.weights, os.path.join(os.path.dirname(path), name)):
+        sys.exit(f"eval-only refused: {args.weights} is not the weights_path "
+                 f"{record.get('weights_path')!r} of {path}")
+    if eff.get("deterministic"):
+        tf.config.experimental.enable_op_determinism()
+    model = rebuild_from_result(path)
+    v, b = eff["views"], eff["build"]
+    d = load_person_activity(seq_len=b["seq_len"], data_path=args.data_path,
+                             split=eff["split"], split_seed=eff["split_seed"])
+    K, C = v["n_columns"], d.num_classes
+    grid = fault_counts(K, v["rho_grid"])
+    sigma = np.asarray(record["noise_sigma"], np.float32)
+    transform = view_transform(v["mode"], d.feature_size, K, v["overlap"],
+                               v["noise"], v["seed"])
+
+    def predict(x, t, m, seed):
+        rng = _rng(seed, m)
+        views = _average(transform(corrupt_views(x, K, m, sigma, rng), rng),
+                         v["average"])
+        return model.predict((views, t), batch_size=eff["batch_size"],
+                             verbose=0).argmax(-1)
+
+    seeds = ([int(s) for s in args.test_seeds.split(",")]
+             if args.test_seeds else eff["test_seeds"])
+    recs = [str(r) for r in np.unique(d.test_rec)]
+    by_seed = {}
+    for s in seeds:
+        by_seed[str(s)] = []
+        for m in grid:
+            pred = predict(d.test_x, d.test_t, m, s)
+            by_seed[str(s)].append({r: confusion_matrix(
+                d.test_y[d.test_rec == r], pred[d.test_rec == r], C).tolist()
+                for r in recs})
+    total = np.sum([[[c[r] for r in recs] for c in cs]
+                    for cs in by_seed.values()], axis=0)  # (fault, rec, C, C)
+    val_seeds = [eff["val_seed"] + VAL_DRAW_STRIDE * k
+                 for k in range(args.val_draws)]
+    val_cm = [[confusion_matrix(d.val_y, predict(d.val_x, d.val_t, m, vs), C)
+               for m in grid] for vs in val_seeds]
+    out = {
+        "source_record": path, "source_config_hash": eff["config_hash"],
+        "fault_counts": grid, "eval_test_seeds": seeds,
+        "eval_val_draws": args.val_draws, "eval_val_draw_seeds": val_seeds,
+        "test_confusion_by_recording_by_fault_by_seed": by_seed,
+        "test_confusion_by_recording_by_fault": [
+            {r: c.tolist() for r, c in zip(recs, f)} for f in total],
+        "test_macro_f1_by_fault": [macro_f1(f.sum(axis=0)) for f in total],
+        "test_macro_f1_per_recording_by_fault": [
+            {r: macro_f1(c) for r, c in zip(recs, f)} for f in total],
+        "val_confusion_by_fault_by_draw": [[c.tolist() for c in cs]
+                                           for cs in val_cm],
+        "val_macro_f1_by_fault_by_draw": [[macro_f1(c) for c in cs]
+                                          for cs in val_cm]}
+    dest = os.path.join(args.out or os.path.dirname(os.path.abspath(path)),
+                        os.path.basename(path)[:-len(".json")]
+                        + ".evalonly.json")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w") as f:
+        json.dump(out, f)
+    same = (out["test_confusion_by_recording_by_fault"]
+            == record.get("test_confusion_by_recording_by_fault"))
+    print(f"eval-only {path}: test macro-F1 by fault "
+          f"{[round(x, 4) for x in out['test_macro_f1_by_fault']]}, summed "
+          f"test confusions {'equal' if same else 'differ from'} the "
+          f"record's; validation draw 0 macro-F1 "
+          f"{[round(x, 4) for x in out['val_macro_f1_by_fault_by_draw'][0]]}"
+          f" -> {dest}")
+    return out
+
+
 def main():
+    if "--eval-only" in sys.argv[1:]:
+        return eval_only(sys.argv[1:])
     ap = argparse.ArgumentParser()
     ap.add_argument("--wiring", default="cncp", choices=COMMITTEE_WIRINGS)
     ap.add_argument("--n-columns", type=int, default=4)

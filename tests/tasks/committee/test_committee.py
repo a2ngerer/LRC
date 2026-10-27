@@ -1,5 +1,6 @@
 """Tests for the partial-view voting committee (Iteration 7)."""
 import json
+import shutil
 import sys
 from types import SimpleNamespace
 
@@ -771,3 +772,99 @@ def test_runner_monolith_arm_shares_the_draws(tmp_path, monkeypatch):
     r = json.loads(path.read_text())
     assert r["model_columns"] == 1 and r["weights_path"] is None
     assert len(r["drop_accs"]) == 2 and len(r["test_macro_f1_by_fault"]) == 3
+
+
+# --- eval-only rescoring (#81) ---
+
+@pytest.fixture(scope="module")
+def stub_fit(tmp_path_factory):
+    """One two-epoch dense K=3 fit with its weights on the stub data, shared
+    by the eval-only tests: the result JSON path."""
+    out = tmp_path_factory.mktemp("fit")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(co_runner, "load_person_activity", lambda **kw: _stub())
+        mp.setattr(sys, "argv", [
+            "run_committee_benchmark.py", "--wiring", "dense",
+            "--n-columns", "3", "--size", "4", "--epochs", "2",
+            "--batch-size", "8", "--test-seeds", "0,1", "--outdir", str(out)])
+        co_runner.main()
+    (path,) = out.glob("*.json")
+    return path
+
+
+def _eval_only(monkeypatch, *args):
+    monkeypatch.setattr(co_runner, "load_person_activity",
+                        lambda **kw: _stub())
+    monkeypatch.setattr(sys, "argv", ["run_committee_benchmark.py",
+                                      "--eval-only", *args])
+    return co_runner.main()
+
+
+def _weights(path):
+    return str(path)[:-len(".json")] + ".weights.h5"
+
+
+def test_eval_only_rescores_the_stored_fit_without_training(
+        stub_fit, tmp_path, monkeypatch):
+    """No fit: per-seed test confusions that sum to the summed key, which
+    reproduces the source record (same machine); validation draw 0 is the
+    stored draw _rng(val_seed, m), draw k uses val_seed + 1000 k."""
+    rec = json.loads(stub_fit.read_text())
+    keys, real = [], co_runner._rng
+    monkeypatch.setattr(co_runner, "_rng",
+                        lambda *k: keys.append(k) or real(*k))
+    monkeypatch.setattr(tf.keras.Model, "fit",
+                        lambda *a, **kw: pytest.fail("eval-only trained"))
+    _eval_only(monkeypatch, "--weights", _weights(stub_fit), "--val-draws",
+               "2", "--out", str(tmp_path))
+    r = json.loads((tmp_path / (stub_fit.stem + ".evalonly.json"))
+                   .read_text())
+    assert r["source_record"] == str(stub_fit)
+    assert r["source_config_hash"] == rec["config"]["effective"]["config_hash"]
+    assert (r["fault_counts"], r["eval_test_seeds"], r["eval_val_draws"],
+            r["eval_val_draw_seeds"]) == ([0, 1, 2], [0, 1], 2, [100, 1100])
+    assert sorted(set(keys)) == sorted(
+        {(s, m) for s in (0, 1, 100, 1100) for m in (0, 1, 2)})
+    by_seed = r["test_confusion_by_recording_by_fault_by_seed"]
+    assert sorted(by_seed) == ["0", "1"]
+    summed = [{rec_id: np.sum([by_seed[s][j][rec_id] for s in by_seed],
+                              axis=0).tolist() for rec_id in ("A01", "B01")}
+              for j in range(3)]
+    assert summed == r["test_confusion_by_recording_by_fault"] \
+        == rec["test_confusion_by_recording_by_fault"]
+    assert r["test_macro_f1_by_fault"] == pytest.approx(
+        rec["test_macro_f1_by_fault"], abs=1e-12)
+    assert r["test_macro_f1_per_recording_by_fault"] == [
+        pytest.approx(d, abs=1e-12)
+        for d in rec["test_macro_f1_per_recording_by_fault"]]
+    cms = np.array(r["val_confusion_by_fault_by_draw"])
+    assert cms.shape == (2, 3, 7, 7) and np.all(cms.sum(axis=(2, 3))
+                                                == 12 * 32)
+    assert r["val_macro_f1_by_fault_by_draw"][0] == pytest.approx(
+        rec["val_macro_f1_grid_curve"][rec["best_val_epoch"] - 1], abs=1e-12)
+    assert r["val_macro_f1_by_fault_by_draw"][1] == pytest.approx(
+        [macro_f1(c) for c in cms[1]])
+
+
+def test_eval_only_refuses_a_foreign_config_or_weights(stub_fit, tmp_path,
+                                                       monkeypatch):
+    """Refused (exit 1, nothing written): a config.effective that does not
+    hash to its config_hash, a weights file under another name, and one
+    with the right name that is not the file next to the record."""
+    rec = json.loads(stub_fit.read_text())
+    name = rec["weights_path"]
+    rec["config"]["effective"]["config_hash"] = "0" * 64
+    (tmp_path / "tampered.json").write_text(json.dumps(rec))
+    shutil.copy(_weights(stub_fit), tmp_path / name)
+    shutil.copy(_weights(stub_fit), tmp_path / "other.weights.h5")
+    cases = [((tmp_path / name, tmp_path / "tampered.json"),
+              "config_hash is '0000"),
+             ((tmp_path / "other.weights.h5", stub_fit), "weights_path"),
+             ((tmp_path / name, stub_fit), "weights_path")]
+    for (weights, record), why in cases:
+        with pytest.raises(SystemExit) as e:
+            _eval_only(monkeypatch, "--weights", str(weights), "--record",
+                       str(record), "--out", str(tmp_path / "out"))
+        assert "eval-only refused" in str(e.value.code)
+        assert why in str(e.value.code)
+    assert not (tmp_path / "out").exists()
