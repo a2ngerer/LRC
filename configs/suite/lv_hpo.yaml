@@ -23,5 +23,5 @@ seeds: [100, 101]
 epochs: 300
 ode_unfolds: 6
 dt_scale: auto
-extra_args: [--forcing, mixed]
+extra_args: [--forcing, mixed, --deterministic]
 cluster: {runs_per_gpu: 3, walltime: "12:00:00"}

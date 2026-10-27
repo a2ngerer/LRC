@@ -23,6 +23,7 @@ seeds: [100, 101]
 epochs: 50
 ode_unfolds: 6
 dt_scale: auto
+extra_args: [--deterministic]
 cluster: {runs_per_gpu: 3, walltime: "12:00:00"}
 heavy:
   arms: [lrc_ncp, mm_lrc_ncp, ctrnn_ncp]

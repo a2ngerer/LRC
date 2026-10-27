@@ -31,6 +31,6 @@ extra_seeds:
 epochs: 300
 ode_unfolds: 6
 dt_scale: auto
-extra_args: [--forcing, mixed]
+extra_args: [--forcing, mixed, --deterministic]
 hpo_dir: results/02_duffing/<duffing-hpo run>/results/hpo
 cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

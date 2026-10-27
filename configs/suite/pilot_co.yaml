@@ -14,5 +14,5 @@ arms:
 param_budget: 30000
 seeds: [100]
 epochs: 40
-extra_args: [--n-columns, 3, --backbone-layers, 1, --grid-clip, "off"]
+extra_args: [--n-columns, 3, --backbone-layers, 1, --grid-clip, "off", --deterministic]
 cluster: {runs_per_gpu: 3, walltime: "12:00:00"}

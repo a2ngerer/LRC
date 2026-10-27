@@ -9,7 +9,8 @@
 # resume per fit. Issue #72: the S0 smoke YAMLs (configs/suite/smoke_*.yaml),
 # one stage-1 fit per arm of the frozen HPO YAMLs, 93 arm-tasks. Issue #75:
 # stage final with a fixed lr/clipnorm instead of hpo_dir, the default stage-1
-# grid from run_grid_hpo.py, the six S1 pilot YAMLs (61 fits).
+# grid from run_grid_hpo.py, the six S1 pilot YAMLs (61 fits). Issue #76: every
+# campaign but the S0 smokes runs with --deterministic.
 import fnmatch
 import json
 from argparse import Namespace
@@ -535,6 +536,7 @@ def test_count_one_tuning_seed_is_the_stage1_grid(tmp_path):
 SMOKES = {'smoke_lv': 'lv_hpo', 'smoke_duffing': 'duffing_hpo',
           'smoke_mt': 'mt_hpo', 'smoke_pa': 'pa_hpo', 'smoke_co': 'co_k3_hpo'}
 GRID = ['--grid-lr', '1e-3', '--grid-clip', 'off']
+DET = '--deterministic'
 
 
 def test_smoke_counts_93_arm_tasks_one_fit_each(capsys):
@@ -572,8 +574,10 @@ def test_smoke_matches_the_frozen_hpo_yaml(smoke):
     for k in ('task', 'system', 'ode_unfolds', 'dt_scale'):
         assert s.get(k) == f.get(k)
     assert not s.get('config_from')
-    assert _without_grid(s['extra_args']) == _without_grid(
-        f.get('extra_args') or [])
+    # the smoke stays as S0 ran it, without the later --deterministic (#76)
+    assert DET not in s['extra_args']
+    assert _without_grid(s['extra_args']) == [
+        a for a in _without_grid(f.get('extra_args') or []) if a != DET]
     assert s['cluster'] == {'runs_per_gpu': 6, 'walltime': '01:00:00'}
     if smoke != 'smoke_mt':
         assert s['param_budget'] == f['param_budget']
@@ -709,3 +713,27 @@ def test_pilot_co_is_the_k3_stage1_grid():
             '--grid-clip', '--epochs')] == [
             '100', '1' if line['id'] == 'hpo_aug_mono' else '3', '1', 'off',
             '40']
+
+
+# --- op-determinism in every suite campaign (#76) -----------------------------
+
+@pytest.mark.parametrize('name', sorted(
+    p.stem for p in SUITE.glob('*.yaml') if not p.stem.startswith('smoke_')))
+def test_suite_runs_with_op_determinism(name, tmp_path, capsys):
+    """Every campaign but the S0 smokes carries --deterministic in extra_args
+    (protocol freeze F1-2026-10-26 l after the S0 probe): --list shows it once
+    on every line; without it the lines and the fit count are the same."""
+    cfg = _frozen(name)
+    if cfg.get('hpo_dir'):
+        cfg = _frozen(name, tmp_path / 'hpo')
+    assert DET in cfg['extra_args']
+    path = tmp_path / f'{name}.yaml'
+    path.write_text(yaml.safe_dump(cfg))
+    main([str(path), '--list'])
+    listed = capsys.readouterr().out.splitlines()
+    plain = {**cfg, 'extra_args': [a for a in cfg['extra_args'] if a != DET]}
+    lines = expand(plain)
+    assert len(listed) == len(lines) and count(cfg) == count(plain)
+    assert all(row.split().count(DET) == 1 for row in listed)
+    assert [{**line, 'argv': [a for a in line['argv'] if a != DET]}
+            for line in expand(cfg)] == lines

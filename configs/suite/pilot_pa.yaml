@@ -13,6 +13,7 @@ seeds: [0, 1, 2]
 epochs: 50
 ode_unfolds: 6
 dt_scale: auto
+extra_args: [--deterministic]
 fixed: {lr: 0.001, clipnorm: null}
 cluster: {runs_per_gpu: 3, walltime: "06:00:00"}
 heavy:

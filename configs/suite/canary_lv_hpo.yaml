@@ -12,7 +12,7 @@ seeds: [0, 1]
 epochs: 2
 ode_unfolds: 6
 dt_scale: auto
-extra_args: [--grid-lr, 1e-3, 3e-3, --grid-clip, "off"]
+extra_args: [--grid-lr, 1e-3, 3e-3, --grid-clip, "off", --deterministic]
 cluster: {runs_per_gpu: 4, mem: 16G, walltime: "01:00:00"}
 heavy:
   cells: [lrc]

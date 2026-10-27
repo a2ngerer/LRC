@@ -10,6 +10,6 @@ arms:
   cncp_cons: {cell: cfc_lrc, wiring: cncp}
 param_budget: 30000
 seeds: [0]
-extra_args: [--n-columns, 30, --backbone-layers, 1]
+extra_args: [--n-columns, 30, --backbone-layers, 1, --deterministic]
 hpo_dir: results/04_column_voting/<co-k3-hpo run>/results/hpo
 cluster: {runs_per_gpu: 2, walltime: "06:00:00"}

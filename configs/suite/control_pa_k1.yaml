@@ -12,5 +12,6 @@ seeds: [0, 1, 2, 3, 4]
 epochs: 50
 ode_unfolds: 1
 dt_scale: auto
+extra_args: [--deterministic]
 hpo_dir: results/03_person_activity/<pa-hpo run>/results/hpo
 cluster: {runs_per_gpu: 1, walltime: "06:00:00"}
