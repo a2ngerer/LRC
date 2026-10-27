@@ -8,7 +8,8 @@
 # --cpus-per-task per group (default / heavy).
 #
 # Required exports: RUN_DIR (cluster/_run.sh), SUITE_GROUP (reads
-# $RUN_DIR/manifest_<group>.jsonl), N_SPECS (lines in it), RUNS_PER_GPU.
+# $RUN_DIR/manifest_<group>.jsonl), N_SPECS (lines in it), RUNS_PER_GPU;
+# SUITE_CAMPAIGN and SUITE_STAGE pass through to the runners (wandb metadata).
 #
 #SBATCH --job-name=suite
 #SBATCH --partition=GPU-a40

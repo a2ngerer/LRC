@@ -237,7 +237,12 @@ BENCH=00_canary ./cluster/submit_suite.sh -n configs/suite/canary_lv_hpo.yaml su
 ./cluster/submit_suite.sh --resume <config> <YYYY-MM-DD_label>
 ```
 
-`--wandb` adds `--wandb` to every call; the offline runs land under `<run>/wandb/`.
+`--wandb` adds `--wandb` to every call; the offline runs land under `<run>/wandb/`
+in project `thesis-benchmarks` with group = the campaign (the YAML stem,
+`SUITE_CAMPAIGN`), job_type = `<task>/<stage>` (`SUITE_STAGE`), run name = the
+result JSON stem and tag `protocol:<protocol_version>` (`src/benchmark/tracking.py`
+`track_fit`). Upload a fetched run folder with
+`./cluster/wandb_sync.sh results/<NN_benchmark>/<run>`.
 
 The frozen protocol (F1-2026-10-26, #71) is one hpo and one final YAML per task:
 `configs/suite/{lv,duffing,mt,pa}_{hpo,final}.yaml` and the consensus study

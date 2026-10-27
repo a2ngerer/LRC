@@ -66,6 +66,11 @@ EXTRA="${CO_EXTRA:-}"   # extra runner flags, e.g. "--vote-lambda 0 --lr 3e-3 --
 # get a _bb<N> filename suffix.
 BACKBONE="${CO_BACKBONE:-1}"
 [[ -n "${BACKBONE}" ]] && EXTRA="--backbone-layers ${BACKBONE} ${EXTRA}"
+# wandb: offline on the compute node (no worker internet), into the run folder;
+# opt in with CO_WANDB=1 at submit time, upload the fetched run folder with
+# cluster/wandb_sync.sh.
+export WANDB_MODE=offline WANDB_DIR="$RUN_DIR/wandb" WANDB_SILENT=true
+[[ "${CO_WANDB:-0}" == "1" ]] && EXTRA="${EXTRA} --wandb"
 
 run_one() {
     local cell="$1" wiring="$2" K="$3" seed="$4" budget_flag="" rc

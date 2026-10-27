@@ -20,7 +20,9 @@
 #   run_rsync                  -> rsync the code tree (skipped on DRY_RUN)
 #   run_require_dataset        -> abort if the PA dataset is missing on the cluster
 #   run_sbatch <sbatch file> "<ENV assignments>" -> submits, records the job id
-#   The sbatch file reads RUN_DIR from the environment (--export=ALL).
+#   The sbatch file reads RUN_DIR from the environment (--export=ALL), and
+#   RUN_GIT_SHA (the local commit; the cluster copy has no .git) reaches the
+#   runners' manifests and wandb configs.
 #
 # Dry run (-n): print the resolved paths, env and sbatch command, touch nothing.
 
@@ -115,6 +117,16 @@ _run_git_sha() {
     echo "${sha}${dirty}"
 }
 
+# Full local commit for RUN_GIT_SHA; -dirty when tracked files differ from it.
+_run_git_rev() {
+    local sha
+    sha="$(git rev-parse HEAD 2>/dev/null)" || { echo unknown; return 0; }
+    if [[ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+        sha+="-dirty"
+    fi
+    echo "${sha}"
+}
+
 # run_prepare <NN_benchmark>: resolve RUN_DIR, create it, write LAUNCH.md.
 # Globals read: LABEL, DRY_RUN, BENCH (optional override), LAUNCH_PURPOSE
 # (optional), RUN_COMMAND (the exact local command, set by the launcher).
@@ -173,7 +185,7 @@ EOF
 run_sbatch() {
     local sbatch_file="$1" env_assign="${2:-}"
     local cmd="cd ${CLUSTER_REPO_DIR} && export PATH=\$HOME/.local/bin:\$PATH && \
-${env_assign}RUN_DIR=${RUN_DIR} sbatch --export=ALL \
+RUN_GIT_SHA=$(_run_git_rev) ${env_assign}RUN_DIR=${RUN_DIR} sbatch --export=ALL \
 ${SBATCH_EXTRA:+${SBATCH_EXTRA} }--output=${RUN_DIR}/logs/%x-%j.out --error=${RUN_DIR}/logs/%x-%j.err ${sbatch_file}"
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
         echo "[dry-run] ssh ${CLUSTER_HOST} \"${cmd}\""

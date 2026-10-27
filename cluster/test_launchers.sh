@@ -50,9 +50,10 @@ check pa "$out" "03_person_activity/runs/${today}_smoke" "PA_EPOCHS='1'" "cluste
     "--delete --copy-links --filter=P data/" \
     "[dry-run] ssh ${CLUSTER_HOST} test -f wk/code/data/person/ConfLongDemo_JSI.txt"
 
-out="$(CO_KS='1 4' ./cluster/submit_committee.sh -n smoke 2>&1)"
+out="$(CO_KS='1 4' CO_WANDB=1 ./cluster/submit_committee.sh -n smoke 2>&1)"
 check committee "$out" "04_column_voting/runs/${today}_smoke" "CO_KS='1 4'" "cluster/committee.sbatch" \
-    "test -f wk/code/data/person/ConfLongDemo_JSI.txt"
+    "test -f wk/code/data/person/ConfLongDemo_JSI.txt" "CO_WANDB='1'" \
+    "RUN_GIT_SHA=$(git rev-parse HEAD)"
 
 out="$(BENCH=00_canary GH_TASK=lv GH_CELL=cfc_lrc GH_WIRING=dense3 GH_EXTRA="--epochs 2 --grid-lr 1e-3 3e-3 --grid-clip off" ./cluster/submit_grid_hpo.sh --dry-run canary 2>&1)"
 check grid_hpo "$out" "00_canary/runs/${today}_canary" "GH_TASK='lv'" \
@@ -77,9 +78,9 @@ grep -qF -- "--filter='P data/'" cluster/sync_to_cluster.sh \
 out="$(BENCH=00_canary ./cluster/submit_suite.sh -n --wandb configs/suite/canary_lv_hpo.yaml canary 2>&1)"
 check suite "$out" "00_canary/runs/${today}_canary" "fits: 4 manifest lines" \
     "cat > \$HOME/wk/benchmarks/00_canary/runs/${today}_canary/manifest_heavy.jsonl" \
-    "SUITE_GROUP=default N_SPECS=1 RUNS_PER_GPU=4 RUN_DIR=" "--array=0-0%8" \
-    "SUITE_GROUP=heavy N_SPECS=3 RUNS_PER_GPU=2 RUN_DIR=" "--array=0-1%8" "--mem=32G" \
-    "--time=01:00:00" "cluster/suite_array.sbatch"
+    "SUITE_GROUP=default N_SPECS=1 RUNS_PER_GPU=4 SUITE_CAMPAIGN='canary_lv_hpo' SUITE_STAGE='hpo' RUN_DIR=" "--array=0-0%8" \
+    "SUITE_GROUP=heavy N_SPECS=3 RUNS_PER_GPU=2 SUITE_CAMPAIGN='canary_lv_hpo' SUITE_STAGE='hpo' RUN_DIR=" \
+    "--array=0-1%8" "--mem=32G" "--time=01:00:00" "cluster/suite_array.sbatch" "RUN_GIT_SHA="
 
 out="$(./cluster/submit_suite.sh -n --resume configs/suite/canary_lv_hpo.yaml 2026-10-20_lv-final 2>&1)"
 check suite_resume "$out" "01_lotka_volterra/runs/2026-10-20_lv-final"
@@ -101,5 +102,29 @@ for f in cluster/lotka_volterra.sbatch cluster/person_activity.sbatch cluster/co
     fi
     grep -q 'RUN_DIR:?' "$f" || { echo "FAIL [$f]: no RUN_DIR guard"; fail=1; }
 done
+
+# Every sbatch that can run a --wandb fit logs offline into the run folder.
+for f in cluster/lotka_volterra.sbatch cluster/person_activity.sbatch cluster/committee.sbatch \
+         cluster/grid_hpo.sbatch cluster/suite_array.sbatch; do
+    grep -q 'WANDB_MODE=offline' "$f" && grep -q 'WANDB_DIR="$RUN_DIR/wandb"' "$f" \
+        || { echo "FAIL [$f]: wandb not offline into the run folder"; fail=1; }
+done
+
+# wandb_sync.sh <run folder>: every offline-run-* below it (a fake uv echoes
+# the call), nothing outside it.
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin" "$tmp/run/wandb/wandb/offline-run-a/files" \
+    "$tmp/run/results/hpo/x/wandb/offline-run-b" "$tmp/other/offline-run-c"
+printf '#!/usr/bin/env bash\necho "uv $*"\n' >"$tmp/bin/uv" && chmod +x "$tmp/bin/uv"
+out="$(PATH="$tmp/bin:$PATH" ./cluster/wandb_sync.sh "$tmp/run" 2>&1)"
+check wandb_sync "$out" "syncing 2 offline run(s)" "uv run wandb sync" \
+    "run/wandb/wandb/offline-run-a" "run/results/hpo/x/wandb/offline-run-b"
+if grep -q "offline-run-c\|offline-run-a/files" <<<"$out"; then
+    echo "FAIL [wandb_sync]: synced a directory that is no offline run of the folder"; fail=1
+fi
+if out="$(PATH="$tmp/bin:$PATH" ./cluster/wandb_sync.sh "$tmp/bin" 2>&1)"; then
+    echo "FAIL [wandb_sync]: accepted a folder without offline runs"; fail=1
+fi
 
 if [[ $fail -eq 0 ]]; then echo "launchers: OK"; else exit 1; fi

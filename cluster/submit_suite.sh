@@ -13,7 +13,9 @@
 #
 # The manifests are expanded locally (stage final reads the fetched HPO run,
 # hpo_dir) and uploaded as <run>/manifest_<group>.jsonl. Resources per group:
-# the YAML cluster / heavy.cluster keys, else cluster/config.sh.
+# the YAML cluster / heavy.cluster keys, else cluster/config.sh. The jobs get
+# SUITE_CAMPAIGN (the YAML stem) and SUITE_STAGE, the wandb group and job_type
+# of every --wandb fit (src/benchmark/tracking.py track_fit).
 # Prereqs: VPN + the cluster venv (cluster/README.md).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -39,6 +41,7 @@ PLAN_DIR="$(mktemp -d)"
 trap 'rm -rf "$PLAN_DIR"' EXIT
 plan="$(uv run python experiments/suite_manifest.py "$CONFIG" --write "$PLAN_DIR" $WANDB_FLAG)"
 eval "$plan"
+SUITE_CAMPAIGN="$(basename "$CONFIG" .yaml)"
 RUN_ENV="config ${CONFIG}, stage ${SUITE_STAGE}, manifest_{${SUITE_GROUPS// /,}}.jsonl in the run folder"
 RESUME_FLAG=""; [[ $RUN_RESUME -eq 1 ]] && RESUME_FLAG="--resume "
 RUN_COMMAND="./cluster/submit_suite.sh ${WANDB_FLAG:+--wandb }${RESUME_FLAG}${CONFIG} ${LABEL}"
@@ -60,5 +63,6 @@ for g in $SUITE_GROUPS; do
     SBATCH_EXTRA="--job-name=suite-${g} --array=0-$((T - 1))%${!thr:-$CLUSTER_ARRAY_THROTTLE} \
 --partition=${CLUSTER_PARTITION} --gres=gpu:${CLUSTER_GPU} --cpus-per-task=${!cpus:-$CLUSTER_CPUS} \
 --mem=${!mem:-$CLUSTER_MEM} --time=${!time:-$CLUSTER_TIME}"
-    run_sbatch cluster/suite_array.sbatch "SUITE_GROUP=${g} N_SPECS=${N} RUNS_PER_GPU=${K} "
+    run_sbatch cluster/suite_array.sbatch "SUITE_GROUP=${g} N_SPECS=${N} RUNS_PER_GPU=${K} \
+SUITE_CAMPAIGN='${SUITE_CAMPAIGN}' SUITE_STAGE='${SUITE_STAGE}' "
 done
