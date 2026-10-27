@@ -396,18 +396,20 @@ def match_param_budget(count_fn, target, sizes):
     candidate that can be closer. Sizes that fail to build (too small for the
     wiring) are skipped.
     """
-    best = None
+    best = error = None
     for size in sizes:
         try:
             n = int(count_fn(size))
-        except Exception:                       # size too small for this arm
+        except Exception as e:                  # size too small for this arm
+            error = e
             continue
         if best is None or abs(n - target) < abs(best[1] - target):
             best = (size, n)
         if n > target:
             break
-    if best is None:
-        raise ValueError(f"no size in {sizes!r} builds a model")
+    if best is None:      # e.g. a cell the wiring rejects: show the reason
+        raise ValueError(
+            f"no size in {sizes!r} builds a model: {error}") from error
     return best
 
 

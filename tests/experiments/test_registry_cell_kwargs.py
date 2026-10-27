@@ -23,7 +23,7 @@ ASYM_CELLS = ("lrc", "lrc_pm", "mm_lrc", "cfc_lrc", "cfc_lrc_outer",
               "cfc_mm_lrc")
 MULTI_STATE = ("mm_lrc", "cfc_mm_lrc")       # committee rejects them
 PLAIN_CELLS = ("ctrnn", "ltc", "cfc", "cfc_static", "gru", "lstm", "mm_ltc",
-               "cfc_mm_ltc")
+               "cfc_mm_ltc", "mlp")
 
 
 def _run(runner, cell, tmp_path, monkeypatch, *extra):

@@ -132,6 +132,11 @@ def test_registry_cell_builds_under_ncp(cell_key):
             NCPWiring(cell_cls, INTER, COMMAND, MOTOR,
                       **kwargs).build_model()(tf.zeros([1, 2, INPUT_DIM]))
         return
+    if cell_key == 'mlp':
+        # the stateless control has no recurrent synapses to mask (#60)
+        with pytest.raises(ValueError, match='dense'):
+            NCPWiring(cell_cls, INTER, COMMAND, MOTOR, **kwargs).build_model()
+        return
     model = NCPWiring(cell_cls, INTER, COMMAND, MOTOR, **kwargs).build_model()
     assert model(tf.zeros([2, 5, INPUT_DIM])).shape == (2, 5, MOTOR)
 
