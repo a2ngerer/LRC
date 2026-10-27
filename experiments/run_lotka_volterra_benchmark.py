@@ -21,6 +21,20 @@ src/evaluation/rollout_metrics dict of the closed-loop rollouts (VPT(0.5) as the
 primary endpoint, NRMSE@16/32/128, orbit error, invariant drift, divergence
 class rates); norm_stats lets experiments/rollout_metrics.py recompute it.
 
+Multi-anchor endpoint (#62, protocol freeze F1-2026-10-26): the same dicts
+also carry vpt_multi_median (primary endpoint, HPO key), vpt_anchor_<a>,
+nrmse_32_anchor_<a> and theta_sensitivity (src/evaluation/rollout_metrics.
+anchor_metrics). From each anchor a in --anchors (default 8,16,24,32) the
+model is fed the ground truth up to step a, so its state at the anchor is the
+teacher-forced state, then runs free for --horizon (96) steps; VPT at
+--theta (0.5). a + horizon must not exceed --seq-len.
+
+--eval-only RESULT.json recomputes every evaluation field (teacher-forced and
+closed-loop metrics, rollout dicts, trajectories) from the fit's weights.h5
+and config.effective without training, keeps the training fields, records the
+largest relative change of the previously stored scalar metrics as
+eval_only.max_rel_dev and writes the JSON into --outdir (default: in place).
+
 Forcing (#25): --forcing teacher (default) trains the plain model on the true
 state at every step, as before. --forcing mixed trains the same weights through
 a ForcedRolloutCell, input alpha * y_t + (1 - alpha) * yhat_{t-1}, with alpha
@@ -47,6 +61,8 @@ lamina knob, scaled_lamina_units).
 Usage:
     uv run python experiments/run_lotka_volterra_benchmark.py \
         --wiring cncp --cell cfc_lrc --seed 0 --epochs 300 --param-budget 4000
+    uv run python experiments/run_lotka_volterra_benchmark.py \
+        --eval-only results/.../cfc_lrc_ncp_seed0_mixed.json --outdir D
 """
 from __future__ import annotations
 
@@ -78,30 +94,36 @@ from src.tasks.person_activity.model import (
 from src.tasks.active_sensing.model import TBT_MODES
 from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
 from src.benchmark.tracking import keras_callbacks, track
-from src.benchmark.checkpoints import save_weights
-from src.evaluation.rollout_metrics import make_norm_stats, rollout_metrics
+from src.benchmark.checkpoints import rebuild_from_result, save_weights
+from src.evaluation.rollout_metrics import (ANCHOR_HORIZON, ANCHORS, THETA,
+                                            anchor_metrics, make_norm_stats,
+                                            rollout_metrics)
 from src.evaluation.gradient_flow import RQ4Diagnostics
 
 
 def closed_loop_rollout(model, data, needs_loc: bool = False,
-                        split: str = "test") -> np.ndarray:
+                        split: str = "test", anchor: int = 0,
+                        horizon: int | None = None) -> np.ndarray:
     """Autoregressively roll the model from each initial state of ``split``
     ('val' or 'test').
 
     Returns the generated NORMALISED trajectory (N, seq_len+1, 2): column 0 is
     the given initial state, columns 1.. are the model's own predictions fed
-    back one step at a time. Re-running the RNN over the growing history each
-    step reproduces training-time state reconstruction (state at position k is a
-    function of inputs 0..k), so the last output is the genuine one-step-ahead
-    prediction given that history.
+    back one step at a time. With ``anchor`` a the true states 0..a are fed
+    first (columns 0..a, teacher-forced warm-up) and ``horizon`` (default
+    seq_len) predictions follow: (N, a + 1 + horizon, 2). Re-running the
+    RNN over the growing history each step reproduces training-time state
+    reconstruction (state at position k is a function of inputs 0..k), so the
+    last output is the genuine one-step-ahead prediction given that history.
 
     For the tbt_cncp* wirings (needs_loc) the reference-frame code is recomputed
     from the model's own predicted state at every step -- the location is a
     deterministic function of the state, so closed-loop stays self-consistent.
     """
-    n_steps = data.seq_len
+    n_steps = data.seq_len if horizon is None else horizon
     dt_col = getattr(data, f"{split}_t")       # (N, seq_len, 1) constant dt
-    history = [getattr(data, f"{split}_x")[:, 0, :].astype(np.float32)]  # (N, 2)
+    x = getattr(data, f"{split}_x").astype(np.float32)
+    history = [x[:, k, :] for k in range(anchor + 1)]  # each (N, 2)
     for _ in range(n_steps):
         length = len(history)
         seq = np.stack(history, axis=1)                    # (N, length, 2)
@@ -125,6 +147,30 @@ def forced_closed_loop(view, data, split: str = "test") -> np.ndarray:
     pred = view((tf.constant(x), tf.constant(getattr(data, f"{split}_t"))),
                 training=False).numpy()
     return np.concatenate([x[:, :1], pred], axis=1).astype(np.float32)
+
+
+def anchored_rollouts(model, data, split, needs_loc, anchors, horizon,
+                      view=None):
+    """{anchor a: (N, horizon, 2) normalised free-run predictions of steps
+    a+1..a+horizon}. The true states 0..a are fed first, so the state at the
+    anchor is the teacher-forced state; from then on the model's own
+    predictions. ``view`` (forced_rollout_model(model), alpha None): one pass
+    with forcing weight 1 up to step a and 0 after it; else
+    closed_loop_rollout."""
+    x, t = getattr(data, f"{split}_x"), getattr(data, f"{split}_t")
+    out = {}
+    for a in anchors:
+        if view is None:
+            out[a] = closed_loop_rollout(model, data, needs_loc, split, a,
+                                         horizon)[:, a + 1:]
+            continue
+        n = a + horizon
+        force = np.zeros((len(x), n, 1), np.float32)
+        force[:, :a + 1] = 1.0
+        pred = view((tf.constant(x[:, :n]), tf.constant(t[:, :n]),
+                     tf.constant(force)), training=False).numpy()
+        out[a] = pred[:, a:]            # output k is the prediction of k + 1
+    return out
 
 
 def split_inputs(data, split, needs_loc):
@@ -278,9 +324,116 @@ def _round(a, nd=5):
     return np.round(np.asarray(a, dtype=np.float64), nd).tolist()
 
 
+def evaluate(model, data, wiring, system, anchors=ANCHORS,
+             horizon=ANCHOR_HORIZON, theta=THETA) -> dict:
+    """Every evaluation field of the result JSON (a training run and
+    --eval-only share it): val_* / test_* (and the unprefixed test) metrics,
+    norm_stats, rollout_metrics_{val,test} with the multi-anchor keys and the
+    de-normalised test trajectories."""
+    needs_loc = wiring in TBT_MODES
+    view = anchored = None
+    if wiring in FORCEABLE_WIRINGS:
+        view = forced_rollout_model(model, tf.Variable(0.0, trainable=False))
+        anchored = forced_rollout_model(model)
+    norm_stats = make_norm_stats(data.train_traj, data.mean, data.std)
+    out, gens = {}, {}
+    for split in ("val", "test"):
+        metrics, gens[split] = evaluate_split(model, data, split, needs_loc,
+                                              view)
+        truth = getattr(data, f"{split}_traj")
+        preds = anchored_rollouts(model, data, split, needs_loc, anchors,
+                                  horizon, anchored)
+        rollout = {
+            **rollout_metrics(truth, data.denormalise(gens[split]), norm_stats,
+                              system),
+            **anchor_metrics(truth, {a: data.denormalise(p)
+                                     for a, p in preds.items()},
+                             norm_stats, theta)}
+        print(f"  {split}: teacher-forced MSE "
+              f"{metrics['teacher_forced_mse']:.5f} | closed-loop MSE "
+              f"{metrics['closed_loop_mse']:.5f} | persistence "
+              f"{metrics['persistence_mse']:.5f} | VPT median "
+              f"{rollout['vpt_median']:g}/{data.seq_len} | VPT multi-anchor "
+              f"{rollout['vpt_multi_median']:g}/{horizon}")
+        out.update({f"{split}_{k}": v for k, v in metrics.items()})
+        out[f"rollout_metrics_{split}"] = rollout
+    # unprefixed = test (plot_lotka_volterra.py, #20)
+    out.update({k[len("test_"):]: v for k, v in out.items()
+                if k.startswith("test_")})
+    tf_pred_norm = model.predict(split_inputs(data, "test", needs_loc),
+                                 verbose=0)                     # (N, T, 2)
+    return {
+        **out, "norm_stats": norm_stats,
+        # De-normalised test trajectories (raw prey/predator) for the plots.
+        "ground_truth_traj": _round(data.test_traj),
+        "teacher_forced_traj": _round(np.concatenate(
+            [data.test_traj[:, :1, :], data.denormalise(tf_pred_norm)],
+            axis=1)),
+        "closed_loop_traj": _round(data.denormalise(gens["test"])),
+    }
+
+
+def _rel_dev(old, new):
+    """Largest relative deviation over the numeric scalars ``old`` and ``new``
+    share (nested dicts recursed, lists skipped); equal values, both NaN and
+    both inf count as 0."""
+    if isinstance(old, dict) and isinstance(new, dict):
+        return max([_rel_dev(old[k], new[k]) for k in old.keys() & new.keys()],
+                   default=0.0)
+    if (isinstance(old, bool) or isinstance(new, bool)
+            or not isinstance(old, (int, float))
+            or not isinstance(new, (int, float))):
+        return 0.0
+    if old == new or (np.isnan(old) and np.isnan(new)):
+        return 0.0
+    with np.errstate(all="ignore"):
+        dev = abs(new - old) / max(abs(old), abs(new))
+    return float(dev) if np.isfinite(dev) else float("inf")
+
+
+def eval_only(path, outdir, anchors, horizon, theta):
+    """--eval-only: rebuild the fit of result JSON ``path`` from its weights
+    and config.effective, recompute every evaluation field and write the
+    updated JSON to ``outdir`` (None: in place)."""
+    with open(path) as f:
+        record = json.load(f)
+    eff = record["config"]["effective"]
+    if max(anchors) + horizon > eff["seq_len"]:
+        raise SystemExit(f"{path}: anchor {max(anchors)} + horizon {horizon} "
+                         f"exceeds seq_len {eff['seq_len']}")
+    data = load_lotka_volterra(n_trajectories=eff["n_trajectories"],
+                               seq_len=eff["seq_len"], split=eff.get("split"),
+                               seed=eff["data_seed"], system=eff["system"],
+                               t_span=eff.get("t_span"))
+    model = rebuild_from_result(path)
+    fresh = evaluate(model, data, eff["build"]["wiring"], eff["system"],
+                     anchors, horizon, theta)
+    stale = {k: record[k] for k in fresh if k in record}
+    record.update(fresh)
+    record["eval_only"] = {"max_rel_dev": _rel_dev(stale, fresh)}
+    out = path if outdir is None else os.path.join(outdir,
+                                                   os.path.basename(path))
+    if record.get("weights_path"):      # relative to the JSON's folder
+        record["weights_path"] = os.path.relpath(
+            os.path.join(os.path.dirname(os.path.abspath(path)),
+                         record["weights_path"]),
+            os.path.dirname(os.path.abspath(out)))
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "w") as f:
+        json.dump(record, f)
+    print(f"eval-only {path}: max relative change of the stored metrics "
+          f"{record['eval_only']['max_rel_dev']:.2e} -> {out}")
+    return record
+
+
+def _anchors(s):
+    return tuple(int(v) for v in s.split(","))
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--wiring", required=True, choices=LV_WIRINGS)
+    ap.add_argument("--wiring", choices=LV_WIRINGS,
+                    help="required unless --eval-only")
     ap.add_argument("--cell", default="cfc_lrc")
     ap.add_argument("--system", default="periodic_predator_prey",
                     help="neural_ode 2D system (e.g. periodic_predator_prey, duffing)")
@@ -320,7 +473,22 @@ def main():
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--n-trajectories", type=int, default=80)
     ap.add_argument("--seq-len", type=int, default=128)
-    ap.add_argument("--outdir", default="results/lotka_volterra")
+    ap.add_argument("--outdir", default=None,
+                    help="default results/lotka_volterra; with --eval-only "
+                         "the input JSON's folder (in place)")
+    ap.add_argument("--anchors", type=_anchors, default=ANCHORS,
+                    help="comma-separated teacher-forced warm-up lengths of "
+                         "the multi-anchor endpoint (#62); default "
+                         + ",".join(map(str, ANCHORS)))
+    ap.add_argument("--horizon", type=int, default=ANCHOR_HORIZON,
+                    help="free-run steps after each anchor; anchor + horizon "
+                         "<= --seq-len")
+    ap.add_argument("--theta", type=float, default=THETA,
+                    help="VPT threshold of the multi-anchor endpoint")
+    ap.add_argument("--eval-only", metavar="RESULT_JSON", default=None,
+                    help="no training: recompute every evaluation field of "
+                         "this result JSON from its weights.h5 and "
+                         "config.effective")
     ap.add_argument("--elastance-type", default=None,
                     help="override the registry elastance_type of the "
                          "LRC-family cells (RQ2/RQ5 mechanism); default: the "
@@ -361,6 +529,19 @@ def main():
                     help="log this run to Weights & Biases (needs the "
                          "'tracking' extra; use WANDB_MODE=offline on cluster)")
     args = ap.parse_args()
+    if min(args.anchors) < 0 or args.horizon < 1 or args.theta <= 0:
+        ap.error("--anchors must be >= 0, --horizon >= 1, --theta > 0")
+    if args.eval_only:
+        eval_only(args.eval_only, args.outdir, args.anchors, args.horizon,
+                  args.theta)
+        return
+    if args.wiring is None:
+        ap.error("--wiring is required")
+    if max(args.anchors) + args.horizon > args.seq_len:
+        ap.error(f"anchor {max(args.anchors)} + --horizon {args.horizon} "
+                 f"exceeds --seq-len {args.seq_len}; pass shorter --anchors / "
+                 "--horizon")
+    args.outdir = args.outdir or "results/lotka_volterra"
     if args.size is None and args.param_budget is None:
         args.size = DEFAULT_SIZE
     mixed = args.forcing == "mixed"
@@ -469,29 +650,8 @@ def main():
     val_curve = hist.history["val_loss"]
     best = int(np.argmin(np.nan_to_num(val_curve, nan=np.inf)))  # NaN never wins
 
-    view = (forced_rollout_model(model, tf.Variable(0.0, trainable=False))
-            if args.wiring in FORCEABLE_WIRINGS else None)
-    val_metrics, val_gen = evaluate_split(model, data, "val", needs_loc, view)
-    test_metrics, gen_norm = evaluate_split(model, data, "test", needs_loc,
-                                            view)
-    tf_pred_norm = model.predict(test_in, verbose=0)                    # (N,T,2)
-
-    # De-normalised trajectories aligned with the ground truth for plotting.
-    tf_traj = np.concatenate(
-        [data.test_traj[:, :1, :], data.denormalise(tf_pred_norm)], axis=1)
-    cl_traj = data.denormalise(gen_norm)
-    norm_stats = make_norm_stats(data.train_traj, data.mean, data.std)
-    rollout = {
-        "val": rollout_metrics(data.val_traj, data.denormalise(val_gen),
-                               norm_stats, args.system),
-        "test": rollout_metrics(data.test_traj, cl_traj, norm_stats,
-                                args.system)}
-
-    for name, m in (("val", val_metrics), ("test", test_metrics)):
-        print(f"  {name}: teacher-forced MSE {m['teacher_forced_mse']:.5f} | "
-              f"closed-loop MSE {m['closed_loop_mse']:.5f} | persistence "
-              f"{m['persistence_mse']:.5f} | VPT median "
-              f"{rollout[name]['vpt_median']:g}/{data.seq_len}")
+    evaluation = evaluate(model, data, args.wiring, args.system, args.anchors,
+                          args.horizon, args.theta)
 
     os.makedirs(args.outdir, exist_ok=True)
     record = {
@@ -509,19 +669,11 @@ def main():
         **pc, **multi, "dt": data.dt, "seq_len": data.seq_len,
         "ode_unfolds": cell_kwargs.get("ode_unfolds"), "dt_scale": args.dt_scale,
         "data_seed": data_seed, "split": split, "n_test": split[2],
-        **{f"val_{k}": v for k, v in val_metrics.items()},
-        **{f"test_{k}": v for k, v in test_metrics.items()},
-        **test_metrics,       # unprefixed = test (plot_lotka_volterra.py, #20)
+        **evaluation,
         "best_val_epoch": best + 1,      # 1-based; curve index best_val_epoch-1
         "best_val_teacher_forced_mse": float(val_curve[best]),
         "best_test_teacher_forced_mse": float(test_curve[best]),
         "val_loss_curve": _round(val_curve, 6),
-        "norm_stats": norm_stats,
-        **{f"rollout_metrics_{s}": m for s, m in rollout.items()},
-        # Trajectories (de-normalised, raw prey/predator) for the overlay plots.
-        "ground_truth_traj": _round(data.test_traj),
-        "teacher_forced_traj": _round(tf_traj),
-        "closed_loop_traj": _round(cl_traj),
         "training_diverged": not np.isfinite(hist.history["loss"][-1]),
         "forcing": args.forcing,
         "alpha_min": args.alpha_min if mixed else None,

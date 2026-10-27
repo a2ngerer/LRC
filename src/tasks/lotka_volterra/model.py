@@ -168,7 +168,7 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
     return model
 
 
-def forced_rollout_model(model, alpha):
+def forced_rollout_model(model, alpha=None):
     """Mixed-forcing view of a plain model from build_lotka_volterra_model.
 
     The view runs the model's own recurrent core (dense3: its three RNN
@@ -178,6 +178,10 @@ def forced_rollout_model(model, alpha):
     non-trainable tf.Variable) = 1 reproduces its teacher-forced predictions,
     0 the closed-loop rollout. Compiled with the plain model's optimizer, loss
     and metric, so ``--forcing mixed`` trains the view directly.
+
+    ``alpha=None`` gives the anchored view instead: a third input (B, T, 1)
+    holds the per-step forcing weight (ForcedRolloutCell), 1 for the
+    teacher-forced warm-up up to the anchor and 0 for the free run (#62).
     """
     rnns = [l for l in model.layers if isinstance(l, tf.keras.layers.RNN)]
     readout = [l for l in model.layers
@@ -193,8 +197,12 @@ def forced_rollout_model(model, alpha):
     state, time = inputs
     if scale:                       # the plain model's own time rescaling
         time = scale[0](time)
+    rnn_in = (state, time)
+    if alpha is None:
+        inputs.append(tf.keras.Input(shape=(None, 1), name="force"))
+        rnn_in += (inputs[-1],)
     out = tf.keras.layers.RNN(ForcedRolloutCell(core, readout, alpha),
-                              return_sequences=True)((state, time))
+                              return_sequences=True)(rnn_in)
     view = tf.keras.Model(inputs=inputs, outputs=out)
     view.compile(optimizer=model.optimizer, loss=model.loss,
                  metrics=[tf.keras.metrics.MeanAbsoluteError()])

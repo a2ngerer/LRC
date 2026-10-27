@@ -65,6 +65,7 @@ def _assert_round_trip(json_path, built, inputs):
 
 def _lv_argv(tmp_path, *extra):
     return ['run_lotka_volterra_benchmark.py', '--epochs', '2',
+            '--anchors', '2,4', '--horizon', '4',
             '--n-trajectories', '4', '--seq-len', '8', '--batch-size', '4',
             '--outdir', str(tmp_path), *extra]
 

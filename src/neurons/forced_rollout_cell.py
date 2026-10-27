@@ -8,9 +8,12 @@ true state and the model's own previous prediction,
 
 with one non-trainable alpha for the whole batch: alpha = 1 is teacher forcing,
 alpha = 0 free running (the closed-loop rollout in one O(T) pass), values in
-between mixed forcing. The readout runs inside the cell (yhat_t =
-readout(h_t)), so the wrapper adds no trainable parameter; it shares the
-weights of the core cell and readout it is given.
+between mixed forcing. A third input f_t (B, 1) replaces alpha by a per-step
+weight, x~_t = f_t * y_t + (1 - f_t) * yhat_{t-1}: f = 1 up to an anchor and
+0 after it is the teacher-forced warm-up + free run of the multi-anchor
+endpoint (#62), one O(T) pass per anchor. The readout runs inside the cell
+(yhat_t = readout(h_t)), so the wrapper adds no trainable parameter; it shares
+the weights of the core cell and readout it is given.
 
 StackedCell turns the dense3 stack (three RNN layers, see
 person_activity.stacked_dense) into one cell so it can be wrapped.
@@ -71,10 +74,12 @@ class StackedCell(tf.keras.layers.AbstractRNNCell):
 class ForcedRolloutCell(tf.keras.layers.AbstractRNNCell):
     """Mixed-forcing wrapper around a core cell and its readout.
 
-    Input (y_t, dt); state = core states + [yhat_{t-1}, started]; output
-    yhat_t = readout(h_t). ``started`` (B, 1) is 0 before the first step, so
-    x~_0 = y_0 whatever alpha is. ``readout`` is a layer or a list of layers
-    applied in order (ncp: motor slice, then the Dense head). ``alpha`` is a
+    Input (y_t, dt) or (y_t, dt, f_t); state = core states + [yhat_{t-1},
+    started]; output yhat_t = readout(h_t). ``started`` (B, 1) is 0 before the
+    first step, so x~_0 = y_0 whatever alpha is; a given f_t is used as the
+    forcing weight instead (alpha is then unused, f_0 should be 1).
+    ``readout`` is a layer or a list of layers applied in order (ncp: motor
+    slice, then the Dense head). ``alpha`` is a
     non-trainable tf.Variable read at every step, so a callback can move it
     between epochs.
     """
@@ -97,11 +102,11 @@ class ForcedRolloutCell(tf.keras.layers.AbstractRNNCell):
         return self._dim
 
     def build(self, input_shape):
-        y_shape, _ = input_shape
+        y_shape = input_shape[0]
         # yhat is mixed into the input, so it has the input's width.
         self._dim = int(y_shape[-1])
         if not self.core.built:
-            self.core.build(input_shape)
+            self.core.build(tuple(input_shape[:2]))
         self.built = True
 
     def get_initial_state(self, inputs=None, batch_size=None, dtype=None):
@@ -112,9 +117,10 @@ class ForcedRolloutCell(tf.keras.layers.AbstractRNNCell):
                        tf.zeros([batch_size, 1], dtype)]
 
     def call(self, inputs, states):
-        y, dt = inputs
+        y, dt, *force = inputs
         *core_states, y_prev, started = _as_list(states)
-        a = 1.0 - started * (1.0 - self.alpha)      # 1 at t = 0, alpha after
+        # 1 at t = 0, alpha after; or the given per-step weight
+        a = force[0] if force else 1.0 - started * (1.0 - self.alpha)
         h, new_core = self.core((a * y + (1.0 - a) * y_prev, dt), core_states)
         y_hat = h
         for layer in self.readout:

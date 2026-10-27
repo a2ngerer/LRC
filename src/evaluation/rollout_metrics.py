@@ -23,6 +23,19 @@ skipped, inf = non-finite rollout).
     rate_ok + rate_unbounded + rate_bounded_wrong = 1 and
     rate_collapse + rate_drift = rate_bounded_wrong.
 
+Multi-anchor endpoint (#62, protocol freeze F1-2026-10-26, decision c;
+anchor_metrics): from each anchor a in ANCHORS the model is fed the ground
+truth y_0..y_a (teacher-forced warm-up), then runs free for ANCHOR_HORIZON
+steps (predictions of steps a+1..a+H). Per (trajectory, anchor) VPT(theta) on
+the H free-run steps and NRMSE@32; keys:
+  * vpt_multi_median: median over all (trajectory x anchor) VPTs, the primary
+    rollout endpoint and the HPO selection key;
+  * vpt_anchor_<a>, nrmse_32_anchor_<a>: median over trajectories per anchor
+    (vpt_anchor_8 is the single-anchor secondary endpoint);
+  * theta_sensitivity: {"0.3": ..., "1.0": ...}, vpt_multi_median at the
+    descriptive thresholds;
+  * anchors, anchor_horizon, anchor_theta: the evaluation settings.
+
 Pure numpy: src/evaluation/__init__ loads the TF-based GradientFlowTracker
 lazily, so this module imports without TensorFlow (CPU-only aggregation).
 """
@@ -33,6 +46,8 @@ import numpy as np
 THETA = 0.5
 THETA_SENSITIVITY = (0.3, 1.0)
 HORIZONS = (16, 32, 128)
+ANCHORS = (8, 16, 24, 32)
+ANCHOR_HORIZON = 96
 UNBOUNDED_FACTOR = 10.0
 COLLAPSE_RATIO = 0.1
 
@@ -93,6 +108,26 @@ def invariant_drift(y_true, y_pred, system):
     return d, violations
 
 
+def _errors(y_true, y_pred, norm_stats):
+    """z-scored truth and prediction (columns as given), the squared error
+    (inf where the prediction is non-finite) and e_t = sqrt(mean_d sq)."""
+    mean = np.asarray(norm_stats["mean"], dtype=np.float64)
+    std = np.asarray(norm_stats["std"], dtype=np.float64)
+    z_true = (np.asarray(y_true, dtype=np.float64) - mean) / std
+    z_pred = (np.asarray(y_pred, dtype=np.float64) - mean) / std
+    with np.errstate(all="ignore"):
+        sq = np.where(np.isfinite(z_pred), (z_pred - z_true) ** 2, np.inf)
+        err = np.sqrt(sq.mean(axis=2))
+    return z_true, z_pred, sq, err
+
+
+def _vpt(err, theta):
+    """Per-row first step t (1-based) with e_t > theta, else the row length."""
+    exceed = err > theta
+    return np.where(exceed.any(axis=1), exceed.argmax(axis=1) + 1,
+                    err.shape[1])
+
+
 def _summarise(out, name, values):
     v = np.asarray(values, dtype=np.float64)
     v = v[~np.isnan(v)]
@@ -111,15 +146,11 @@ def rollout_metrics(y_true, y_pred, norm_stats, system) -> dict:
     """
     y_true = np.asarray(y_true, dtype=np.float64)
     y_pred = np.asarray(y_pred, dtype=np.float64)
-    mean = np.asarray(norm_stats["mean"], dtype=np.float64)
-    std = np.asarray(norm_stats["std"], dtype=np.float64)
-    z_true = (y_true[:, 1:] - mean) / std                       # (N, T, D)
-    z_pred = (y_pred[:, 1:] - mean) / std
+    # (N, T, D); non-finite -> inf in sq, e_t (N, T)
+    z_true, z_pred, sq, err = _errors(y_true[:, 1:], y_pred[:, 1:], norm_stats)
     n, T = z_true.shape[:2]
     finite = np.isfinite(z_pred)
     with np.errstate(all="ignore"):
-        sq = np.where(finite, (z_pred - z_true) ** 2, np.inf)   # non-finite -> inf
-        err = np.sqrt(sq.mean(axis=2))                          # e_t, (N, T)
         nrmse = {h: np.sqrt(sq[:, :h].mean(axis=(1, 2))) for h in HORIZONS}
         dist = ((z_pred[:, :, None] - z_true[:, None]) ** 2).sum(axis=-1)
         orbit = np.where(finite.all(axis=(1, 2)),
@@ -131,8 +162,7 @@ def rollout_metrics(y_true, y_pred, norm_stats, system) -> dict:
 
     out = {"n_trajectories": n, "horizon": T}
     for theta in (THETA, *THETA_SENSITIVITY):
-        exceed = err > theta
-        vpt = np.where(exceed.any(axis=1), exceed.argmax(axis=1) + 1, T)
+        vpt = _vpt(err, theta)
         key = "vpt" if theta == THETA else f"vpt_{theta}"
         _summarise(out, key, vpt)
         if theta == THETA:
@@ -157,4 +187,39 @@ def rollout_metrics(y_true, y_pred, norm_stats, system) -> dict:
                        ("bounded_wrong", wrong), ("collapse", collapse),
                        ("drift", wrong & ~collapse)):
         out[f"rate_{name}"] = float(mask.mean())
+    return out
+
+
+def anchor_metrics(y_true, preds, norm_stats, theta=THETA) -> dict:
+    """Multi-anchor endpoint of one split (#62, see module docstring).
+
+    Args:
+        y_true: (N, T+1, D) de-normalised ground truth.
+        preds: {anchor a: (N, H, D) de-normalised free-run predictions of
+            steps a+1..a+H after the teacher-forced warm-up y_0..y_a}; the
+            same H for every anchor, a + H <= T.
+        norm_stats: as for rollout_metrics.
+        theta: VPT threshold of the primary keys.
+    """
+    y_true = np.asarray(y_true, dtype=np.float64)
+    horizon = {np.shape(p)[1] for p in preds.values()}
+    if len(horizon) != 1:
+        raise ValueError(
+            f"one free-run horizon for every anchor, got {horizon}")
+    (H,) = horizon
+    out = {"anchors": list(preds), "anchor_horizon": H, "anchor_theta": theta}
+    vpts = {th: [] for th in (theta, *THETA_SENSITIVITY)}
+    for a, pred in preds.items():
+        if a + H >= y_true.shape[1]:
+            raise ValueError(f"anchor {a} + horizon {H} exceeds the "
+                             f"{y_true.shape[1] - 1} ground-truth steps")
+        _, _, sq, err = _errors(y_true[:, a + 1:a + 1 + H], pred, norm_stats)
+        for th in vpts:
+            vpts[th].append(_vpt(err, th))
+        out[f"vpt_anchor_{a}"] = float(np.median(vpts[theta][-1]))
+        out[f"nrmse_32_anchor_{a}"] = float(np.median(
+            np.sqrt(sq[:, :32].mean(axis=(1, 2)))))
+    out["vpt_multi_median"] = float(np.median(vpts[theta]))
+    out["theta_sensitivity"] = {str(th): float(np.median(vpts[th]))
+                                for th in THETA_SENSITIVITY}
     return out

@@ -358,6 +358,7 @@ def test_runner_records_backbone_end_to_end(tmp_path, monkeypatch):
     argv = ["run_lotka_volterra_benchmark.py", "--wiring", "cncp", "--cell",
             "cfc_lrc", "--epochs", "1", "--n-trajectories", "6", "--seq-len",
             "6", "--param-budget", "800", "--backbone-layers", "1",
+            "--anchors", "1,2", "--horizon", "4",
             "--outdir", str(tmp_path)]
     monkeypatch.setattr(sys, "argv", argv)
     lv_runner.main()
@@ -382,6 +383,7 @@ def test_runner_head_activation_reaches_every_subcell(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", [
         "run_lotka_volterra_benchmark.py", "--wiring", "cncp", "--cell",
         "cfc_lrc", "--epochs", "1", "--n-trajectories", "6", "--seq-len", "6",
+        "--anchors", "1,2", "--horizon", "4",
         "--size", "8", "--backbone-layers", "0", "--head-activation", "tanh",
         "--outdir", str(tmp_path)])
     lv_runner.main()
@@ -411,7 +413,8 @@ def test_runner_records_self_recurrence_end_to_end(tmp_path, monkeypatch):
         monkeypatch.setattr(sys, "argv", [
             "run_lotka_volterra_benchmark.py", "--wiring", "ncp", "--cell",
             "cfc_lrc", "--epochs", "1", "--n-trajectories", "6", "--seq-len",
-            "6", "--size", "8", "--outdir", str(tmp_path), *flags])
+            "6", "--size", "8", "--outdir", str(tmp_path), *flags,
+            "--anchors", "1,2", "--horizon", "4",])
         lv_runner.main()
         return json.loads((tmp_path / "cfc_lrc_ncp_seed0.json").read_text())
     on, off = run(), run("--no-self-recurrence")
@@ -425,6 +428,7 @@ def _run(tmp_path, monkeypatch, wiring, seed, *extra):
     monkeypatch.setattr(sys, "argv", [
         "run_lotka_volterra_benchmark.py", "--wiring", wiring, "--cell", "gru",
         "--size", "4", "--seed", str(seed), "--epochs", "2",
+        "--anchors", "4,8", "--horizon", "8",
         "--n-trajectories", "10", "--seq-len", "16", "--batch-size", "4",
         "--outdir", str(tmp_path), *extra])
     lv_runner.main()

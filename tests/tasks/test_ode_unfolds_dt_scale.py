@@ -161,6 +161,7 @@ def test_pa_runner_records_ode_unfolds_and_dt_scale(flags, cell, unfolds,
 def test_lv_runner_records_ode_unfolds_and_dt_scale(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", [
         "run_lotka_volterra_benchmark.py", "--wiring", "dense", "--cell", "lrc",
+        "--anchors", "1,2", "--horizon", "4",
         "--epochs", "1", "--n-trajectories", "6", "--seq-len", "6", "--size",
         "4", "--ode-unfolds", "2", "--dt-scale", "0.5", "--outdir",
         str(tmp_path)])
@@ -174,6 +175,7 @@ def test_lv_runner_reports_effective_ode_unfolds_for_ctrnn(tmp_path,
     monkeypatch.setattr(sys, "argv", [
         "run_lotka_volterra_benchmark.py", "--wiring", "ncp", "--cell",
         "ctrnn", "--epochs", "1", "--n-trajectories", "6", "--seq-len", "6",
+        "--anchors", "1,2", "--horizon", "4",
         "--size", "4", "--outdir", str(tmp_path)])
     lv_runner.main()
     rec = json.loads((tmp_path / "ctrnn_ncp_seed0.json").read_text())
