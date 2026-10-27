@@ -239,6 +239,22 @@ BENCH=00_canary ./cluster/submit_suite.sh -n configs/suite/canary_lv_hpo.yaml su
 
 `--wandb` adds `--wandb` to every call; the offline runs land under `<run>/wandb/`.
 
+The frozen protocol (F1-2026-10-26, #71) is one hpo and one final YAML per task:
+`configs/suite/{lv,duffing,mt,pa}_{hpo,final}.yaml` and the consensus study
+`co_k3_hpo.yaml`, `co_k3_final.yaml`, `co_k30_final.yaml` (K = 30 after the
+transfer guard `guard_co_k30_transfer.yaml`, resumed into its run folder), plus
+`mt_final_static_w.yaml` and the descriptive controls `control_*.yaml` (own run
+folders: their result names equal those of the main arm). Before a final stage,
+set `hpo_dir` to the fetched HPO run. For lv the manifest adds the multi-anchor
+endpoint (`--anchors 8,16,24,32 --horizon 96`) and the system's `--ic-spread`;
+arms without HPO name their reference under `config_from`; Person Activity runs
+the solver arms on ncp one per GPU (`heavy.arms`). `--count` gives the planned
+fits without any `hpo_selection.json` (an hpo line counts 11 fits, co 6):
+
+```bash
+uv run python experiments/suite_manifest.py --count configs/suite/duffing_*.yaml   # 519
+```
+
 ### S0 op-determinism probe (#70)
 
 `./cluster/submit_determinism_probe.sh [-n] <label>` runs

@@ -1,0 +1,20 @@
+# Frozen final suite (F1-2026-10-26; #71): cfc_static_w on multitimescale_lib,
+# the width-matched H-a arm (descriptive): cfc_static/ncp at the width of
+# cfc/ncp (size 24, the 4k pick of cfc/ncp in docs/budget-sizing.md) instead
+# of the 4k budget, no HPO: lr/clip from cfc_static/ncp's hpo_selection.json
+# of the mt-hpo run. 10 seeds. Its own run folder: the result names equal
+# those of cfc_static/ncp.
+#   ./cluster/submit_suite.sh configs/suite/mt_final_static_w.yaml mt-static-w
+task: lv
+system: multitimescale_lib
+stage: final
+cells: [cfc_static]
+wirings: [ncp]
+seeds: [0, 1, 2, 3, 4]
+extra_seeds: {seeds: [5, 6, 7, 8, 9], arms: [cfc_static_ncp]}
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --size, 24]
+hpo_dir: results/01_lotka_volterra/<mt-hpo run>/results/hpo
+cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

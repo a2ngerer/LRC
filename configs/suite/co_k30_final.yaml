@@ -1,0 +1,31 @@
+# Frozen final suite (F1-2026-10-26 j; #71): consensus study, K = 30 final fits
+# (fault grid {0, 3, 9, 15, 20}) with the K = 3 selection: eight arms (aug_mono
+# is K-independent) x seeds 0-4 (40), seeds 5-9 for the five arms of the H-d
+# contrasts (25, emitted last). Transfer guard first:
+#   ./cluster/submit_suite.sh configs/suite/guard_co_k30_transfer.yaml co-k30
+#   uv run python experiments/run_grid_hpo.py --transfer-guard \
+#       <K3 hpo>/ncp_cons/hpo_selection.json <run>/results/<ncp_cons seed-0 JSON>
+#   (likewise cncp_cons), then this YAML into the same run folder, which skips
+#   the two guard fits:
+#   ./cluster/submit_suite.sh --resume configs/suite/co_k30_final.yaml <YYYY-MM-DD>_co-k30
+# On a failed guard: K = 30 mini-HPO for that arm (run_grid_hpo.py
+# --tuning-seeds 100 with three lr), then point hpo_dir there for that arm.
+task: co
+stage: final
+arms:
+  ncp_cons: {cell: cfc_lrc, wiring: ncp}
+  ncp_lam0: {cell: cfc_lrc, wiring: ncp, vote_lambda: 0}
+  ncp_med: {cell: cfc_lrc, wiring: ncp, consensus: median}
+  cncp_cons: {cell: cfc_lrc, wiring: cncp}
+  cncp_lam0: {cell: cfc_lrc, wiring: cncp, vote_lambda: 0}
+  cncp_med: {cell: cfc_lrc, wiring: cncp, consensus: median}
+  avg_in: {cell: cfc_lrc, wiring: ncp, view_average: mean}
+  fault_mean: {cell: cfc_lrc, wiring: ncp, view_average: fault_mean}
+param_budget: 30000
+seeds: [0, 1, 2, 3, 4]
+extra_seeds:
+  seeds: [5, 6, 7, 8, 9]
+  arms: [ncp_cons, cncp_cons, ncp_lam0, cncp_lam0, avg_in]
+extra_args: [--n-columns, 30, --backbone-layers, 1]
+hpo_dir: results/04_column_voting/<co-k3-hpo run>/results/hpo
+cluster: {runs_per_gpu: 3, walltime: "06:00:00"}
