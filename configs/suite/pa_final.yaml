@@ -1,0 +1,31 @@
+# Frozen final suite (F1-2026-10-26; #71): Person Activity final fits, seeds
+# 0-4 for the 28 arms of pa_hpo.yaml (140), seeds 5-9 for the eight ten-seed
+# arms (40, emitted last). Set hpo_dir to the fetched HPO run first.
+#   ./cluster/submit_suite.sh configs/suite/pa_final.yaml pa-final
+task: pa
+stage: final
+cells:
+  cfc: [dense, dense3, ncp, cncp]
+  cfc_lrc: [dense, dense3, ncp, cncp]
+  cfc_lrc_outer: [dense, ncp]
+  cfc_mm_lrc: [dense, ncp]
+  lrc: [dense, dense3, ncp]
+  mm_lrc: [dense, ncp]
+  gru: [dense, dense3, ncp, cncp]
+  lstm: [dense, dense3, ncp]
+  ctrnn: [dense, dense3, ncp]
+  cfc_static: [dense]
+param_budget: 30000
+seeds: [0, 1, 2, 3, 4]
+extra_seeds:
+  seeds: [5, 6, 7, 8, 9]
+  arms: [cfc_lrc_dense3, cfc_lrc_ncp, cfc_lrc_cncp, gru_ncp, gru_dense, lrc_ncp,
+         cfc_dense, cfc_static_dense]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+hpo_dir: results/03_person_activity/<pa-hpo run>/results/hpo
+cluster: {runs_per_gpu: 3, walltime: "06:00:00"}
+heavy:
+  arms: [lrc_ncp, mm_lrc_ncp, ctrnn_ncp]
+  cluster: {runs_per_gpu: 1}

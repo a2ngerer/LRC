@@ -1,0 +1,33 @@
+# Frozen final suite (F1-2026-10-26; #71): Duffing, 32 arms = the
+# Lotka-Volterra matrix plus cfc_static/ncp and the diagnostic arms ltc/ncp,
+# mm_ltc/ncp, cfc_mm_ltc/ncp, which run no HPO (config_from: the reference
+# arm's hpo_selection.json). Fits with duffing_final.yaml: 29 x 11 + 200 = 519
+#   uv run python experiments/suite_manifest.py --count configs/suite/duffing_*.yaml
+# The manifest adds --anchors 8,16,24,32 --horizon 96 --ic-spread 0.4.
+#   ./cluster/submit_suite.sh configs/suite/duffing_hpo.yaml duffing-hpo
+task: lv
+system: duffing
+stage: hpo
+cells:
+  cfc: [dense, dense3, ncp, cncp]
+  cfc_lrc: [dense, dense3, ncp, cncp]
+  cfc_lrc_outer: [dense, ncp]
+  cfc_mm_lrc: [dense, ncp]
+  lrc: [dense, dense3, ncp]
+  mm_lrc: [dense, ncp]
+  gru: [dense, dense3, ncp, cncp]
+  lstm: [dense, dense3, ncp]
+  ctrnn: [dense, dense3, ncp]
+  mlp: [dense]
+  cfc_static: [ncp]
+  ltc: [ncp]
+  mm_ltc: [ncp]
+  cfc_mm_ltc: [ncp]
+config_from: {ltc_ncp: lrc_ncp, mm_ltc_ncp: lrc_ncp, cfc_mm_ltc_ncp: cfc_mm_lrc_ncp}
+param_budget: 4000
+seeds: [100, 101]
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed]
+cluster: {runs_per_gpu: 3, walltime: "12:00:00"}
