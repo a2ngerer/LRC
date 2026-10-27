@@ -11,7 +11,8 @@
 # task's n pilot arms; a Duffing G1 seed failure is a DECISION, an LV one a
 # FAIL; GK tolerates a step up within one paired bootstrap SE over the test
 # recordings, needs MF1(m_max) < MF1(0) and falls back to the strict check
-# without the per-recording confusions.
+# without the per-recording confusions. #80: G2 reports the PA test macro-F1
+# against the one-class value of the test split and lists an arm at chance.
 import copy
 import json
 import math
@@ -461,6 +462,38 @@ def test_s1_one_failure_per_gate_branch(case, tmp_path, pilot):
     assert consequence in section
     if 'consensus study' in consequence:     # only its own GK consequence
         assert section.count('before the consensus study') == 1, section
+
+
+@pytest.mark.parametrize('n_at_chance, listed', [
+    (1, 'none'), (2, 'lrc/ncp (2 of 3 seeds)')])
+def test_s1_g2_reports_the_one_class_value(n_at_chance, listed, tmp_path,
+                                           pilot):
+    """#80 on an S1-like fixture: every PA fit's test macro-F1 against the
+    one-class value of its test split (majority share 0.6 of two classes:
+    0.375, from the confusions); lrc/ncp at 0.38 (within 0.01) in
+    n_at_chance seeds is listed as at chance from two of three seeds on;
+    the row stays PASS."""
+    fits = pilot[0]
+    plateau = {f'r{i}': [[6, 0], [4, 0]] for i in range(3)}
+    learned = {f'r{i}': [[5, 1], [1, 3]] for i in range(3)}
+    for arm in ('cfc_lrc_ncp', 'lrc_ncp'):
+        _set(fits, 'pa', arm, (0, 1, 2), 'test_confusion_by_recording',
+             learned)
+    seeds = tuple(range(n_at_chance))
+    _set(fits, 'pa', 'lrc_ncp', seeds, 'test_confusion_by_recording', plateau)
+    _set(fits, 'pa', 'lrc_ncp', seeds, 'test_macro_f1', 0.38)
+    code, report, rows = _s1(tmp_path, *pilot)
+    assert code == 0 and _only(rows, 'PASS'), rows
+    f1 = [0.38] * n_at_chance + [0.63] * (3 - n_at_chance)
+    assert (f'lrc/ncp test macro-F1 {f1} vs one-class 0.3750 (test split); '
+            'at chance (<= one-class + 0.01 in >= 2 of 3 seeds): '
+            f'{listed}; lrc/ncp wallclock_s [100.0, 101.0, 102.0] |') in report
+    assert ('- lrc_ncp seed 0: test macro-F1 0.380, wallclock_s 100.0; '
+            'one-class 0.3750 + 0.01: at chance') in report
+    assert ('- lrc_ncp seed 2: test macro-F1 0.630, wallclock_s 102.0; '
+            'one-class 0.3750 + 0.01: above chance') in report
+    assert ('- cfc_lrc_ncp seed 0: test macro-F1 0.630, wallclock_s 100.0; '
+            'one-class 0.3750 + 0.01: above chance') in report
 
 
 def test_s1_config_requires_op_determinism(tmp_path, pilot):

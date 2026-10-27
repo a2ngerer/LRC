@@ -69,7 +69,11 @@ evaluates the S1 go criteria with the frozen thresholds:
          (F1 decision m: LV, Duffing 4 of 5, MT, PA 2 of 2)
   G2     Person Activity: median test_macro_f1 of cfc_lrc/ncp >= 0.60, every
          lrc/ncp fit finite (training_diverged false, finite macro-F1);
-         wallclock_s of both arms listed
+         wallclock_s of both arms listed. Reported, not gated (#80): each
+         fit's test macro-F1 against the one-class value of the test split
+         (from its test_confusion_by_recording), and an arm at chance (at
+         most 0.01 above that value in >= 2 of 3 seeds) is listed as
+         "at chance" in the summary
   G3     descriptive: median VPT of the dt_scale=1 control next to the main arm
   GK     consensus pilot, per arm (ncp_cons, ncp_lam0, avg_in, aug_mono) the
          fit with the best val_macro_f1_mean (the HPO key; grid order on
@@ -118,7 +122,8 @@ sys.path.insert(0, ROOT)
 from experiments.suite_manifest import (LV_DEFAULT_SYSTEM, grid,  # noqa: E402
                                         jobs, load)
 from src.benchmark.registry import cell_kwargs  # noqa: E402
-from src.evaluation.metrics import macro_f1  # noqa: E402
+from src.evaluation.metrics import (CHANCE_MARGIN, at_chance,  # noqa: E402
+                                    macro_f1, one_class_macro_f1)
 from src.evaluation.rollout_metrics import ANCHORS  # noqa: E402
 
 SMOKE = [os.path.join(ROOT, "configs", "suite", f"smoke_{t}.yaml")
@@ -680,8 +685,21 @@ def gate_epochs(fits, expected):
     return rows
 
 
+def _vs_chance(rec):
+    """(one-class macro-F1 of the test split, test macro-F1 at chance), the
+    value from the per-recording test confusions (row sums = the test
+    labels); (None, False) without them (#80)."""
+    cms = rec.get("test_confusion_by_recording")
+    if not cms:
+        return None, False
+    one = one_class_macro_f1(np.sum(list(cms.values()), axis=0).sum(axis=1))
+    return one, at_chance(_num(rec.get("test_macro_f1")), one)
+
+
 def gate_pa(fits):
-    """G2: cfc_lrc/ncp median test macro-F1, lrc/ncp finite, wall times."""
+    """G2: cfc_lrc/ncp median test macro-F1, lrc/ncp finite, wall times; the
+    test macro-F1 of both arms against the one-class value, reported only
+    (#80, the S1 record stays as evaluated)."""
     main, solver = _pick(fits, "pa", "cfc_lrc_ncp"), _pick(fits, "pa",
                                                            "lrc_ncp")
     med = _median([_num(f["rec"].get("test_macro_f1"), -math.inf)
@@ -696,13 +714,30 @@ def gate_pa(fits):
             else [f"training_diverged {r.get('training_diverged')!r}"])
         if why:
             bad.append(f"lrc/ncp seed {f['seed']}: {', '.join(why)}")
+    vs = {f["path"]: _vs_chance(f["rec"]) for f in main + solver}
+
+    def versus(f):
+        one, hit = vs[f["path"]]
+        return ("one-class n/a (no test confusions)" if one is None else
+                f"one-class {one:.4f} + {CHANCE_MARGIN:g}: "
+                f"{'at chance' if hit else 'above chance'}")
     detail = [f"{f['arm'][1]} seed {f['seed']}: test macro-F1 "
               f"{_num(f['rec'].get('test_macro_f1')):.3f}, wallclock_s "
-              f"{f['rec'].get('wallclock_s')}" for f in main + solver]
+              f"{f['rec'].get('wallclock_s')}; {versus(f)}"
+              for f in main + solver]
+    chance = [f"{name} ({n} of {len(fs)} seeds)"
+              for name, fs in (("cfc_lrc/ncp", main), ("lrc/ncp", solver))
+              if (n := sum(vs[f["path"]][1] for f in fs)) >= MIN_SEEDS]
+    one = sorted({f"{vs[f['path']][0]:.4f}" for f in solver
+                  if vs[f["path"]][0] is not None}) or ["n/a"]
+    f1 = [round(_num(f["rec"].get("test_macro_f1")), 4) for f in solver]
     return [_row("G2", "pa", f"median test macro-F1 of cfc_lrc/ncp >= "
                  f"{MIN_F1:.2f}; every lrc/ncp fit finite (wallclock_s "
                  f"listed)",
-                 f"median {med:.3f}; lrc/ncp wallclock_s "
+                 f"median {med:.3f}; lrc/ncp test macro-F1 {f1} vs one-class "
+                 f"{'/'.join(one)} (test split); at chance (<= one-class + "
+                 f"{CHANCE_MARGIN:g} in >= {MIN_SEEDS} of 3 seeds): "
+                 f"{', '.join(chance) or 'none'}; lrc/ncp wallclock_s "
                  f"{[f['rec'].get('wallclock_s') for f in solver]}", bad,
                  consequence=CONSEQUENCE["G2"], detail=detail)]
 
