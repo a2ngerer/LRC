@@ -1,0 +1,20 @@
+# S1 floor and protocol pilot (F1-2026-10-26, ladder S1; #75): Person
+# Activity, cfc_lrc/ncp and lrc/ncp x seeds 0-2 = 6 fits, 50 epochs, lr 1e-3,
+# clip off (fixed). lrc/ncp runs alone on its GPU (heavy, one per GPU): its
+# wallclock_s is the single-fit wall time of the PA solver chains (G2).
+#   ./cluster/submit_suite.sh --wandb configs/suite/pilot_pa.yaml s1-pilot-pa
+task: pa
+stage: final
+cells:
+  cfc_lrc: [ncp]
+  lrc: [ncp]
+param_budget: 30000
+seeds: [0, 1, 2]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 3, walltime: "06:00:00"}
+heavy:
+  arms: [lrc_ncp]
+  cluster: {runs_per_gpu: 1}
