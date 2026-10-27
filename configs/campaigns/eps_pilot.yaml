@@ -58,6 +58,9 @@ constants:
 
 # Task blocks in array order. Only multitimescale sweeps ode_unfolds {1,2,4};
 # the two flat anchors run at uf=1.
+# Deprecated for new runs (#64): multitimescale starts in the rotation regime;
+# kept here for reproducibility. The final suite uses multitimescale_lib
+# (configs/suite/canary_mt_lib_hpo.yaml).
 blocks:
   - {system: multitimescale,  ode_unfolds: [1, 2, 4]}
   - {system: spiral,          ode_unfolds: [1]}

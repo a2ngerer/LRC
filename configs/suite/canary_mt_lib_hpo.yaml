@@ -1,0 +1,17 @@
+# Canary for the H-a task multitimescale_lib (#64): the damped pendulum in the
+# libration box (y0 around (0, pi/8), spread 0.3, t_span (0, 10), the loader
+# checks H < 32 for every initial state). A 2-epoch grid HPO on a reduced grid
+# for the two primary H-a arms. The full arm matrix is written by the suite
+# manifest issue. Submit with BENCH=00_canary:
+#   BENCH=00_canary ./cluster/submit_suite.sh configs/suite/canary_mt_lib_hpo.yaml mt-canary
+# Schema: experiments/suite_manifest.py.
+task: lv
+system: multitimescale_lib
+stage: hpo
+cells: [cfc, cfc_static]
+wirings: [ncp]
+param_budget: 4000
+seeds: [100, 101]
+epochs: 2
+extra_args: [--grid-lr, 1e-3, 3e-3, --grid-clip, "off"]
+cluster: {runs_per_gpu: 4, mem: 16G, walltime: "01:00:00"}
