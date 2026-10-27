@@ -109,18 +109,12 @@ run_count() {
     echo "fits: ${RUN_COUNT}"
 }
 
-# Local provenance for LAUNCH.md.
+# Local commit, -dirty when tracked files differ from it (as
+# src/benchmark/manifest.py _git_sha): `_run_git_sha short` for LAUNCH.md, the
+# full SHA for RUN_GIT_SHA.
 _run_git_sha() {
-    local sha dirty=""
-    sha="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-    if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then dirty=" (dirty)"; fi
-    echo "${sha}${dirty}"
-}
-
-# Full local commit for RUN_GIT_SHA; -dirty when tracked files differ from it.
-_run_git_rev() {
     local sha
-    sha="$(git rev-parse HEAD 2>/dev/null)" || { echo unknown; return 0; }
+    sha="$(git rev-parse ${1:+--short} HEAD 2>/dev/null)" || { echo unknown; return 0; }
     if [[ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
         sha+="-dirty"
     fi
@@ -144,7 +138,7 @@ run_prepare() {
     if [[ "${RUN_RESUME:-0}" -eq 1 ]]; then
         # shellcheck disable=SC2029
         if ! ssh "${CLUSTER_HOST}" "test -f ${RUN_DIR}/LAUNCH.md && cat >> ${RUN_DIR}/LAUNCH.md" \
-                <<<"- Resumed: $(date -u +%FT%TZ), git SHA $(_run_git_sha), \`${RUN_COMMAND:-$0 $LABEL}\`"; then
+                <<<"- Resumed: $(date -u +%FT%TZ), git SHA $(_run_git_sha short), \`${RUN_COMMAND:-$0 $LABEL}\`"; then
             echo "FATAL: no run folder ${RUN_REL} to resume" >&2
             exit 1
         fi
@@ -168,7 +162,7 @@ _run_launch_md() {
 # ${name}
 
 - Purpose: ${LAUNCH_PURPOSE:-<fill in: what question this launch answers>}
-- Code: git SHA $(_run_git_sha) (local \`$(basename "$(pwd)")/\`, branch $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)), synced $(date -u +%FT%TZ)
+- Code: git SHA $(_run_git_sha short) (local \`$(basename "$(pwd)")/\`, branch $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)), synced $(date -u +%FT%TZ)
 - Command: \`${RUN_COMMAND:-$0 $LABEL}\`
 - Env: ${RUN_ENV:-<none>}
 - SLURM job IDs: <pending>
@@ -185,7 +179,7 @@ EOF
 run_sbatch() {
     local sbatch_file="$1" env_assign="${2:-}"
     local cmd="cd ${CLUSTER_REPO_DIR} && export PATH=\$HOME/.local/bin:\$PATH && \
-RUN_GIT_SHA=$(_run_git_rev) ${env_assign}RUN_DIR=${RUN_DIR} sbatch --export=ALL \
+RUN_GIT_SHA=$(_run_git_sha) ${env_assign}RUN_DIR=${RUN_DIR} sbatch --export=ALL \
 ${SBATCH_EXTRA:+${SBATCH_EXTRA} }--output=${RUN_DIR}/logs/%x-%j.out --error=${RUN_DIR}/logs/%x-%j.err ${sbatch_file}"
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
         echo "[dry-run] ssh ${CLUSTER_HOST} \"${cmd}\""

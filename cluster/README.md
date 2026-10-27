@@ -242,12 +242,19 @@ in project `thesis-benchmarks` with group = the campaign (the YAML stem,
 `SUITE_CAMPAIGN`), job_type = `<task>/<stage>` (`SUITE_STAGE`), run name = the
 result JSON stem and tag `protocol:<protocol_version>` (`src/benchmark/tracking.py`
 `track_fit`). Upload a fetched run folder with
-`./cluster/wandb_sync.sh results/<NN_benchmark>/<run>`.
+`./cluster/wandb_sync.sh results/<NN_benchmark>/<run>`. The LV and PA result
+stems carry neither lr nor clip, so in stage hpo the grid points of one arm and
+tuning seed share a run name: split them by `config.lr` / `config.clipnorm` or
+`config.config_hash`.
 
 Every fit stamps `protocol_version` (`PROTOCOL_VERSION` in
 `src/benchmark/checkpoints.py`) and `config_hash` (sha256 of the rest of
-`config.effective`) into `config.effective`. Any change of the frozen protocol
-after the smoke stage S0 is a new `PROTOCOL_VERSION`.
+`config.effective`) into `config.effective`. Besides the builder arguments,
+`config.effective` holds the training knobs (epochs, batch size, clipnorm), the
+data draw and, per task, the evaluation knobs (LV: anchors, horizon, theta) and
+the corruption protocol (committee), so two fits that differ in any of them
+differ in `config_hash`. Any change of the frozen protocol after the smoke
+stage S0, including what `config_hash` covers, is a new `PROTOCOL_VERSION`.
 
 The frozen protocol (F1-2026-10-26, #71) is one hpo and one final YAML per task:
 `configs/suite/{lv,duffing,mt,pa}_{hpo,final}.yaml` and the consensus study

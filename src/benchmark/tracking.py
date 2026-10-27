@@ -50,9 +50,10 @@ def track(enabled, *, group, job_type, name, config, project=DEFAULT_PROJECT,
           tags=None):
     """Yield an active wandb run, or ``None`` when tracking is off/unavailable.
 
-    ``group``/``job_type`` drive the dashboard grouping (group=cell,
-    job_type=wiring); the seed and hyper-parameters belong in ``config`` (tags
-    do not group). The run is always finished on exit -- including on an
+    ``group``/``job_type`` drive the dashboard grouping (the sequence runners
+    via ``track_fit``; the legacy callers run_benchmark.py and
+    run_lotka_volterra_hpo.py pass group=cell, job_type=wiring); the seed and
+    hyper-parameters belong in ``config`` (tags do not group). The run is always finished on exit -- including on an
     exception -- so a crashed trial still flushes its offline data.
     """
     run = None

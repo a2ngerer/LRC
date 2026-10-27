@@ -107,8 +107,8 @@ from src.tasks.person_activity.model import (
 from src.tasks.active_sensing.model import TBT_MODES
 from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
 from src.benchmark.tracking import keras_callbacks, log_summary, track_fit
-from src.benchmark.checkpoints import (rebuild_from_result, save_weights,
-                                       stamp_protocol)
+from src.benchmark.checkpoints import (config_hash, rebuild_from_result,
+                                       save_weights, stamp_protocol)
 from src.evaluation.rollout_metrics import (ANCHOR_HORIZON, ANCHORS, TAU_ORB,
                                             THETA, anchor_metrics,
                                             make_norm_stats,
@@ -525,6 +525,10 @@ def eval_only(path, outdir, anchors, horizon, theta, dynamics=False):
                      anchors, horizon, theta, eff.get("tau_orb", TAU_ORB))
     stale = {k: record[k] for k in fresh if k in record}
     record.update(fresh)
+    # config.effective names the evaluation knobs of this pass (#53)
+    eff.update(anchors=list(anchors), horizon=horizon, theta=theta)
+    if "config_hash" in eff:
+        eff["config_hash"] = config_hash(eff)
     record["eval_only"] = {"max_rel_dev": _rel_dev(stale, fresh)}
     if dynamics:
         t0, wiring = time.time(), eff["build"]["wiring"]
@@ -749,6 +753,11 @@ def main():
         "alpha_min": args.alpha_min if mixed else None,
         "tau_orb": args.tau_orb,
         "deterministic": args.deterministic,
+        # training and evaluation knobs the builder does not take: without
+        # them config_hash cannot tell such fits apart (#53)
+        "epochs": args.epochs, "batch_size": args.batch_size,
+        "clipnorm": args.clipnorm, "anchors": list(args.anchors),
+        "horizon": args.horizon, "theta": args.theta,
         "build": dict(wiring=args.wiring, cell=args.cell, size=args.size,
                       seed=args.seed, feature_size=data.feature_size,
                       loc_dim=data.loc_dim, lr=args.lr,

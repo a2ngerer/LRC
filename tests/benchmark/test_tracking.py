@@ -3,7 +3,8 @@
 # every runner works with wandb absent (the tracking helpers are no-ops), a
 # fake wandb module records what a tracked fit sends (project, group, job_type,
 # name, tags, config, summary), and config.effective carries protocol_version
-# and a config_hash that survives the JSON round trip. Synthetic data only.
+# and a config_hash that survives the JSON round trip and tells fits apart that
+# differ only in a training or evaluation knob. Synthetic data only.
 import json
 import sys
 import types
@@ -26,30 +27,30 @@ SUITE_CONFIG_KEYS = ("cell", "wiring", "system", "seed", "data_seed", "lr",
                      "git_sha", "protocol_version", "config_hash")
 
 
-def _run_lv(tmp_path, monkeypatch):
+def _run_lv(tmp_path, monkeypatch, *extra):
     monkeypatch.setattr(sys, 'argv', _lv_argv(
         tmp_path, '--wiring', 'ncp', '--cell', 'cfc_lrc', '--size', '8',
-        '--seed', '1', '--wandb'))
+        '--seed', '1', '--wandb', *extra))
     lv_runner.main()
     return tmp_path / 'cfc_lrc_ncp_seed1.json'
 
 
-def _run_pa(tmp_path, monkeypatch):
+def _run_pa(tmp_path, monkeypatch, *extra):
     monkeypatch.setattr(pa_pkg, 'load_person_activity', _pa_stub)
     monkeypatch.setattr(sys, 'argv', [
         'run_person_activity_benchmark.py', '--wiring', 'dense3', '--cell',
         'gru', '--size', '4', '--epochs', '2', '--outdir', str(tmp_path),
-        '--wandb'])
+        '--wandb', *extra])
     pa_runner.main()
     return tmp_path / 'gru_dense3_seed0.json'
 
 
-def _run_co(tmp_path, monkeypatch):
+def _run_co(tmp_path, monkeypatch, *extra):
     monkeypatch.setattr(co_runner, 'load_person_activity', _pa_stub)
     monkeypatch.setattr(sys, 'argv', [
         'run_committee_benchmark.py', '--wiring', 'ncp', '--n-columns', '2',
         '--size', '8', '--epochs', '2', '--seq-len', '32', '--vote-lambda',
-        '0.5', '--outdir', str(tmp_path), '--wandb'])
+        '0.5', '--outdir', str(tmp_path), '--wandb', *extra])
     co_runner.main()
     (path,) = tmp_path.glob('*.json')
     return path
@@ -150,6 +151,8 @@ def test_runner_tracks_suite_metadata(runner, tmp_path, monkeypatch):
             record['test_macro_f1_mean_grid'])
         assert [summary[f'test_macro_f1_m{m}'] for m in
                 record['fault_counts']] == record['test_macro_f1_by_fault']
+        assert [summary[f'test_per_position_macro_f1_auc_m{m}'] for m in
+                record['fault_counts']] == record['per_position_macro_f1_auc']
 
 
 def test_adhoc_run_falls_back_to_the_cell(tmp_path, monkeypatch):
@@ -168,3 +171,35 @@ def test_config_hash_ignores_its_own_key_and_tracks_the_config():
         {k: v for k, v in eff.items() if k != 'config_hash'})
     other = stamp_protocol({'task': 'lotka_volterra', 'build': {'lr': 3e-3}})
     assert other['config_hash'] != eff['config_hash']
+
+
+# per runner: knobs outside the builder (training, evaluation, corruption)
+# that config_hash must tell apart; the rerun with no knob keeps the hash
+HASH_KNOBS = {
+    'lv': ((), (), ('--clipnorm', '1'), ('--epochs', '1'),
+           ('--batch-size', '2'), ('--anchors', '2,3')),
+    'pa': ((), (), ('--clipnorm', '1'), ('--epochs', '1'),
+           ('--batch-size', '2')),
+    'co': ((), (), ('--clipnorm', '1'), ('--epochs', '1'),
+           ('--val-seed', '7'))}
+
+
+@pytest.mark.parametrize('runner', sorted(HASH_KNOBS))
+def test_config_hash_tells_training_and_evaluation_knobs_apart(
+        runner, tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, 'wandb', None)
+    run_fit = RUNNERS[runner][0]
+    effs = [json.loads(run_fit(tmp_path / str(i), monkeypatch, *knob)
+                       .read_text())['config']['effective']
+            for i, knob in enumerate(HASH_KNOBS[runner])]
+    hashes = [e['config_hash'] for e in effs]
+    assert hashes[0] == hashes[1]                       # identical rerun
+    assert len(set(hashes[1:])) == len(hashes) - 1      # every knob differs
+    assert all(e['config_hash'] == config_hash(e) for e in effs)
+    if runner == 'lv':
+        # --eval-only with other evaluation knobs records them, new hash
+        path = tmp_path / '0' / 'cfc_lrc_ncp_seed1.json'
+        eff = lv_runner.eval_only(str(path), str(tmp_path / 'ev'), (2, 3), 4,
+                                  0.5)['config']['effective']
+        assert eff['anchors'] == [2, 3]
+        assert eff['config_hash'] == config_hash(eff) == hashes[5]

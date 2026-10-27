@@ -42,8 +42,8 @@ export TF_CPP_MIN_LOG_LEVEL=1
 export PYTHONUNBUFFERED=1
 
 # wandb: offline on the compute node (no worker internet). Runs land under
-# outputs/wandb/, are fetched back by fetch_lotka_volterra.sh, and uploaded
-# locally via cluster/wandb_sync.sh. Opt in with LV_WANDB=1 at submit time;
+# $RUN_DIR/wandb/, come back with the fetched run folder and are uploaded
+# locally via cluster/wandb_sync.sh <run folder>. Opt in with LV_WANDB=1 at submit time;
 # default off keeps existing runs untouched.
 export WANDB_MODE=offline
 export WANDB_DIR="$RUN_DIR/wandb"

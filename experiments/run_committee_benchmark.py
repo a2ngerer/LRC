@@ -421,6 +421,13 @@ def main():
     effective = stamp_protocol({
         "task": "committee", "param_budget": args.param_budget,
         "backbone_layers": bb_effective,
+        # training, data split and corruption knobs outside the builder
+        # (#53 config_hash)
+        "epochs": args.epochs, "batch_size": args.batch_size,
+        "split": d.split, "split_seed": d.split_seed,
+        "train_corruption": args.train_corruption,
+        "corruption_seed": args.corruption_seed, "val_seed": args.val_seed,
+        "test_seeds": test_seeds,
         # no --ode-unfolds here: the cell constructor default applies
         "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
         "views": dict(n_columns=K, mode=args.view_mode,
@@ -514,6 +521,8 @@ def main():
             "val_macro_f1_mean": gv.best if gv.best_epoch else float("nan"),
             "test_macro_f1_mean_grid": float(np.mean(by_fault)),
             **{f"test_macro_f1_m{m}": f for m, f in zip(grid, by_fault)},
+            **{f"test_per_position_macro_f1_auc_m{m}": float(c.mean())
+               for m, c in zip(grid, pos_f1)},
             "vote_lambda_final": vote_strength(model)})
 
     # Correlated failure: one coordinate zeroed in every column, at m = 0.

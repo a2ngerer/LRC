@@ -161,6 +161,10 @@ def run(args):
     effective = stamp_protocol({
         "task": "person_activity", "param_budget": args.param_budget,
         "deterministic": args.deterministic,
+        # training knobs and data split outside the builder (#53 config_hash)
+        "epochs": args.epochs, "batch_size": args.batch_size,
+        "clipnorm": args.clipnorm, "split": data.split,
+        "split_seed": data.split_seed,
         "backbone_layers": bb_effective,
         "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
         "dt_scale": args.dt_scale,
