@@ -10,7 +10,7 @@ wirings: [ncp]
 param_budget: 4000
 seeds: [0, 1, 2, 3, 4]
 extra_seeds: {seeds: [5, 6, 7, 8, 9], arms: [cfc_ncp, cfc_static_ncp]}
-epochs: 300
+epochs: 450
 ode_unfolds: 6
 dt_scale: auto
 extra_args: [--forcing, mixed, --deterministic]

@@ -26,7 +26,7 @@ cells:
 config_from: {ltc_ncp: lrc_ncp, mm_ltc_ncp: lrc_ncp, cfc_mm_ltc_ncp: cfc_mm_lrc_ncp}
 param_budget: 4000
 seeds: [100, 101]
-epochs: 300
+epochs: 450
 ode_unfolds: 6
 dt_scale: auto
 extra_args: [--forcing, mixed, --deterministic]
