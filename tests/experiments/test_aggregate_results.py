@@ -649,31 +649,42 @@ def test_robustness_family_runs_on_metric_robust(tmp_path):
     lv, _ = _suite(tmp_path)
     df = load_sequence_runs(str(lv), 'lv')
     assert ROBUSTNESS_FAMILY not in set(core_contrast_blocks(df)['family'])
-    rob = core_contrast_blocks(df.assign(metric_robust=df['metric']))
+    rob = core_contrast_blocks(df.assign(metric_robust=df['metric'],
+                                         diverged_robust=df['diverged']))
     rob = rob[rob['family'] == ROBUSTNESS_FAMILY]
     assert len(rob) == 6 and set(rob['m']) == {2}
 
 
 def test_robustness_csv_runs_the_second_family(tmp_path):
-    """--robustness (#34) merges metric_robust on (system, arm, seed) of the
-    final fits: the H-c contrasts rerun as the second family (m = 2) with a
-    seed interval (the clean confusions do not apply); a fit without a row
-    is left out, a tuning-seed row is ignored, a duplicate row raises."""
+    """--robustness (#34) merges metric_robust and diverged_robust on
+    (system, arm, seed) of the final fits: the H-c contrasts rerun as the
+    second family (m = 2) with a seed interval (the clean confusions do not
+    apply) and the robustness set's divergence flag: a fit diverged only on
+    the OOD set enters at VPT 0, one diverged only on the clean test set
+    keeps its OOD value. A fit without a row is left out, a tuning-seed row
+    is ignored; a duplicate row, a CSV without diverged_robust and a row of
+    another config raise. The report has the per-arm robustness table."""
     from experiments.aggregate_results import ROBUSTNESS_FAMILY
+    from src.benchmark.checkpoints import config_hash
     lv, pa = _suite(tmp_path)
     rows = []
     for s in range(10):
-        _write_lv_fit(lv, 'duffing', 'cfc_lrc', 'dense3', s, 5.0)
+        _write_lv_fit(lv, 'duffing', 'cfc_lrc', 'dense3', s, 5.0,
+                      rate_unbounded=1.0 if s == 5 else 0.0)  # clean only
         _write_pa_fit(pa, 'cfc_lrc', 'dense3', s, 0.5,
                       {f'r{i}': [[3, 3], [2, 4 + i]] for i in range(4)})
-        rows += [('duffing', 'cfc_lrc/ncp', s, 8.0 + s),
-                 ('duffing', 'cfc_lrc/dense3', s, 4.0),
-                 ('pa', 'cfc_lrc/ncp', s, 0.7),
-                 ('pa', 'cfc_lrc/dense3', s, 0.4 + s / 100)]
+        rows += [('duffing', 'cfc_lrc/ncp', s, 8.0 + s, s == 9),  # OOD only
+                 ('duffing', 'cfc_lrc/dense3', s, 4.0, False),
+                 ('pa', 'cfc_lrc/ncp', s, 0.7, False),
+                 ('pa', 'cfc_lrc/dense3', s, 0.4 + s / 100, False)]
     csv = tmp_path / 'rob.csv'
-    cols = ['system', 'arm', 'seed', 'metric_robust']
-    pd.DataFrame(rows[1:] + [('duffing', 'cfc_lrc/ncp', 100, 1.0)],
-                 columns=cols).to_csv(csv, index=False)
+    cols = ['system', 'arm', 'seed', 'metric_robust', 'diverged_robust']
+
+    def write(rows, sha=config_hash({'ode_unfolds': 6})):
+        pd.DataFrame(rows, columns=cols).assign(
+            config_effective_sha256=sha, ood_nrmse_128_median=0.25).to_csv(
+            csv, index=False)
+    write(rows[1:] + [('duffing', 'cfc_lrc/ncp', 100, 1.0, False)])
     out = tmp_path / 'out'
     argv = ['--runs', str(tmp_path / 'none'), '--out', str(out),
             '--rollout-runs', str(lv), '--pa-runs', str(pa), '--contrasts',
@@ -686,15 +697,28 @@ def test_robustness_csv_runs_the_second_family(tmp_path):
     assert set(rob['endpoint']) == {'metric_robust'}
     d = rob.loc[('duffing', 'cfc_lrc/ncp')]
     assert (d['n_pairs'], d['status'], d['ci_units']) == (9, 'tested', 'seed')
-    assert d['median_diff'] == 9.0       # seeds 1-9: 9+s-4 .. 17-4
+    # seeds 1-8: 8+s-4; seed 9 diverged on the OOD set: 0-4
+    assert d['median_diff'] == 8.0
+    assert d['diverged_a'].startswith('1/9') and d['diverged_b'].startswith(
+        '0/9')
     p = rob.loc[('pa', 'cfc_lrc/ncp')]
     assert (p['n_pairs'], p['ci_units']) == (10, 'seed')
     assert rob.loc[('pa', 'cfc_lrc/cncp'), 'status'] == 'missing'
     hc = blocks[(blocks['family'] == 'H-c') & (blocks['task'] == 'pa')
                 & (blocks['a'] == 'cfc_lrc/ncp')]
     assert hc['ci_units'].item() == 'seed x recording'
-    pd.DataFrame(rows + rows[:1], columns=cols).to_csv(csv, index=False)
+    summary = (out / 'summary.md').read_text()
+    assert '| duffing | cfc_lrc/dense3 | 10 | 0 | 4 | 0.25 |' in summary
+    assert '| duffing | cfc_lrc/ncp | 9 | 1 |' in summary
+    write(rows + rows[:1])
     with pytest.raises(SystemExit, match='two robustness rows'):
+        main(argv)
+    write(rows, sha='0' * 64)
+    with pytest.raises(SystemExit, match='config_effective_sha256'):
+        main(argv)
+    pd.DataFrame(rows, columns=cols).drop(columns='diverged_robust').to_csv(
+        csv, index=False)
+    with pytest.raises(SystemExit, match='without diverged_robust'):
         main(argv)
 
 

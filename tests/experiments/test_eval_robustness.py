@@ -5,6 +5,7 @@
 # one CSV row per fit keyed like aggregate_results.load_sequence_runs.
 import json
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -43,20 +44,59 @@ def _pa_fit(d, monkeypatch, epochs, *extra):
 
 
 def test_ood_initial_conditions_leave_the_training_hull():
-    """Spread 0.8 puts initial conditions outside the convex hull of the
-    training draw at 0.4 (LV and Duffing)."""
+    """At OOD_SPREAD most initial conditions lie outside the convex hull of
+    the training draw at 0.4 (LV and Duffing); draws at the training spread
+    do so far less often, so a smaller OOD_SPREAD fails the check."""
     for system in er.SYSTEMS:
-        train = load_lotka_volterra(n_trajectories=48, seq_len=2,
-                                    system=system).train_traj[:, 0]
-        ood = sample_ood_trajectories(er.N_ROLLOUT, 0, er.OOD_SPREAD,
-                                      seq_len=2, system=system)[:, 0]
-        assert (Delaunay(train).find_simplex(ood) < 0).any(), system
+        hull = Delaunay(load_lotka_volterra(
+            n_trajectories=48, seq_len=2, system=system).train_traj[:, 0])
+
+        def outside(spread):
+            ic = sample_ood_trajectories(er.N_ROLLOUT, 0, spread, seq_len=2,
+                                         system=system)[:, 0]
+            return int((hull.find_simplex(ic) < 0).sum())
+        assert outside(er.OOD_SPREAD) >= er.N_ROLLOUT // 2 > outside(0.4), \
+            system
 
 
-def test_sigma_zero_reproduces_the_clean_metric(tmp_path, monkeypatch):
+def test_noise_perturbs_only_the_coordinates():
+    """sigma > 0: Gaussian noise of sigma x the training std on the x, y, z
+    coordinates (features 4:7) only, N_DRAWS distinct draws that repeat on
+    the next call; sigma 0 feeds the clean test inputs once."""
+    rng = np.random.default_rng(0)
+    data = SimpleNamespace(
+        train_x=(rng.normal(size=(40, 30, 7)) * [1, 1, 1, 1, 2, 3, 4]
+                 ).astype(np.float32),
+        test_x=rng.normal(size=(20, 30, 7)).astype(np.float32),
+        test_t=np.ones((20, 30, 1), np.float32),
+        test_y=rng.integers(0, 3, (20, 30)), num_classes=3)
+    seen = []
+
+    class Stub:
+        def predict(self, inputs, batch_size, verbose):
+            seen.append(inputs[0])
+            return np.zeros((*inputs[0].shape[:2], 3))
+    er.noisy_macro_f1(Stub(), data, 0.0)
+    assert len(seen) == 1 and np.array_equal(seen.pop(), data.test_x)
+    er.noisy_macro_f1(Stub(), data, 0.3)
+    er.noisy_macro_f1(Stub(), data, 0.3)
+    assert len(seen) == 2 * er.N_DRAWS
+    train_std = data.train_x[..., 4:].reshape(-1, 3).std(axis=0)
+    for x in seen[:er.N_DRAWS]:
+        noise = x - data.test_x
+        assert not noise[..., :4].any()
+        np.testing.assert_allclose(noise[..., 4:].std(axis=(0, 1)),
+                                   0.3 * train_std, rtol=0.1)
+    assert all(map(np.array_equal, seen[:er.N_DRAWS], seen[er.N_DRAWS:]))
+    assert not np.array_equal(seen[0], seen[1])
+
+
+def test_sigma_zero_reproduces_the_clean_metric(tmp_path, monkeypatch,
+                                                capsys):
     """The runner saves the best-val epoch's weights (here epoch 2 of 3,
     val curve scripted), so sigma 0 on the rebuilt fit is the runner's test
-    macro-F1; the noisy draws are fixed."""
+    macro-F1 (rebuild_rel_dev 0); the noisy draws are fixed. A stored
+    test_macro_f1 the rebuilt fit does not reproduce is warned about."""
     real_f1, real_cms, val_weights = (pa_runner.macro_f1,
                                       pa_runner.split_confusions, [])
 
@@ -80,16 +120,24 @@ def test_sigma_zero_reproduces_the_clean_metric(tmp_path, monkeypatch):
     row = er.evaluate(str(path))
     assert row['f1_sigma_0'] == record['test_macro_f1']
     assert row['metric_robust'] == row['f1_sigma_0.3']
+    assert row['rebuild_rel_dev'] == 0 and row['diverged_robust'] is False
     assert (row['task'], row['system'], row['arm']) == (
         'pa', 'pa', 'cfc_lrc/ncp [dt_scale=1, fixed width]')
     assert er.evaluate(str(path))['f1_sigma_0.3'] == row['f1_sigma_0.3']
+    assert 'WARNING' not in capsys.readouterr().out
+    record['test_macro_f1'] += 0.1      # e.g. a JSON of last-epoch weights
+    path.write_text(json.dumps(record))
+    assert er.evaluate(str(path))['rebuild_rel_dev'] > er.REBUILD_TOL
+    assert 'WARNING' in capsys.readouterr().out
 
 
 def test_script_runs_on_two_epoch_fits_of_each_task(tmp_path, monkeypatch):
     """LV (two arms of one replicate), Duffing and PA: one row per fit with
     the loader's arm key; both arms of the replicate get the same fresh
     draws (OOD at spread 0.8 over seq_len, the long set at the fit's spread
-    over the last anchor + 256 steps); other JSONs are skipped."""
+    over the last anchor + 256 steps, from its own seed); every rebuilt fit
+    reproduces its clean metric, diverged_robust is the OOD set's flag;
+    other JSONs are skipped."""
     for wiring in ('ncp', 'dense3'):
         _lv_fit(tmp_path / 'lv', monkeypatch, 'periodic_predator_prey',
                 wiring)
@@ -113,7 +161,10 @@ def test_script_runs_on_two_epoch_fits_of_each_task(tmp_path, monkeypatch):
     key = ['system', 'arm', 'seed']
     assert sorted(map(tuple, rows[key].values.tolist())) == sorted(
         map(tuple, seq[key].values.tolist()))
+    assert (rows['rebuild_rel_dev'] <= er.REBUILD_TOL).all()
     lv = rows[rows['task'] == 'lv']
+    assert (lv['diverged_robust'] == ((lv['ood_rate_unbounded'] == 1)
+                                      | lv['ood_non_finite'])).all()
     assert (lv['metric_robust'] == lv['ood_vpt_multi_median']).all()
     assert (lv['ood_horizon'] == 8).all()
     assert (lv['ood_anchor_horizon'] == 4).all()
@@ -132,6 +183,7 @@ def test_script_runs_on_two_epoch_fits_of_each_task(tmp_path, monkeypatch):
     assert ppp[:2] == ppp[2:]                 # ncp and dense3 share the draws
     ood, long = ppp[:2]
     assert ood[:4] == (er.N_ROLLOUT, 20260702 + er.SEED_OFFSET, 0.8, 8)
-    assert long[2:4] == (0.4, 4 + er.LONG_HORIZON)
+    assert long[1:4] == (20260702 + er.LONG_SEED_OFFSET, 0.4,
+                         4 + er.LONG_HORIZON)
     assert ood[5] == (0.0, 10.0)              # the fit's dt: 10 / 8 per step
     assert long[5] == (0.0, 10.0 * (4 + er.LONG_HORIZON) / 8)

@@ -17,9 +17,10 @@ reproduces it. Columns f1_sigma_<sigma>.
 Rollouts (run_lotka_volterra_benchmark.py JSONs of SYSTEMS on
 FORCEABLE_WIRINGS): two fresh sets of N_ROLLOUT trajectories, drawn through
 sample_ood_trajectories (the code path of the runner's --ic-spread) at the
-fit's dt from seed data_seed + SEED_OFFSET (shared by every arm of a
-replicate, disjoint from every training draw) and normalised with the fit's
-training statistics:
+fit's dt and normalised with the fit's training statistics. Each set has its
+own seed, data_seed + SEED_OFFSET (ood) and data_seed + LONG_SEED_OFFSET
+(long): shared by every arm of a replicate, disjoint from every training
+draw and from each other.
   * ood:  initial-condition spread OOD_SPREAD (0.8 instead of 0.4), the fit's
           seq_len, anchors, horizon and theta;
   * long: the fit's spread and anchors, LONG_HORIZON (256) free-run steps
@@ -31,12 +32,19 @@ anchor_metrics (multi-anchor VPT, #62). Columns ood_<key> / long_<key>
 (nested keys joined by '_').
 
 Every row: file, task, system ('pa' on Person Activity), arm (the label of
-aggregate_results.arm_label), cell, wiring, seed, config_effective_sha256 and
+aggregate_results.arm_label), cell, wiring, seed, config_effective_sha256,
 metric_robust, the pre-registered decision value (protocol freeze
 F1-2026-10-26, decision n): f1_sigma_0.3 on Person Activity,
-ood_vpt_multi_median on the rollouts. `aggregate_results.py --contrasts
---robustness CSV` runs the H-c contrasts on it as the second Bonferroni family
-(m = 2 per task).
+ood_vpt_multi_median on the rollouts; diverged_robust, the divergence flag of
+that evaluation (rollouts: every OOD rollout unbounded or a non-finite one,
+as load_sequence_runs on the clean test set; Person Activity: non-finite
+f1_sigma_0.3); rebuild_rel_dev, the relative deviation of the rebuilt fit's
+clean primary metric (f1_sigma_0, the test set's vpt_multi_median) from the
+stored one, printed as a warning above REBUILD_TOL (decision s; e.g. a Person
+Activity JSON written before the runner saved the best-val epoch's weights).
+`aggregate_results.py --contrasts --robustness CSV` runs the H-c contrasts on
+metric_robust and diverged_robust as the second Bonferroni family (m = 2 per
+task).
 
 Skipped with a message: committee and other JSONs, rollout systems without an
 OOD set (multitimescale_lib), wirings without a ForcedRolloutCell view.
@@ -79,7 +87,9 @@ N_ROLLOUT = 16
 OOD_SPREAD = 0.8
 LONG_HORIZON = 256
 SEED_OFFSET = 10 ** 6
+LONG_SEED_OFFSET = SEED_OFFSET + 1
 SYSTEMS = ("periodic_predator_prey", "duffing")
+REBUILD_TOL = 1e-3
 
 
 def noisy_macro_f1(model, data, sigma, batch_size=128):
@@ -95,6 +105,17 @@ def noisy_macro_f1(model, data, sigma, batch_size=128):
         f1.append(macro_f1(confusion_matrix(data.test_y, pred,
                                             data.num_classes)))
     return float(np.mean(f1))
+
+
+def rebuild_dev(path, recomputed, stored):
+    """Relative deviation of the rebuilt fit's clean primary metric from the
+    stored one; a warning above REBUILD_TOL."""
+    dev = float(abs(recomputed - stored) / max(abs(stored), 1e-12))
+    if not dev <= REBUILD_TOL:
+        print(f"WARNING {path}: the rebuilt fit's clean metric "
+              f"{recomputed:.6g} deviates from the stored {stored:.6g} by "
+              f"{dev:.3g} (> {REBUILD_TOL:g}); weights of another epoch?")
+    return dev
 
 
 def rollout_set(model, data, trajs, anchors, horizon, theta, tau_orb):
@@ -117,7 +138,8 @@ def rollout_set(model, data, trajs, anchors, horizon, theta, tau_orb):
 
 
 def rollout_columns(path, record):
-    """ood_* / long_* columns and metric_robust of a rollout fit."""
+    """ood_* / long_* columns, metric_robust, diverged_robust and
+    rebuild_rel_dev of a rollout fit."""
     eff = record["config"]["effective"]
     data = load_effective_data(eff)
     model = rebuild_from_result(path)
@@ -126,23 +148,33 @@ def rollout_columns(path, record):
                                m["anchor_theta"])
     t0, t1 = data.t_span
 
-    def draw(spread, steps):    # the fit's dt over `steps` steps
+    def draw(offset, spread, steps):    # the fit's dt over `steps` steps
         return sample_ood_trajectories(
-            N_ROLLOUT, eff["data_seed"] + SEED_OFFSET, spread, steps,
+            N_ROLLOUT, eff["data_seed"] + offset, spread, steps,
             data.system, (t0, t0 + (t1 - t0) * steps / data.seq_len))
 
     tau_orb = eff.get("tau_orb", TAU_ORB)
-    sets = {"ood": rollout_set(model, data, draw(OOD_SPREAD, data.seq_len),
+    sets = {"ood": rollout_set(model, data,
+                               draw(SEED_OFFSET, OOD_SPREAD, data.seq_len),
                                anchors, horizon, theta, tau_orb),
             "long": rollout_set(model, data,
-                                draw(data.spread, max(anchors) + LONG_HORIZON),
+                                draw(LONG_SEED_OFFSET, data.spread,
+                                     max(anchors) + LONG_HORIZON),
                                 anchors, LONG_HORIZON, theta, tau_orb)}
+    clean = rollout_set(model, data, data.test_traj, anchors, horizon, theta,
+                        tau_orb)["vpt_multi_median"]
+    ood = sets["ood"]
     return {**pd.json_normalize(sets, sep="_").iloc[0].to_dict(),
-            "metric_robust": sets["ood"]["vpt_multi_median"]}
+            "metric_robust": ood["vpt_multi_median"],
+            "diverged_robust": bool(ood["rate_unbounded"] == 1
+                                    or ood["non_finite"]),
+            "rebuild_rel_dev": rebuild_dev(path, clean,
+                                           m["vpt_multi_median"])}
 
 
 def pa_columns(path, record, data_path=None):
-    """f1_sigma_* columns and metric_robust of a Person Activity fit."""
+    """f1_sigma_* columns, metric_robust, diverged_robust and
+    rebuild_rel_dev of a Person Activity fit."""
     model = rebuild_from_result(path)
     data = load_person_activity(
         seq_len=record["config"]["effective"]["build"]["seq_len"],
@@ -151,7 +183,11 @@ def pa_columns(path, record, data_path=None):
     cols = {f"f1_sigma_{s:g}": noisy_macro_f1(model, data, s,
                                               record.get("batch_size", 128))
             for s in SIGMAS}
-    return {**cols, "metric_robust": cols[f"f1_sigma_{SIGMA_DECISION:g}"]}
+    f1 = cols[f"f1_sigma_{SIGMA_DECISION:g}"]
+    return {**cols, "metric_robust": f1,
+            "diverged_robust": not np.isfinite(f1),
+            "rebuild_rel_dev": rebuild_dev(path, cols["f1_sigma_0"],
+                                           record["test_macro_f1"])}
 
 
 def evaluate(path, data_path=None):
