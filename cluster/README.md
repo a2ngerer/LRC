@@ -255,15 +255,21 @@ data draw and, per task, the evaluation knobs (LV: anchors, horizon, theta) and
 the corruption protocol (committee), so two fits that differ in any of them
 differ in `config_hash`. Any change of the frozen protocol after the smoke
 stage S0, including what `config_hash` covers, is a new `PROTOCOL_VERSION`.
-Exception: a key that records a decision pre-registered in F1 and taken at S0
-(op-determinism, F1 decision l, #76) does not bump the version.
+Exceptions that do not bump the version: a key that records a decision
+pre-registered in F1 and taken at S0 (op-determinism, F1 decision l, #76), and
+a change pre-registered in F1 and decided at S1 (the epochs of the S1 epoch
+gate, F1 decision m, #78); both change `config_hash`.
 
 The frozen protocol (F1-2026-10-26, #71) is one hpo and one final YAML per task:
 `configs/suite/{lv,duffing,mt,pa}_{hpo,final}.yaml` and the consensus study
 `co_k3_hpo.yaml`, `co_k3_final.yaml`, `co_k30_final.yaml` (K = 30 after the
 transfer guard `guard_co_k30_transfer.yaml`, resumed into its run folder), plus
 `mt_final_static_w.yaml` and the descriptive controls `control_*.yaml` (own run
-folders: their result names equal those of the main arm). Before a final stage,
+folders: their result names equal those of the main arm). Rollout arms train
+300 epochs and Person Activity 50; after the S1 epoch gate (G0-E, F1 decision
+m) Duffing and multitimescale_lib train 450 (`duffing_{hpo,final}.yaml`,
+`mt_{hpo,final}.yaml`, #78), so their mixed-forcing ramp (`AlphaSchedule`,
+`epochs // 2`) spans 225 epochs. Before a final stage,
 set `hpo_dir` to the fetched HPO run. For lv the manifest adds the multi-anchor
 endpoint (`--anchors 8,16,24,32 --horizon 96`) and the system's `--ic-spread`;
 arms without HPO name their reference under `config_from`; Person Activity runs

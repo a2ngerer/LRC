@@ -12,7 +12,7 @@ cells: [cfc, cfc_static, gru, ctrnn]
 wirings: [ncp]
 param_budget: 4000
 seeds: [100, 101]
-epochs: 300
+epochs: 450
 ode_unfolds: 6
 dt_scale: auto
 extra_args: [--forcing, mixed, --deterministic]
