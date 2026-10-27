@@ -10,10 +10,15 @@ Campaign YAML (configs/suite/*.yaml):
     param_budget: 4000          # optional
     seeds: [0, 1]               # hpo: the two tuning seeds; final: the replicates
     epochs: 300                 # optional, the runner default if unset
+    ode_unfolds: 6              # required: Euler sub-steps of the solver cells
+    dt_scale: auto              # required: auto (1 / the task's dt) or a number
+                                # both go to every runner call; per_cell
+                                # overrides them for a control arm (protocol
+                                # freeze F1-2026-10-26 a, h)
     extra_args: []              # appended to every call (run_grid_hpo.py
                                 # forwards what it does not know to the runner)
     per_cell:                   # optional flags for the arms of one cell,
-      lrc: {ode_unfolds: 6}     # key -> --key-with-dashes value (true = bare flag)
+      lrc: {ode_unfolds: 1}     # key -> --key-with-dashes value (true = bare flag)
     hpo_dir: results/01_lotka_volterra/<run>/results/hpo   # final only: the
                                 # fetched HPO run (cluster/fetch_run.sh)
     cluster: {runs_per_gpu: 4, mem: 32G, walltime: "12:00:00", cpus: 12,
@@ -55,8 +60,8 @@ import yaml
 RUNNERS = {"lv": "experiments/run_lotka_volterra_benchmark.py",
            "pa": "experiments/run_person_activity_benchmark.py"}
 KEYS = {"task", "system", "stage", "cells", "wirings", "param_budget", "seeds",
-        "epochs", "extra_args", "per_cell", "hpo_dir", "cluster", "heavy",
-        "description"}
+        "epochs", "ode_unfolds", "dt_scale", "extra_args", "per_cell", "hpo_dir",
+        "cluster", "heavy", "description"}
 CLUSTER_KEYS = ("runs_per_gpu", "mem", "walltime", "cpus", "array_throttle")
 
 
@@ -69,6 +74,15 @@ def load(path):
     for k in ("task", "stage", "cells", "wirings", "seeds"):
         if not cfg.get(k):
             raise SystemExit(f"{path}: '{k}' is required")
+    # Written by the campaign, never left to a runner or cell default.
+    for k in ("ode_unfolds", "dt_scale"):
+        if cfg.get(k) is None:
+            raise SystemExit(f"{path}: '{k}' is required")
+    if not (isinstance(cfg["ode_unfolds"], int) and cfg["ode_unfolds"] >= 1):
+        raise SystemExit(f"{path}: ode_unfolds must be an integer >= 1")
+    if cfg["dt_scale"] != "auto" and not (
+            isinstance(cfg["dt_scale"], (int, float)) and cfg["dt_scale"] > 0):
+        raise SystemExit(f"{path}: dt_scale must be auto or a positive number")
     if cfg["task"] not in RUNNERS:
         raise SystemExit(f"{path}: task must be lv or pa")
     if cfg["stage"] not in ("hpo", "final"):
@@ -145,6 +159,8 @@ def expand(cfg, wandb=False):
         common += ["--param-budget", str(cfg["param_budget"])]
     if cfg.get("epochs") is not None:
         common += ["--epochs", str(cfg["epochs"])]
+    common += ["--ode-unfolds", str(cfg["ode_unfolds"]),
+               "--dt-scale", str(cfg["dt_scale"])]
     lines, missing = [], []
     for cell in cfg["cells"]:
         for wiring in cfg["wirings"]:

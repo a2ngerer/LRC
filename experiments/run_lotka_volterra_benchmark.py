@@ -74,7 +74,7 @@ from src.tasks.person_activity.model import (
     backbone_override, backbone_suffix, budget_sizes, effective_backbone_layers,
     effective_self_recurrent, add_multi_column_args, multi_column_config,
     multi_column_suffix, ode_unfolds_override, effective_ode_unfolds,
-    DEFAULT_ODE_UNFOLDS)
+    DEFAULT_ODE_UNFOLDS, dt_scale_arg, resolve_dt_scale)
 from src.tasks.active_sensing.model import TBT_MODES
 from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
 from src.benchmark.tracking import keras_callbacks, track
@@ -330,9 +330,10 @@ def main():
                          "numerical ODE cells (ltc, lrc, lrc_pm, ctrnn, "
                          "mm_ltc, mm_lrc); ignored for closed-form and discrete "
                          "cells")
-    ap.add_argument("--dt-scale", type=float, default=1.0,
+    ap.add_argument("--dt-scale", type=dt_scale_arg, default=1.0,
                     help="multiply the elapsed time by this factor before it "
-                         "reaches any cell; 1.0 = unchanged")
+                         "reaches any cell; 1.0 = unchanged, auto = 1 / dt "
+                         "(12.8 LV, 5.12 Duffing on the default time span)")
     ap.add_argument("--backbone-layers", type=int, default=None,
                     help="CfC-family backbone depth for EVERY wiring (overrides "
                          "the default 1 of every wiring; 0 = no backbone); "
@@ -386,9 +387,10 @@ def main():
                                seq_len=args.seq_len, seed=data_seed,
                                system=args.system, t_span=args.t_span)
     split = [len(data.train_x), len(data.val_x), len(data.test_x)]
+    args.dt_scale = resolve_dt_scale(args.dt_scale, data.dt)
     print(f"[{args.system}] train/val/test {split} trajectories (data seed "
           f"{data_seed}), seq_len {data.seq_len}, dt {data.dt:.4f}, "
-          f"loc_dim {data.loc_dim}")
+          f"dt_scale {args.dt_scale:g}, loc_dim {data.loc_dim}")
 
     def build(size):
         return build_lotka_volterra_model(
@@ -533,7 +535,7 @@ def main():
             "data_seed": data_seed, "split": split,
             "param_budget": args.param_budget, "backbone_layers": bb_effective,
             "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
-            "forcing": args.forcing,
+            "dt_scale": args.dt_scale, "forcing": args.forcing,
             "alpha_min": args.alpha_min if mixed else None,
             "build": dict(wiring=args.wiring, cell=args.cell, size=args.size,
                           seed=args.seed, feature_size=data.feature_size,

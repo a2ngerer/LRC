@@ -230,6 +230,25 @@ def ode_unfolds_override(cell, ode_unfolds):
     return {"ode_unfolds": int(ode_unfolds)}
 
 
+def dt_scale_arg(value):
+    """argparse type of the runners' --dt-scale: a float, or 'auto' for the
+    protocol value 1 / dt of the task (resolve_dt_scale)."""
+    return value if value == "auto" else float(value)
+
+
+def resolve_dt_scale(dt_scale, dt):
+    """Numeric dt_scale of a run: 'auto' -> 1 / dt, with dt the task's own
+    step (protocol freeze F1-2026-10-26): the rollout grid step (128 steps:
+    12.8 Lotka-Volterra on (0, 10), 5.12 Duffing on (0, 25), 12.8
+    multitimescale_lib on (0, 10)) or the median elapsed time of the Person
+    Activity train split. A number passes through."""
+    if dt_scale != "auto":
+        return float(dt_scale)
+    if not dt > 0:
+        raise ValueError(f"dt_scale auto needs a positive dt, got {dt}")
+    return 1.0 / float(dt)
+
+
 def effective_ode_unfolds(cell, cell_kwargs):
     """Euler sub-steps per input step this arm's cells actually run (None:
     closed-form or discrete cell). An explicit cell_kwargs value wins, else the
