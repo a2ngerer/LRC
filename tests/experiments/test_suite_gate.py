@@ -1,10 +1,13 @@
 # tests/experiments/test_suite_gate.py
 # S0 smoke gate (issue a2ngerer/LRC#72): a synthetic run of the 93 smoke
 # arm-tasks (plus one committee fit outside the list) passes with exit 0; one
-# failure per check class fails exactly that check with exit 1.
+# failure per check class fails exactly that check with exit 1. Corrections
+# after the first S0 run (#74): all-undefined inv_drift_* summaries are listed,
+# a slow determinism probe is a DECISION, a missing probe fails.
 import copy
 import json
 import math
+import re
 
 import pytest
 
@@ -26,7 +29,17 @@ def _rollout_metrics():
     return {'vpt_multi_median': 4.0, 'nrmse_32_anchor_8': 0.9,
             'nrmse_32_median': 0.9, 'non_finite': False, 'rate_ok': 0.5,
             'rate_bounded_wrong': 0.5, 'rate_unbounded': 0.0,
+            'inv_drift_32_median': 0.1, 'n_inv_drift_undefined': 0,
             **{f'vpt_anchor_{a}': 4.0 for a in (8, 16, 24, 32)}}
+
+
+def _undefined(m, **extra):
+    """Every trajectory of a rollout metrics block violates positivity (the
+    ctrnn/dense LV fit of the first S0 run): the inv_drift_* summaries are
+    NaN and n_inv_drift_undefined equals the trajectory count."""
+    m.update({**{f'inv_drift_{h}_{s}': math.nan for h in (32, 128, 'max')
+                 for s in ('median', 'mean')},
+              'n_inv_drift_undefined': 16, **extra})
 
 
 def _fit(key, cell, wiring):
@@ -41,7 +54,8 @@ def _fit(key, cell, wiring):
            'budget_deviation': 0.01, 'weights_path': 'weights.h5',
            'config': {'effective': eff}}
     if task == 'lotka_volterra':
-        eff.update(dt_scale=12.8, forcing='mixed', data_seed=DATA_SEED)
+        eff.update(dt_scale=12.8, forcing='mixed', data_seed=DATA_SEED,
+                   anchors=[8, 16, 24, 32])
         rec.update(system=key, data_seed=DATA_SEED,
                    rollout_metrics_val=_rollout_metrics(),
                    rollout_metrics_test=_rollout_metrics())
@@ -70,18 +84,25 @@ def suite():
 
 
 def _gate(tmp_path, fits, probe, floors):
-    """Write one run folder per task key, run the gate; (exit, report)."""
+    """Write one run folder per task key, run the gate; (exit, report).
+    probe: a dict or raw text (written to probe.json), a path (passed as
+    is) or None (no --determinism)."""
     runs = set()
     for (key, arm, folder), rec in fits.items():
         d = tmp_path / f'run_{key}' / 'results' / 'hpo' / arm / folder
         d.mkdir(parents=True)
         (d / f'{arm}_seed100.json').write_text(json.dumps(rec))
         runs.add(str(tmp_path / f'run_{key}'))
-    (tmp_path / 'probe.json').write_text(json.dumps(probe))
+    det = []
+    if isinstance(probe, (dict, str)):
+        (tmp_path / 'probe.json').write_text(
+            probe if isinstance(probe, str) else json.dumps(probe))
+        probe = tmp_path / 'probe.json'
+    if probe is not None:
+        det = ['--determinism', str(probe)]
     (tmp_path / 'floors.json').write_text(json.dumps(floors))
     out = tmp_path / 'REPORT.md'
-    code = main(['--stage', 's0', '--runs', *sorted(runs),
-                 '--determinism', str(tmp_path / 'probe.json'),
+    code = main(['--stage', 's0', '--runs', *sorted(runs), *det,
                  '--floors', str(tmp_path / 'floors.json'),
                  '--out', str(out)])
     return code, out.read_text()
@@ -101,6 +122,11 @@ def test_passing_fixture(tmp_path, suite):
     assert ('- multitimescale_lib/cfc_ncp: '
             'rollout_metrics_val.inv_drift_32_median') in report
     assert '- co/ncp_cons' in report.split('outside the expected arm list')[1]
+    # the pipes of |Delta| are escaped: the row keeps its four columns
+    row = next(r for r in report.splitlines()
+               if r.startswith('| determinism |'))
+    assert '\\|Delta on\\|' in row
+    assert len(re.split(r'(?<!\\)\|', row)) == 6, row
 
 
 def _arm(fits, key, arm):
@@ -109,6 +135,12 @@ def _arm(fits, key, arm):
 
 def _eff(fits, key, arm):
     return _arm(fits, key, arm)['config']['effective']
+
+
+def _to_top(fits, key, arm, field):
+    """Move a config.effective field to the top level of the record (only
+    weights_path is read there)."""
+    _arm(fits, key, arm)[field] = _eff(fits, key, arm).pop(field)
 
 
 LV, DUF, MT = ROLLOUT
@@ -123,8 +155,15 @@ FAILURES = {
         f, 'pa', 'cfc_dense').__setitem__('weights_path', None)),
     'no forcing': ('config', lambda f, p, fl: _eff(f, MT, 'gru_ncp').pop(
         'forcing')),
+    'no anchors': ('config', lambda f, p, fl: _eff(f, DUF, 'lstm_ncp').pop(
+        'anchors')),
+    'dt_scale only at the top level': ('config', lambda f, p, fl: _to_top(
+        f, 'pa', 'gru_ncp', 'dt_scale')),
     'no protocol_version': ('protocol_version', lambda f, p, fl: _eff(
         f, DUF, 'lrc_ncp').pop('protocol_version')),
+    'protocol_version only at the top level': (
+        'protocol_version', lambda f, p, fl: _to_top(
+            f, LV, 'gru_ncp', 'protocol_version')),
     'two protocol versions': ('protocol_version', lambda f, p, fl: _eff(
         f, LV, 'lrc_ncp').__setitem__('protocol_version', 'F1-2026-10-27')),
     'no anchor key': ('metrics', lambda f, p, fl: _arm(
@@ -140,6 +179,12 @@ FAILURES = {
     'inv_drift NaN outside multitimescale_lib': ('nan', lambda f, p, fl: _arm(
         f, LV, 'gru_dense')['rollout_metrics_val'].__setitem__(
             'inv_drift_32_median', math.nan)),
+    'NaN beside undefined inv_drift': ('nan', lambda f, p, fl: _undefined(
+        _arm(f, LV, 'ctrnn_dense')['rollout_metrics_val'],
+        nrmse_32_median=math.nan)),
+    'Inf inv_drift of an undefined block': ('nan', lambda f, p, fl: _undefined(
+        _arm(f, DUF, 'gru_dense')['rollout_metrics_test'],
+        inv_drift_32_mean=math.inf)),
     'over budget': ('budget', lambda f, p, fl: _arm(
         f, 'pa', 'cfc_ncp').__setitem__('budget_above_tolerance', True)),
     'interp elastance': ('elastance', lambda f, p, fl: _eff(
@@ -150,8 +195,6 @@ FAILURES = {
         f, 'pa', 'ctrnn_dense3').__setitem__('ode_unfolds', 1)),
     'ltc without ode_unfolds': ('ode_unfolds', lambda f, p, fl: _eff(
         f, DUF, 'ltc_ncp').__setitem__('ode_unfolds', None)),
-    'slow determinism': ('determinism', lambda f, p, fl: p['tasks']['pa']
-                         .__setitem__('ratio_on_off', 1.4)),
     'irreproducible on pair': ('determinism', lambda f, p, fl: p['tasks']['lv']
                                .__setitem__('max_abs_delta_on', 2e-3)),
     'probe without pa': ('determinism', lambda f, p, fl: p['tasks'].pop('pa')),
@@ -159,6 +202,44 @@ FAILURES = {
     'NaN test floor': ('floors', lambda f, p, fl: fl['floors'][2][
         'test'].__setitem__('floor', math.nan)),
 }
+
+
+def test_all_undefined_inv_drift_is_listed(tmp_path, suite):
+    fit = _arm(suite[0], LV, 'ctrnn_dense')
+    for split in ('val', 'test'):
+        _undefined(fit[f'rollout_metrics_{split}'])
+    code, report = _gate(tmp_path, *suite)
+    assert code == 0, report
+    assert '| nan | PASS |' in report
+    listed = report.split('## Listed')[1]
+    for split in ('val', 'test'):
+        assert (f'- periodic_predator_prey/ctrnn_dense: '
+                f'rollout_metrics_{split} (n_inv_drift_undefined 16): '
+                f'inv_drift_128_mean, inv_drift_128_median, '
+                f'inv_drift_32_mean, ') in listed
+
+
+def test_slow_determinism_is_a_decision(tmp_path, suite):
+    suite[1]['tasks']['pa']['ratio_on_off'] = 1.5      # |Delta| stays 0
+    code, report = _gate(tmp_path, *suite)
+    assert code == 0, report
+    assert report.startswith('# S0 smoke gate: PASS')
+    assert '| determinism | DECISION |' in report and not _failed(report)
+    assert ('## DECISION: determinism\n\n- op-determinism off for the suite '
+            '(F1 decision l): runtime ratio on/off above 1.3 on pa 1.5') \
+        in report
+
+
+@pytest.mark.parametrize('probe', [None, '{"tasks": ', 'missing.json'])
+def test_determinism_not_measured(probe, tmp_path, suite):
+    fits, _, floors = suite
+    if probe == 'missing.json':
+        probe = tmp_path / probe
+    code, report = _gate(tmp_path, fits, probe, floors)
+    assert code == 1
+    assert _failed(report) == ['determinism'], report
+    assert ('## FAIL: determinism\n\n- not measured (no readable '
+            '--determinism probe file)') in report
 
 
 @pytest.mark.parametrize('case', FAILURES)

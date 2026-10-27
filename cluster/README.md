@@ -327,15 +327,21 @@ uv run python experiments/suite_gate.py --stage s0 \
 `suite_gate.py` reads every `results/hpo/<arm>/lr*_clip*_seed*/*.json` below
 the run folders and checks the S0 go criteria: every arm-task of the four
 smoke YAMLs present with one fit; `config.effective` with `ode_unfolds`,
-`dt_scale`, `forcing` (rollouts), `weights_path` and one `protocol_version`;
+`dt_scale`, `forcing` and `anchors` (rollouts) and one `protocol_version`, and
+a `weights_path` (a top-level field of the result JSON, not a
+`config.effective` key);
 the rollout keys (`vpt_multi_median`, `vpt_anchor_{8,16,24,32}`,
 `nrmse_32_anchor_8`, outcome rates, `non_finite` false) or the finite primary
 metric (Person Activity, committee); no NaN/Inf (the `inv_drift_*` fields of
-`multitimescale_lib` are listed, not failed); `budget_above_tolerance` only on
+`multitimescale_lib`, and a NaN `rollout_metrics_{val,test}.inv_drift_*` of a
+block with `n_inv_drift_undefined > 0`, i.e. every trajectory undefined, are
+listed, not failed); `budget_above_tolerance` only on
 gru/dense3 and lstm/dense3; `elastance_type` asymmetric on the cells with an
 elastance in the registry (lrc, mm_lrc, cfc_lrc, cfc_lrc_outer, cfc_mm_lrc;
 mm_ltc and cfc_mm_ltc have none);
-`ode_unfolds` 6 on the solver cells; the determinism probe (ratio on/off at
-most 1.3, |Delta| of the "on" pair at most 1e-3, lv and pa) and a floor line
-per system and data seed. The report lists every check as PASS/FAIL with the
-offending arms; exit 0 only when all pass. A failed S0 is fixed and repeated.
+`ode_unfolds` 6 on the solver cells; the determinism probe (|Delta| of the "on"
+pair at most 1e-3 on lv and pa; a runtime ratio on/off above 1.3 is reported
+as DECISION "op-determinism off for the suite", a missing or unreadable probe
+file fails as "not measured") and a floor line per system and data seed. The
+report lists every check as PASS, FAIL or DECISION with the offending arms;
+exit 0 only when no check fails. A failed S0 is fixed and repeated.
