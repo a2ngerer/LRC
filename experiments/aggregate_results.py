@@ -27,11 +27,15 @@ Optional sections:
   --co-runs DIR    H-d consensus-study family (committee runner JSONs, #55):
                    one-sided paired Wilcoxon over seeds at K=30, Bonferroni
                    over the family of four, plus the attribution flag
+  --floors         with --rollout-runs: persistence and AR(1) floor lines
+                   per task, split and data seed on the multi-anchor endpoint,
+                   the floor marking per arm and the floor_bound flag per core
+                   contrast, written to <out>/floors.json (#67)
 
 Usage:
     uv run python experiments/aggregate_results.py [--runs results/runs] [--out results]
         [--hpo-dir DIR] [--pa-runs DIR [--bootstrap-units seed,recording]]
-        [--rollout-runs DIR] [--co-runs DIR]
+        [--rollout-runs DIR [--floors]] [--co-runs DIR]
 """
 import argparse
 import json
@@ -49,7 +53,7 @@ from scipy.stats import wilcoxon
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.evaluation.rollout_metrics import (SENSITIVITY_KEY,  # noqa: E402
-                                            TAU_ORB_SENSITIVITY)
+                                            TAU_ORB_SENSITIVITY, floor_lines)
 from src.evaluation.stats import (bootstrap_mean_ci, clopper_pearson,  # noqa: E402
                                   p_a_gt_b)
 
@@ -368,6 +372,15 @@ def pa_arm_means(pa_dir, units='seed') -> str:
 OUTCOME_CLASSES = ('ok', 'bounded_wrong', 'unbounded')
 
 
+def _rollout_arm(path, r, rollout_dir):
+    """(arm, folder, tag) of a rollout fit: tag = file name without
+    _seed<N>, folder relative to rollout_dir, arm = '<folder>/<tag>' ('.'
+    omitted)."""
+    tag = os.path.basename(path)[:-len('.json')].replace(f"_seed{r['seed']}", '')
+    rel = os.path.relpath(os.path.dirname(path), rollout_dir)
+    return (tag if rel == '.' else f'{rel}/{tag}'), rel, tag
+
+
 def rollout_outcome_classes(rollout_dir) -> str:
     """Outcome-class shares per rollout arm on the test split, pooled over the
     trajectories of all fits, with exact Clopper-Pearson 95 % intervals; one
@@ -393,10 +406,8 @@ def rollout_outcome_classes(rollout_dir) -> str:
         if r['seed'] not in FINAL_SEEDS:
             tuning += 1
             continue
-        tag = os.path.basename(path)[:-len('.json')].replace(f"_seed{r['seed']}", '')
-        rel = os.path.relpath(os.path.dirname(path), rollout_dir)
-        arm = tag if rel == '.' else f'{rel}/{tag}'
-        arms[(r['system'], arm, m['tau_orb'])].append(m)
+        arms[(r['system'], _rollout_arm(path, r, rollout_dir)[0],
+              m['tau_orb'])].append(m)
     lines = ['## Rollout outcome classes (test trajectories, share [95% '
              'Clopper-Pearson CI])\n',
              '| System | Arm | fits | trajectories | tau_orb | '
@@ -422,6 +433,126 @@ def rollout_outcome_classes(rollout_dir) -> str:
                  if skipped else '')
     lines.append(f'\nLeft out {tuning} tuning-seed fit(s) (seed outside '
                  f'{FINAL_SEEDS.start}..{FINAL_SEEDS.stop - 1}).\n' if tuning else '')
+    return '\n'.join(lines)
+
+
+# The data draw of a rollout fit (load_lotka_volterra arguments, as in the
+# runner's --eval-only) plus the multi-anchor settings its endpoint used.
+FLOOR_DATA_KEYS = ('system', 'data_seed', 'n_trajectories', 'seq_len', 'split',
+                   't_span', 'ic_spread')
+FLOOR_SPLIT = 'test'   # the split of the floor marking (F1 S5 floors check)
+
+
+def not_learned(n_below, n_fits) -> bool:
+    """Seed rule (protocol freeze F1-2026-10-26, decision f): an arm counts
+    as not learned if its per-fit median lies below the floor in more than
+    one of five seeds (two of ten), i.e. in more than a fifth of its fits."""
+    return n_below * 5 > n_fits
+
+
+def compute_floors(rollout_dir) -> dict:
+    """floors.json content for the final-seed rollout fits below rollout_dir.
+
+    floors: per data draw (FLOOR_DATA_KEYS + anchors, horizon, theta of the
+    fits' rollout_metrics_test) the persistence and AR(1) anchor_metrics on
+    val and test (src/evaluation/rollout_metrics.floor_lines). arms: per
+    (system, arm) the fits whose test vpt_multi_median lies below the floor of
+    their own data draw (NaN counts as below) and above_floor by the seed rule
+    (not_learned). contrasts: every rollout entry of CORE_CONTRASTS whose two
+    arms lie in the same folder with the same file-name suffix (forcing,
+    backbone), floor_bound if either arm is not above floor. Files without
+    the #62 multi-anchor keys or config.effective, and tuning seeds, are left
+    out."""
+    from src.tasks.lotka_volterra.datasets import load_lotka_volterra
+
+    fits, draws = [], {}
+    for path in sorted(glob(os.path.join(rollout_dir, '**', '*.json'),
+                            recursive=True)):
+        with open(path, encoding='utf-8') as f:
+            r = json.load(f)
+        m = r.get('rollout_metrics_test') if isinstance(r, dict) else None
+        eff = (r.get('config') or {}).get('effective') if m else None
+        if (not eff or 'vpt_multi_median' not in m
+                or r.get('seed') not in FINAL_SEEDS):
+            continue
+        draw = {k: eff.get(k) for k in FLOOR_DATA_KEYS}
+        draw.update(anchors=m['anchors'], anchor_horizon=m['anchor_horizon'],
+                    anchor_theta=m['anchor_theta'])
+        key = json.dumps(draw, sort_keys=True)
+        if key not in draws:
+            data = load_lotka_volterra(
+                n_trajectories=draw['n_trajectories'], seq_len=draw['seq_len'],
+                split=draw['split'], seed=draw['data_seed'],
+                system=draw['system'], t_span=draw['t_span'],
+                spread=draw['ic_spread'])
+            draws[key] = {**draw, **floor_lines(
+                data, draw['anchors'], draw['anchor_horizon'],
+                draw['anchor_theta'])}
+        floor = draws[key][FLOOR_SPLIT]['floor']
+        arm, folder, tag = _rollout_arm(path, r, rollout_dir)
+        fits.append({'system': r['system'], 'arm': arm, 'folder': folder,
+                     'cell': r['cell'], 'wiring': r['wiring'],
+                     'suffix': tag[len(f"{r['cell']}_{r['wiring']}"):],
+                     'seed': r['seed'],
+                     'below': not m['vpt_multi_median'] >= floor})
+    arms = {}
+    for fit in fits:
+        a = arms.setdefault((fit['system'], fit['arm']), {
+            **{k: fit[k] for k in ('system', 'arm', 'folder', 'cell', 'wiring',
+                                   'suffix')},
+            'split': FLOOR_SPLIT, 'seeds': [], 'seeds_below': []})
+        a['seeds'].append(fit['seed'])
+        if fit['below']:
+            a['seeds_below'].append(fit['seed'])
+    for a in arms.values():
+        a['above_floor'] = not not_learned(len(a['seeds_below']),
+                                           len(a['seeds']))
+    by_key = {(a['system'], a['folder'], a['suffix'], a['cell'],
+               a['wiring']): a for a in arms.values()}
+    contrasts = []
+    for family, entries in CORE_CONTRASTS.items():
+        for task, ca, cb in entries:
+            for (system, folder, suffix, *cw), a in sorted(by_key.items()):
+                b = by_key.get((system, folder, suffix, *cb))
+                if system != task or tuple(cw) != ca or b is None:
+                    continue
+                contrasts.append({
+                    'family': family, 'task': task, 'a': list(ca),
+                    'b': list(cb), 'arm_a': a['arm'], 'arm_b': b['arm'],
+                    'floor_bound': not (a['above_floor']
+                                        and b['above_floor'])})
+    return {'split': FLOOR_SPLIT, 'floors': list(draws.values()),
+            'arms': sorted(arms.values(),
+                           key=lambda a: (a['system'], a['arm'])),
+            'contrasts': contrasts}
+
+
+def floor_report(floors) -> str:
+    """Markdown of compute_floors: floors per data draw on the marking split,
+    the arm marking and the floor_bound contrasts."""
+    sp = floors['split']
+    lines = [f'## Floor lines (multi-anchor VPT median, {sp} split)\n',
+             '| System | data seed | persistence | AR(1) | floor |',
+             '|--------|-----------|-------------|-------|-------|']
+    for d in sorted(floors['floors'],
+                    key=lambda d: (d['system'], d['data_seed'])):
+        lines.append(f"| {d['system']} | {d['data_seed']} "
+                     f"| {d[sp]['persistence']['vpt_multi_median']:g} "
+                     f"| {d[sp]['ar1']['vpt_multi_median']:g} "
+                     f"| {d[sp]['floor']:g} |")
+    lines += ['', '| System | Arm | fits | seeds below floor | above floor |',
+              '|--------|-----|------|-------------------|-------------|']
+    for a in floors['arms']:
+        lines.append(f"| {a['system']} | {a['arm']} | {len(a['seeds'])} "
+                     f"| {a['seeds_below'] or '—'} "
+                     f"| {'yes' if a['above_floor'] else 'NO (not learned)'} |")
+    lines += ['', '| Family | Task | A | B | floor_bound |',
+              '|--------|------|---|---|-------------|']
+    for c in floors['contrasts']:
+        lines.append(f"| {c['family']} | {c['task']} | {c['arm_a']} "
+                     f"| {c['arm_b']} | {'YES' if c['floor_bound'] else 'no'} |")
+    lines.append('\nSeed rule: not learned if below max(persistence, AR(1)) '
+                 'in more than one of five seeds (two of ten).\n')
     return '\n'.join(lines)
 
 
@@ -548,12 +679,17 @@ def main(argv=None) -> int:
                    help='rollout result JSON folder, searched recursively '
                         '(outcome-class shares per arm; each subfolder is '
                         'its own arm, tuning seeds are left out)')
+    p.add_argument('--floors', action='store_true',
+                   help='with --rollout-runs: floor lines, floor marking and '
+                        'floor_bound contrasts into <out>/floors.json')
     p.add_argument('--co-runs', default=None,
                    help='committee result JSON folder (H-d consensus family)')
     p.add_argument('--bootstrap-units', default='seed',
                    choices=('seed', 'seed,recording'),
                    help='resampling units for the --pa-runs arm means')
     args = p.parse_args(argv)
+    if args.floors and not args.rollout_runs:
+        p.error('--floors needs --rollout-runs')
 
     df = load_runs(args.runs)
     if args.cells and not df.empty:
@@ -581,6 +717,12 @@ def main(argv=None) -> int:
         parts.append(pa_arm_means(args.pa_runs, args.bootstrap_units))
     if args.rollout_runs:
         parts.append(rollout_outcome_classes(args.rollout_runs))
+    if args.floors:
+        floors = compute_floors(args.rollout_runs)
+        with open(os.path.join(args.out, 'floors.json'), 'w',
+                  encoding='utf-8') as f:
+            json.dump(floors, f, indent=1)
+        parts.append(floor_report(floors))
     if args.co_runs:
         parts.append(consensus_family(args.co_runs))
     report = '\n'.join(parts)

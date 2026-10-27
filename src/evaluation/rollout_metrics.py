@@ -40,6 +40,13 @@ the H free-run steps and NRMSE@32; keys:
     descriptive thresholds;
   * anchors, anchor_horizon, anchor_theta: the evaluation settings.
 
+Floor lines (#67, protocol freeze F1-2026-10-26, decision f; floor_lines):
+two model-free predictors scored with anchor_metrics on the same anchors.
+Persistence repeats the last teacher-forced value y_a; AR(1) is an affine
+one-step map z_{t+1} = [z_t, 1] A, least squares on the train split of the
+data seed (train-z-score units), run closed-loop from y_a. The floor of a
+split is max(persistence, AR(1)) vpt_multi_median.
+
 Pure numpy: src/evaluation/__init__ loads the TF-based GradientFlowTracker
 lazily, so this module imports without TensorFlow (CPU-only aggregation).
 """
@@ -237,4 +244,41 @@ def anchor_metrics(y_true, preds, norm_stats, theta=THETA) -> dict:
     out["vpt_multi_median"] = float(np.median(vpts[theta]))
     out["theta_sensitivity"] = {str(th): float(np.median(vpts[th]))
                                 for th in THETA_SENSITIVITY}
+    return out
+
+
+FLOOR_LINES = ("persistence", "ar1")
+
+
+def floor_lines(data, anchors=ANCHORS, horizon=ANCHOR_HORIZON, theta=THETA,
+                splits=("val", "test")) -> dict:
+    """Persistence and AR(1) floors of one data draw (see module docstring).
+
+    Args:
+        data: LotkaVolterraData (train_x/train_y z-scored next-step pairs,
+            <split>_traj de-normalised trajectories, mean, std).
+        anchors, horizon, theta: as for anchor_metrics.
+    Returns {split: {"persistence": anchor_metrics, "ar1": anchor_metrics,
+    "floor": max of the two vpt_multi_median}}.
+    """
+    x = data.train_x.reshape(-1, data.train_x.shape[-1])
+    A = np.linalg.lstsq(np.hstack([x, np.ones((len(x), 1), x.dtype)]),
+                        data.train_y.reshape(len(x), -1), rcond=None)[0]
+    norm_stats = make_norm_stats(data.train_traj, data.mean, data.std)
+    out = {}
+    for split in splits:
+        traj = getattr(data, f"{split}_traj")
+        z = (traj - data.mean) / data.std
+        preds = {line: {} for line in FLOOR_LINES}
+        for a in anchors:
+            preds["persistence"][a] = np.repeat(traj[:, a:a + 1], horizon, 1)
+            zt, steps = z[:, a], []
+            for _ in range(horizon):
+                zt = np.hstack([zt, np.ones((len(zt), 1), zt.dtype)]) @ A
+                steps.append(zt)
+            preds["ar1"][a] = data.denormalise(np.stack(steps, axis=1))
+        out[split] = {line: anchor_metrics(traj, preds[line], norm_stats,
+                                           theta) for line in FLOOR_LINES}
+        out[split]["floor"] = max(out[split][line]["vpt_multi_median"]
+                                  for line in FLOOR_LINES)
     return out

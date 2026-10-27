@@ -1,5 +1,6 @@
 """Rollout endpoint metrics (#20) and outcome classes (#63): the
 pre-registered unit checks."""
+import dataclasses
 import json
 import subprocess
 import sys
@@ -9,10 +10,11 @@ import pytest
 from scipy.integrate import solve_ivp
 
 from src.evaluation.rollout_metrics import (INVARIANTS, SENSITIVITY_KEY,
-                                            anchor_metrics,
+                                            anchor_metrics, floor_lines,
                                             invariant_drift, make_norm_stats,
                                             rollout_metrics)
-from src.tasks.lotka_volterra.datasets import load_lotka_volterra
+from src.tasks.lotka_volterra.datasets import (DATA_SEED_BASE,
+                                               load_lotka_volterra)
 from src.tasks.neural_ode.datasets import _ODE_FUNCS, _SYSTEMS
 
 T = 128
@@ -251,3 +253,41 @@ def test_anchor_vpt_counts_free_run_steps_and_pools_trajectories_x_anchors():
     with pytest.raises(ValueError, match="one free-run horizon"):
         anchor_metrics(truth, {2: np.zeros((3, 10, 2)),
                                4: np.zeros((3, 8, 2))}, stats)
+
+
+# Single-anchor reference floors of the design review (data seeds
+# DATA_SEED_BASE + 0..2, 80 trajectories, seq_len 128, test split):
+# (persistence, AR(1)) VPT medians.
+REFERENCE_FLOORS = {
+    "periodic_predator_prey": ((10, 9.5), (10, 8), (10, 9)),
+    "duffing": ((4, 10), (4, 11.5), (4.5, 9)),
+}
+
+
+@pytest.mark.parametrize("system", sorted(REFERENCE_FLOORS))
+def test_floor_lines_at_anchor_0_reproduce_the_reference_floors(system):
+    """Called with anchor 0 and horizon 128 the floors reproduce the
+    single-anchor references (LV persistence 10, AR(1) 8-9.5; Duffing 4 and
+    9-11.5); the floor is the larger of the two lines, on val and test."""
+    for offset, (pers, ar1) in enumerate(REFERENCE_FLOORS[system]):
+        data = load_lotka_volterra(seed=DATA_SEED_BASE + offset, system=system)
+        f = floor_lines(data, anchors=(0,), horizon=128)
+        assert f["test"]["persistence"]["vpt_multi_median"] == pers
+        assert f["test"]["ar1"]["vpt_multi_median"] == ar1
+        for split in ("val", "test"):
+            assert f[split]["floor"] == max(
+                f[split][line]["vpt_multi_median"]
+                for line in ("persistence", "ar1"))
+
+
+def test_floor_lines_on_the_multi_anchor_endpoint():
+    """Default anchors: persistence repeats y_a (exact on a constant
+    trajectory, VPT = horizon); every anchor key of anchor_metrics is there."""
+    data = load_lotka_volterra(n_trajectories=10, seed=DATA_SEED_BASE)
+    f = floor_lines(data)
+    assert f["test"]["persistence"]["anchors"] == [8, 16, 24, 32]
+    assert {f"vpt_anchor_{a}" for a in (8, 16, 24, 32)} <= set(f["val"]["ar1"])
+    const = dataclasses.replace(
+        data, test_traj=np.repeat(data.test_traj[:, :1], 129, axis=1))
+    assert floor_lines(const, splits=("test",))["test"]["persistence"][
+        "vpt_multi_median"] == 96
