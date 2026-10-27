@@ -24,6 +24,7 @@ extra_seeds:
 epochs: 50
 ode_unfolds: 6
 dt_scale: auto
+extra_args: [--deterministic]
 hpo_dir: results/03_person_activity/<pa-hpo run>/results/hpo
 cluster: {runs_per_gpu: 3, walltime: "06:00:00"}
 heavy:

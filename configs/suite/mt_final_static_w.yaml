@@ -15,6 +15,6 @@ extra_seeds: {seeds: [5, 6, 7, 8, 9], arms: [cfc_static_ncp]}
 epochs: 300
 ode_unfolds: 6
 dt_scale: auto
-extra_args: [--forcing, mixed, --size, 24]
+extra_args: [--forcing, mixed, --size, 24, --deterministic]
 hpo_dir: results/01_lotka_volterra/<mt-hpo run>/results/hpo
 cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

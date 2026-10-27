@@ -1,5 +1,5 @@
-"""S0 smoke and S1 pilot gates of the frozen suite (#72, #75; protocol freeze
-F1-2026-10-26, validation ladder S0 and S1).
+"""S0 smoke and S1 pilot gates of the frozen suite (#72, #75, #76; protocol
+freeze F1-2026-10-26, validation ladder S0 and S1).
 
 --stage s0 reads every fit JSON below the given run folders
 (<run>/results/hpo/<arm>/lr*_clip*_seed*/*.json, run_grid_hpo.py under
@@ -50,6 +50,8 @@ evaluates the S1 go criteria with the frozen thresholds:
 
   fits   every fit of the six pilot YAMLs present once (--configs, default
          configs/suite/pilot_{lv,duffing,mt,pa,lv_dt1,co}.yaml, 61 fits)
+  config config.effective.deterministic true on every fit: the suite runs
+         with op-determinism on (F1 decision l after the S0 probe, #76)
   floors a floor line per rollout system and data seed (--floors)
   G1     LV, Duffing: test vpt_multi_median of cfc_lrc/ncp above
          max(persistence, AR(1)) of its data seed + 2 steps in >= 2 of 3 seeds;
@@ -428,6 +430,8 @@ GK_ARMS = ("ncp_cons", "ncp_lam0", "avg_in", "aug_mono")
 CONSEQUENCE = {   # F1 section 7, "Bei Fehlschlag"
     "fits": "complete the pilot runs (cluster/submit_suite.sh --resume, one "
             "run folder per pilot YAML) and rerun the gate",
+    "config": "rerun the offending fits with --deterministic (extra_args of "
+              "the pilot YAML) and rerun the gate",
     "floors": "write the floor lines (aggregate_results.py --floors over the "
               "pilot runs) and rerun the gate",
     "G1": "floor-bound: H-b/H-c contrasts on this task are floor-bound, the "
@@ -528,6 +532,21 @@ def check_pilot_fits(fits, expected):
     return _row("fits", "all", "every fit of the pilot YAMLs present, once",
                 f"{sum(1 for e in expected if have[e])}/{len(expected)} "
                 f"present", bad, consequence=CONSEQUENCE["fits"])
+
+
+def check_pilot_config(fits):
+    """config.effective.deterministic true on every pilot fit (#76)."""
+    bad = []
+    for f in fits:
+        v = _eff(f["rec"]).get("deterministic")
+        if v is not True:
+            tag = f" ({f['tag']})" if f["tag"] else ""
+            bad.append(f"{_name(f['arm'][0])}/{f['arm'][1]} seed {f['seed']}"
+                       f"{tag}: deterministic {v!r}")
+    return _row("config", "all", "config.effective.deterministic true on "
+                "every fit (op-determinism on, F1 decision l)",
+                f"{len(fits) - len(bad)}/{len(fits)} fits deterministic", bad,
+                consequence=CONSEQUENCE["config"])
 
 
 def gate_floors(fits, lines):
@@ -710,11 +729,11 @@ def gate_consensus(fits):
 
 
 def gate_s1(fits, expected, floors):
-    """The S1 rows: fits, floors, G1, G0-E, G2, G3, GK."""
+    """The S1 rows: fits, config, floors, G1, G0-E, G2, G3, GK."""
     _, desc, bad, _ = check_floors(fits, floors)
     lines = {(d.get("system"), d.get("data_seed")): d.get("test") or {}
              for fl in floors for d in fl.get("floors", [])}
-    return [check_pilot_fits(fits, expected),
+    return [check_pilot_fits(fits, expected), check_pilot_config(fits),
             _row("floors", "rollouts", desc, f"{len(bad)} missing", bad,
                  consequence=CONSEQUENCE["floors"]),
             *gate_floors(fits, lines), *gate_epochs(fits), *gate_pa(fits),

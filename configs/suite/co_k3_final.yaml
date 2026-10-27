@@ -17,6 +17,6 @@ arms:
   aug_mono: {cell: cfc_lrc, wiring: ncp, n_columns: 1}
 param_budget: 30000
 seeds: [0, 1, 2, 3, 4]
-extra_args: [--n-columns, 3, --backbone-layers, 1]
+extra_args: [--n-columns, 3, --backbone-layers, 1, --deterministic]
 hpo_dir: results/04_column_voting/<co-k3-hpo run>/results/hpo
 cluster: {runs_per_gpu: 3, walltime: "06:00:00"}

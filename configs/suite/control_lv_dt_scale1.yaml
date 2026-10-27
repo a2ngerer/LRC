@@ -12,6 +12,6 @@ seeds: [0, 1, 2]
 epochs: 300
 ode_unfolds: 6
 dt_scale: 1
-extra_args: [--forcing, mixed]
+extra_args: [--forcing, mixed, --deterministic]
 hpo_dir: results/01_lotka_volterra/<lv-hpo run>/results/hpo
 cluster: {runs_per_gpu: 3, walltime: "04:00:00"}
