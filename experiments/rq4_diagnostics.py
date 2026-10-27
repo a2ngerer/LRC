@@ -1,26 +1,39 @@
-"""RQ4 post-hoc diagnostics (issue #30): Jacobian retention and hidden-state
-norms of trained Lotka-Volterra fits, rebuilt from result JSON + weights (#18).
+"""RQ4 post-hoc diagnostics (issues #30, #65): Jacobian retention and
+hidden-state norms of trained Lotka-Volterra fits, rebuilt from result JSON +
+weights (#18).
 
-Per result JSON matched by --results, one CSV row:
-  * the model is rebuilt (rebuild_from_result) and run as a one-step map: the
-    cells of its RNN layers in model order, then the layers after the last RNN
-    (motor slice, head) on one time step; the map must reproduce the model's
-    teacher-forced predictions, otherwise the script stops;
-  * trajectories on the first 4 validation sequences: (a) teacher forced, (b)
-    closed loop (inputs from closed_loop_rollout, the prediction is fed back);
-  * one-step Jacobians J_t = dS_{t+1}/dS_t, S = every state slot of every RNN
-    layer concatenated. Closed loop: J is taken over (S, x), so the feedback
-    through the head is included, and the S-block of the product is read;
-  * ||dS_{t+D}/dS_t||_2 (spectral norm of J_{t+D-1}...J_t) for D in 1, 4, 16,
-    median and max over sequences and anchors t; ||S_t||_2 mean and max over
-    sequences and t. dense3: additionally per RNN layer, ncp: per
-    inter/command/motor block (blocks of the full Jacobian product);
+Per result JSON matched by --results:
+  * the model is rebuilt (rebuild_from_result) and wrapped in its
+    ForcedRolloutCell view (forced_rollout_model, #25), the object mixed
+    forcing trains; the wrapper cell, fed the time input through the model's
+    own dt_scale layer, is run as a one-step map (y_t, dt_t, Z_t) ->
+    (yhat_t, Z_{t+1}), Z = the core cell's state slots S followed by the
+    fed-back prediction yhat_{t-1}. Protocol freeze F1-2026-10-26 (section 4,
+    RQ4) fixes the chain on this wrapper at alpha = 0;
+  * trajectories on the first 4 validation sequences, both from the zero
+    state: 'cl' = the wrapper at alpha = 0 (free run from y_0, the RQ4
+    chain), 'tf' = the wrapper at alpha = 1 (teacher forced, the plain
+    model). The map must reproduce the plain model (alpha = 1) and the
+    wrapper view (alpha = 0), otherwise the script stops;
+  * one-step Jacobians J_t = dZ_{t+1}/dZ_t by autodiff through the wrapper
+    (the feedback through the readout is part of Z); the S-block of the
+    products is read: ||dS_{t+D}/dS_t||_2 (spectral norm of the S-block of
+    J_{t+D-1}...J_t) for D in 1, 4, 16, median and max over sequences and
+    anchors t; ||S_t||_2 mean and max over sequences and t. dense3:
+    additionally per RNN layer, ncp: per inter/command/motor block. The
+    stateless mlp control (#60) never reads S, so its retention is 0;
   * --hessian-top (exploratory, off by default, not a pre-registered outcome):
     top Hessian eigenvalue of the training loss on the first 16 training
     sequences (the runner's default fixed batch), 20 power-iteration HVPs.
 
-Skipped with a message: tbt_cncp* (their location input is a function of the
-state outside the graph) and non-LV results (no closed loop).
+Output: the result JSON gets the key rq4_diagnostics (the values above plus
+config_effective_sha256, the hash of the config.effective they were computed
+from) and is written into --outdir (default: in place) through the eval-only
+write path of run_lotka_volterra_benchmark.py; --out also collects one CSV
+row per fit.
+
+Skipped with a message: wirings without a ForcedRolloutCell view (tbt_cncp*,
+cncp2_multi) and non-LV results (no closed loop).
 
 Usage:
     uv run python experiments/rq4_diagnostics.py \
@@ -31,7 +44,6 @@ import glob
 import json
 import os
 import sys
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -39,64 +51,71 @@ import tensorflow as tf
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from experiments.run_lotka_volterra_benchmark import closed_loop_rollout  # noqa: E402
-from src.benchmark.checkpoints import rebuild_from_result  # noqa: E402
-from src.tasks.lotka_volterra.datasets import load_lotka_volterra  # noqa: E402
-from src.tasks.active_sensing.model import TBT_MODES  # noqa: E402
+from experiments.run_lotka_volterra_benchmark import (  # noqa: E402
+    load_effective_data, write_result)
+from src.benchmark.checkpoints import config_hash, rebuild_from_result  # noqa: E402
+from src.neurons.forced_rollout_cell import StackedCell  # noqa: E402
+from src.tasks.lotka_volterra.model import (  # noqa: E402
+    FORCEABLE_WIRINGS, forced_rollout_model)
 from src.tasks.person_activity.model import ncp_layer_sizes  # noqa: E402
 
 DELTAS = (1, 4, 16)   # powers of two: the products are built by doubling
 N_SEQ = 4
-UNSUPPORTED = tuple(TBT_MODES)
 HESSIAN_BATCH = 16    # the LV runner's default --batch-size
 HVP_STEPS = 20
 
 
 class OneStep:
-    """A chain model (RNN layers fed (previous output, time), then per-step
-    layers) as the map (x_t, dt_t, S_t) -> (prediction_t, S_{t+1})."""
+    """The ForcedRolloutCell view of a forceable model (forced_rollout_model)
+    as the map (y_t, dt_t, Z_t) -> (yhat_t, Z_{t+1}); Z = core state slots S
+    (dim) then yhat_{t-1}. dt_t is the raw time input: it passes the model's
+    dt_scale layer, as in the view. The wrapper's 'started' flag (0 before the
+    first step, constant 1 after it) is an input, not part of Z."""
 
     def __init__(self, model):
-        self.rnns = [l for l in model.layers
-                     if isinstance(l, tf.keras.layers.RNN)]
-        self.post = model.layers[model.layers.index(self.rnns[-1]) + 1:]
-        self.sizes = [[int(n) for n in np.atleast_1d(r.cell.state_size)]
-                      for r in self.rnns]
+        self.alpha = tf.Variable(0.0, trainable=False,
+                                 dtype=tf.keras.backend.floatx())
+        self.view = forced_rollout_model(model, self.alpha)
+        rnn = next(l for l in self.view.layers
+                   if isinstance(l, tf.keras.layers.RNN))
+        self.cell = rnn.cell
+        scale = [l for l in self.view.layers if l.name == "dt_scale"]
+        self.scale = scale[0] if scale else tf.identity
+        core = self.cell.core
+        self.sizes = [[int(n) for n in np.atleast_1d(c.state_size)]
+                      for c in (core.cells if isinstance(core, StackedCell)
+                                else [core])]
         self.dim = sum(map(sum, self.sizes))
+        self._slots = [n for sz in self.sizes for n in sz] + [
+            self.cell.output_size]
         self._jac = tf.function(self._jac_eager)
 
-    def step(self, x, dt, s):
-        parts = tf.split(s, [n for sz in self.sizes for n in sz], axis=-1)
-        h, new = x, []
-        for rnn, sz in zip(self.rnns, self.sizes):
-            states, parts = parts[:len(sz)], parts[len(sz):]
-            h, ns = rnn.cell((h, dt), states)
-            new += tf.nest.flatten(ns)
-        for layer in self.post:
-            h = layer(h)
-        return h, tf.concat(new, axis=-1)
+    def step(self, y, dt, z, started):
+        states = tf.split(z, self._slots, axis=-1) + [started]
+        y_hat, new = self.cell((y, self.scale(dt)), states)
+        return y_hat, tf.concat(new[:-1], axis=-1)
 
-    def _jac_eager(self, x, dt, s, closed):
-        z = tf.concat([s, x], axis=-1) if closed else s
+    def _jac_eager(self, y, dt, z, started):
         with tf.GradientTape() as tape:
             tape.watch(z)
-            y, s1 = self.step(z[:, self.dim:] if closed else x, dt,
-                              z[:, :self.dim])
-            out = tf.concat([s1, y], axis=-1) if closed else s1
-        return y, s1, tape.batch_jacobian(out, z)
+            y_hat, z1 = self.step(y, dt, z, started)
+        return y_hat, z1, tape.batch_jacobian(z1, z)
 
-    def trajectory(self, xs, dts, closed):
-        """Inputs (B, T, F) -> predictions (B, T, F), states S_1..S_T
-        (B, T, D) and one-step Jacobians (T, B, Dz, Dz). All cells start
-        from zero states (as in the RNN layers)."""
-        s = tf.zeros([xs.shape[0], self.dim])
+    def trajectory(self, xs, dts, alpha):
+        """Inputs (B, T, F) at forcing ``alpha`` -> predictions (B, T, F),
+        core states S_1..S_T (B, T, dim) and one-step Jacobians (T, B, Dz,
+        Dz) over Z. Starts from the zero state, as the RNN layers do."""
+        self.alpha.assign(alpha)
+        dtype = tf.keras.backend.floatx()
+        z = tf.zeros([xs.shape[0], sum(self._slots)], dtype)
+        started = tf.zeros([xs.shape[0], 1], dtype)
         preds, states, jacs = [], [], []
         for t in range(xs.shape[1]):
-            y, s, j = self._jac(tf.constant(xs[:, t], tf.float32),
-                                tf.constant(dts[:, t], tf.float32),
-                                s, closed)
+            y, z, j = self._jac(tf.constant(xs[:, t], dtype),
+                                tf.constant(dts[:, t], dtype), z, started)
+            started = tf.ones_like(started)
             preds.append(y.numpy())
-            states.append(s.numpy())
+            states.append(z.numpy()[:, :self.dim])
             jacs.append(j.numpy())
         return np.stack(preds, 1), np.stack(states, 1), np.stack(jacs)
 
@@ -190,66 +209,70 @@ def hessian_top(model, inputs, y, steps=HVP_STEPS, seed=0):
     return eig
 
 
-def _traced(model):
-    """model as one graph with a free time axis: closed_loop_rollout calls it
-    on T growing histories, which runs ~6x slower eagerly."""
-    call = tf.function(lambda inputs: model(inputs, training=False),
-                       input_signature=[tuple(tf.TensorSpec(i.shape, i.dtype)
-                                              for i in model.inputs)])
-    return lambda inputs, training=False: call(tuple(inputs))
-
-
 def diagnose(path, hessian=False):
-    """One CSV row for the result JSON at ``path``, or None if unsupported."""
+    """The rq4_diagnostics dict of the result JSON at ``path``, or None if
+    unsupported."""
     with open(path) as f:
         record = json.load(f)
     eff = record.get("config", {}).get("effective", {})
-    if eff.get("task") != "lotka_volterra" or record["wiring"] in UNSUPPORTED:
+    if (eff.get("task") != "lotka_volterra"
+            or record["wiring"] not in FORCEABLE_WIRINGS):
         print(f"skip {path}: task {eff.get('task')!r} / wiring "
               f"{record.get('wiring')!r} not supported")
         return None
     model = rebuild_from_result(path)
-    data = load_lotka_volterra(n_trajectories=eff["n_trajectories"],
-                               seq_len=eff["seq_len"], split=tuple(eff["split"]),
-                               seed=eff["data_seed"], system=eff["system"])
+    data = load_effective_data(eff)
     xs, dts = data.val_x[:N_SEQ], data.val_t[:N_SEQ]
     one = OneStep(model)
 
-    preds, tf_states, tf_jacs = one.trajectory(xs, dts, closed=False)
+    preds, tf_states, tf_jacs = one.trajectory(xs, dts, alpha=1.0)
     np.testing.assert_allclose(preds, model.predict((xs, dts), verbose=0),
                                rtol=1e-3, atol=1e-4,
-                               err_msg="one-step map != model (not a chain?)")
-    gen = closed_loop_rollout(_traced(model), SimpleNamespace(
-        seq_len=data.seq_len, val_x=xs, val_t=dts), split="val")
-    preds, cl_states, cl_jacs = one.trajectory(gen[:, :-1], dts, closed=True)
-    np.testing.assert_allclose(preds, gen[:, 1:], rtol=1e-3, atol=1e-4,
-                               err_msg="closed-loop one-step map != rollout")
+                               err_msg="one-step map at alpha 1 != model")
+    preds, cl_states, cl_jacs = one.trajectory(xs, dts, alpha=0.0)
+    np.testing.assert_allclose(preds, one.view.predict((xs, dts), verbose=0),
+                               rtol=1e-3, atol=1e-4,
+                               err_msg="one-step map at alpha 0 != wrapper")
 
     blocks = state_blocks(record, one)
-    row = {"file": os.path.basename(path),
-           **{k: record.get(k) for k in ("system", "wiring", "cell", "seed",
-                                         "size", "params_effective")},
-           "n_seq": len(xs), "seq_len": data.seq_len, "state_dim": one.dim,
-           **trajectory_columns("tf", tf_states, tf_jacs, one.dim, blocks),
-           **trajectory_columns("cl", cl_states, cl_jacs, one.dim, blocks)}
+    diag = {"config_effective_sha256": config_hash(eff),
+            "n_seq": len(xs), "seq_len": data.seq_len, "state_dim": one.dim,
+            **trajectory_columns("tf", tf_states, tf_jacs, one.dim, blocks),
+            **trajectory_columns("cl", cl_states, cl_jacs, one.dim, blocks)}
     if hessian:
         b = HESSIAN_BATCH
-        row["hessian_top"] = hessian_top(
+        diag["hessian_top"] = hessian_top(
             model, (tf.constant(data.train_x[:b]), tf.constant(data.train_t[:b])),
             tf.constant(data.train_y[:b]))
-    return row
+    return diag
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--results", required=True,
                     help="glob of LV result JSONs (quote it), weights next to them")
-    ap.add_argument("--out", default="rq4_diagnostics.csv")
+    ap.add_argument("--outdir", default=None,
+                    help="write the result JSONs with rq4_diagnostics here; "
+                         "default: in place")
+    ap.add_argument("--out", default="rq4_diagnostics.csv",
+                    help="CSV with one row per diagnosed fit")
     ap.add_argument("--hessian-top", action="store_true",
                     help="also the top Hessian eigenvalue (20 HVPs, exploratory)")
     args = ap.parse_args(argv)
     paths = sorted(glob.glob(args.results))
-    rows = [r for r in (diagnose(p, args.hessian_top) for p in paths) if r]
+    rows = []
+    for path in paths:
+        diag = diagnose(path, args.hessian_top)
+        if diag is None:
+            continue
+        with open(path) as f:
+            record = json.load(f)
+        record["rq4_diagnostics"] = diag
+        print(f"rq4 {path} -> {write_result(record, path, args.outdir)}")
+        rows.append({"file": os.path.basename(path),
+                     **{k: record.get(k) for k in (
+                         "system", "wiring", "cell", "seed", "size",
+                         "params_effective")}, **diag})
     if not rows:
         raise SystemExit(f"no supported result JSON matches {args.results!r}")
     pd.DataFrame(rows).to_csv(args.out, index=False)

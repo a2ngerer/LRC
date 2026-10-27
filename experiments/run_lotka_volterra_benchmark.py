@@ -394,27 +394,20 @@ def _rel_dev(old, new):
     return float(dev) if np.isfinite(dev) else float("inf")
 
 
-def eval_only(path, outdir, anchors, horizon, theta):
-    """--eval-only: rebuild the fit of result JSON ``path`` from its weights
-    and config.effective, recompute every evaluation field and write the
-    updated JSON to ``outdir`` (None: in place)."""
-    with open(path) as f:
-        record = json.load(f)
-    eff = record["config"]["effective"]
-    if max(anchors) + horizon > eff["seq_len"]:
-        raise SystemExit(f"{path}: anchor {max(anchors)} + horizon {horizon} "
-                         f"exceeds seq_len {eff['seq_len']}")
-    data = load_lotka_volterra(n_trajectories=eff["n_trajectories"],
+def load_effective_data(eff):
+    """The data split of a fit, redrawn from its config.effective."""
+    return load_lotka_volterra(n_trajectories=eff["n_trajectories"],
                                seq_len=eff["seq_len"], split=eff.get("split"),
                                seed=eff["data_seed"], system=eff["system"],
                                t_span=eff.get("t_span"),
                                spread=eff.get("ic_spread"))
-    model = rebuild_from_result(path)
-    fresh = evaluate(model, data, eff["build"]["wiring"], eff["system"],
-                     anchors, horizon, theta, eff.get("tau_orb", TAU_ORB))
-    stale = {k: record[k] for k in fresh if k in record}
-    record.update(fresh)
-    record["eval_only"] = {"max_rel_dev": _rel_dev(stale, fresh)}
+
+
+def write_result(record, path, outdir):
+    """Write the updated ``record`` of result JSON ``path`` into ``outdir``
+    (None: in place), weights_path kept pointing at the fit's weights;
+    returns the written path. Shared by the eval-only passes (--eval-only,
+    experiments/rq4_diagnostics.py)."""
     out = path if outdir is None else os.path.join(outdir,
                                                    os.path.basename(path))
     if record.get("weights_path"):      # relative to the JSON's folder
@@ -425,6 +418,27 @@ def eval_only(path, outdir, anchors, horizon, theta):
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w") as f:
         json.dump(record, f)
+    return out
+
+
+def eval_only(path, outdir, anchors, horizon, theta):
+    """--eval-only: rebuild the fit of result JSON ``path`` from its weights
+    and config.effective, recompute every evaluation field and write the
+    updated JSON to ``outdir`` (None: in place)."""
+    with open(path) as f:
+        record = json.load(f)
+    eff = record["config"]["effective"]
+    if max(anchors) + horizon > eff["seq_len"]:
+        raise SystemExit(f"{path}: anchor {max(anchors)} + horizon {horizon} "
+                         f"exceeds seq_len {eff['seq_len']}")
+    data = load_effective_data(eff)
+    model = rebuild_from_result(path)
+    fresh = evaluate(model, data, eff["build"]["wiring"], eff["system"],
+                     anchors, horizon, theta, eff.get("tau_orb", TAU_ORB))
+    stale = {k: record[k] for k in fresh if k in record}
+    record.update(fresh)
+    record["eval_only"] = {"max_rel_dev": _rel_dev(stale, fresh)}
+    out = write_result(record, path, outdir)
     print(f"eval-only {path}: max relative change of the stored metrics "
           f"{record['eval_only']['max_rel_dev']:.2e} -> {out}")
     return record
