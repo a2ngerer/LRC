@@ -126,6 +126,7 @@ def test_runner_ic_spread_overrides_and_is_recorded(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", [
         "run_lotka_volterra_benchmark.py", "--wiring", "dense", "--cell",
         "cfc", "--system", "multitimescale_lib", "--ic-spread", "0.25",
+        "--anchors", "2,4", "--horizon", "4",
         "--epochs", "1", "--n-trajectories", "5", "--seq-len", "8",
         "--size", "4", "--no-save-weights", "--outdir", str(tmp_path)])
     lv_runner.main()
