@@ -14,7 +14,8 @@
 # without the per-recording confusions. #80: G2 reports the PA test macro-F1
 # against the one-class value of the test split and lists an arm at chance.
 # #81: --gk-rule offset reads a K = 3 step up against the test-minus-
-# validation offset of the reference arms; the default stays the S1 reading.
+# validation offset of the reference arms; the default stays the S1 reading;
+# --stage s3co reads every S3 consensus final, named by its record fields.
 import copy
 import json
 import math
@@ -23,7 +24,7 @@ import re
 import numpy as np
 import pytest
 
-from experiments.suite_gate import (CM_KEY, PILOT, SMOKE, _steps,
+from experiments.suite_gate import (CM_KEY, FINAL_CO, PILOT, SMOKE, _steps,
                                     expected_arms, main, pilot_fits)
 from src.evaluation.metrics import confusion_matrix, macro_f1
 
@@ -743,8 +744,8 @@ def test_gk_offset_rule_reads_a_rise_against_the_reference_offset(
     """paired-se fails the +0.02 rise (above its SE) in both cases; the offset
     rule absolves it when the reference offset is larger (0.03 - 0.04) and
     still fails it when its offset exceeds the reference by more than one SE
-    (0.03 - 0.025, while the test step 0.02 alone would not); the reference
-    arm keeps the paired-se rule."""
+    (0.03 - 0.025 > SE about 0); the reference arm keeps the paired-se
+    rule."""
     _offset_fixture(pilot[0], ref_offset)
     code, report, rows = _s1(tmp_path, *pilot)
     assert code == 1 and _only(rows, 'FAIL', ('GK', 'co')), rows
@@ -765,7 +766,7 @@ def test_gk_offset_rule_reads_a_rise_against_the_reference_offset(
         section = report.split('## FAIL: GK co\n')[1]
         assert re.search(r'- avg_in: test macro-F1 does not degrade over the '
                          r'fault grid: 0->1 rises \+0\.020, offset \+0\.0300 '
-                         r'- ref \+0\.0250 > SE [0-9.e+-]+\n', section)
+                         r'- ref \+0\.0250, both > SE [0-9.e+-]+\n', section)
         assert ('- Consequence: protocol check (fault mask, noise scale) '
                 'before the consensus reading (offset rule, protocol '
                 'addendum, #81)\n') in section
@@ -811,3 +812,189 @@ def test_gk_default_rule_is_the_s1_reading(tmp_path, pilot):
     assert len(a) == len(b)
     assert [x.split(':')[0] for x, y in zip(a, b) if x != y] == [
         '| GK | co | PASS | best lr per arm (val_macro_f1_mean)', '- aug_mono']
+
+
+def test_gk_offset_rule_pins_the_epoch_the_se_and_the_median(tmp_path,
+                                                             pilot):
+    """avg_in rises by 0.03 at m = 0 -> 1 with unequal recordings (SE about
+    0.01) on a validation step of -0.005 at best_val_epoch 25 (+0.03 at every
+    other epoch): offset +0.035. The four aug_mono reference fits differ
+    (offsets 0, 0.02, 0.02, 0.10: median 0.02, mean 0.035), so the excess
+    0.015 lies between one and two SE: FAIL. The first, last or next epoch,
+    a margin of two SE or the mean reference offset would pass it."""
+    fits = pilot[0]
+    _offset_fixture(fits, 0.0)
+    _with_confusions(fits, 'avg_in', [0.9, 0.5, 0.9, 0.5, 0.9],
+                     [0.93, 0.51, 0.95, 0.5, 0.96], [0.3] * 5)
+    curve = [[0.65, 0.68, 0.5]] * 40
+    curve[24] = [0.65, 0.645, 0.5]
+    _set(fits, 'co', 'avg_in', (100,), 'val_macro_f1_grid_curve', curve)
+    _set(fits, 'co', 'avg_in', (100,), 'best_val_epoch', 25)
+    refs = sorted((f for f in fits if f[1] == 'aug_mono'),
+                  key=lambda f: float(f[3].split()[1]))
+    for fid, off in zip(refs, (0.0, 0.02, 0.02, 0.10)):
+        fits[fid]['val_macro_f1_grid_curve'] = [
+            [0.65, 0.6, 0.51 - off, 0.45, 0.4]] * 40
+    code, report, rows = _s1(tmp_path, *pilot, *OFFSET)
+    assert code == 1 and _only(rows, 'FAIL', ('GK', 'co')), rows
+    line = next(x for x in report.splitlines()
+                if x.startswith('- avg_in: best lr'))
+    se = float(re.search(r'0->1 \+0\.030 offset \+0\.0350 ref \+0\.0200 '
+                         r'\(SE ([0-9.e+-]+)\)', line).group(1))
+    assert se < 0.03 and se < 0.015 < 2 * se, se
+    assert re.search(r'- avg_in: test macro-F1 does not degrade over the '
+                     r'fault grid: 0->1 rises \+0\.030, offset \+0\.0350 - '
+                     r'ref \+0\.0200, both > SE [0-9.e+-]+\n', report)
+
+
+def test_gk_offset_rule_only_relaxes_the_paired_se_rule(tmp_path, pilot):
+    """A rise of 0.004 within its SE (about 0.15) passes, although its offset
+    (+0.204 on a validation step of -0.2) exceeds the reference offset (0)
+    by more than one SE: the offset rule never fails a step that the
+    paired-se rule accepts."""
+    _offset_fixture(pilot[0], 0.0)
+    _with_confusions(pilot[0], 'avg_in', [0.9, 0.5, 0.9, 0.5, 0.9],
+                     [0.5, 0.92, 0.9, 0.9, 0.5], [0.3] * 5)
+    _set(pilot[0], 'co', 'avg_in', (100,), 'val_macro_f1_grid_curve',
+         [[0.65, 0.45, 0.3]] * 40)
+    code, report, rows = _s1(tmp_path, *pilot, *OFFSET)
+    assert code == 0 and _only(rows, 'PASS'), report
+    se = float(re.search(r'0->1 \+0\.004 offset \+0\.2040 ref [+-]0\.0000 '
+                         r'\(SE ([0-9.e+-]+)\)', report).group(1))
+    assert 0.004 < se < 0.204, se
+
+
+# --- S3 consensus GK reading (#81) -------------------------------------------
+
+# record fields (wiring, n_columns, vote_lambda, consensus, view_average) the
+# committee runner writes for each arm of co_k3_final.yaml (cell cfc_lrc)
+S3_FIELDS = {'ncp_cons': ('ncp', 3, None, 'mean', 'off'),
+             'ncp_lam0': ('ncp', 3, 0.0, 'mean', 'off'),
+             'ncp_med': ('ncp', 3, None, 'median', 'off'),
+             'cncp_cons': ('cncp', 3, None, 'mean', 'off'),
+             'cncp_lam0': ('cncp', 3, 0.0, 'mean', 'off'),
+             'cncp_med': ('cncp', 3, None, 'median', 'off'),
+             'avg_in': ('ncp', 3, None, 'mean', 'mean'),
+             'fault_mean': ('ncp', 3, None, 'mean', 'fault_mean'),
+             'aug_mono': ('ncp', 1, None, 'mean', 'off')}
+
+
+def _s3_fit(arm, seed, test, val):
+    """A flat S3 consensus final: test accuracy per fault count (every
+    recording alike, SE 0), validation macro-F1 per fault count at every
+    epoch."""
+    wiring, k, lam, cons, avg = S3_FIELDS[arm]
+    cms = _confusions(*([a] * 5 for a in test))
+    return {'cell': 'cfc_lrc', 'wiring': wiring, 'n_columns': k,
+            'vote_lambda': lam, 'consensus': cons, 'view_average': avg,
+            'seed': seed, 'lr': 0.003, 'best_val_epoch': 40,
+            'fault_counts': [0.0, 0.1, 0.3, 0.5, 0.67] if k == 1
+            else [0, 1, 2],
+            'val_macro_f1_grid_curve': [val] * 40, CM_KEY: cms,
+            'test_macro_f1_by_fault': [
+                macro_f1(np.sum(list(c.values()), axis=0)) for c in cms],
+            'config': {'effective': {'task': 'committee',
+                                     'deterministic': True}}}
+
+
+@pytest.fixture()
+def s3():
+    """{(arm, seed): record} of co_k3_final.yaml: every arm falls over the
+    grid with test and validation alike (offset 0); the reference arms have
+    the offset +0.02 at 0 -> 1 (aug_mono: 0 -> 0.3) and -0.02 after it."""
+    fits = {}
+    for _, arm, seed, _ in pilot_fits(FINAL_CO):
+        if arm == 'aug_mono':
+            fits[arm, seed] = _s3_fit(arm, seed, [0.8, 0.7, 0.6, 0.5, 0.4],
+                                      [0.8, 0.7, 0.58, 0.5, 0.4])
+        else:
+            fits[arm, seed] = _s3_fit(
+                arm, seed, [0.8, 0.6, 0.4],
+                [0.8, 0.58, 0.4] if arm == 'fault_mean' else [0.8, 0.6, 0.4])
+    return fits
+
+
+def _s3(tmp_path, fits, *extra):
+    """The finals flat in one run folder under names that carry no arm (plus
+    an eval-only record), run --stage s3co; (exit, report, rows)."""
+    d = tmp_path / 'co_k3_final' / 'results'
+    d.mkdir(parents=True, exist_ok=True)
+    for i, rec in enumerate(fits.values()):
+        (d / f'fit{i:02d}.json').write_text(json.dumps(rec))
+    (d / 'fit00.evalonly.json').write_text(json.dumps({'source_record': 'x'}))
+    out = tmp_path / 'S3.md'
+    code = main(['--stage', 's3co', '--runs', str(d.parent), '--out',
+                 str(out), *extra])
+    report = out.read_text()
+    rows = {tuple(c.strip() for c in row.split('|')[1:3]):
+            row.split('|')[3].strip()
+            for row in report.splitlines()
+            if row.startswith('| ') and not row.startswith('| Gate')}
+    return code, report, rows
+
+
+def test_s3co_names_every_flat_final_by_its_arm(tmp_path, s3):
+    """The 45 finals (nine arms x seeds 0-4) are found by their record
+    fields; the offset rule (default of s3co) reads every fit, the reference
+    arms by the paired-se rule."""
+    assert len(s3) == 45
+    code, report, rows = _s3(tmp_path, s3)
+    assert code == 0, report
+    assert rows == {('fits', 'all'): 'PASS', ('config', 'all'): 'PASS',
+                    ('GK', 'co'): 'PASS'}
+    assert report.startswith('# S3 consensus GK reading: PASS\n')
+    assert 'Fit JSONs: 45; expected fits from co_k3_final.yaml' in report
+    assert ('| every fit of the campaign YAMLs present, once | 45/45 '
+            'present |' in report
+            and '9/9 arms pass, 0/45 fits violate; GK rule offset (reference '
+            'fits: aug_mono 5, fault_mean 5) |' in report)
+    for arm, seed in s3:
+        line = next(x for x in report.splitlines()
+                    if x.startswith(f'- {arm} seed {seed}: lr 0.003, '))
+        assert (('; reference arm, paired-se rule; steps' in line)
+                == (arm in ('aug_mono', 'fault_mean'))), line
+    assert re.search(r'- ncp_med seed 2: lr 0\.003, test macro-F1 by fault '
+                     r'\[0\.8, 0\.6, 0\.4\]; offset rule \(10 reference '
+                     r'fits\): .* 0->1 -0\.200 offset [+-]0\.0000 ref '
+                     r'\+0\.0200 \(SE [0-9.e+-]+\), 1->2 -0\.200 offset '
+                     r'[+-]0\.0000 ref -0\.0200 ', report)
+
+
+def test_s3co_fails_an_arm_when_one_seed_violates(tmp_path, s3):
+    """avg_in seed 3 rises by 0.02 at 0 -> 1 on a validation step of -0.01
+    (offset +0.03, 0.01 above the reference): its arm fails. cncp_cons
+    seed 1 rises alike on a validation step of +0.01 (offset +0.01): the
+    offset rule absolves it, the paired-se rule fails it too."""
+    s3['avg_in', 3] = _s3_fit('avg_in', 3, [0.8, 0.82, 0.4],
+                              [0.8, 0.79, 0.4])
+    s3['cncp_cons', 1] = _s3_fit('cncp_cons', 1, [0.8, 0.82, 0.4],
+                                 [0.8, 0.81, 0.4])
+    code, report, rows = _s3(tmp_path, s3)
+    assert code == 1 and rows[('GK', 'co')] == 'FAIL', rows
+    section = report.split('## FAIL: GK co\n')[1]
+    bad = [x for x in section.splitlines() if 'does not degrade' in x]
+    assert len(bad) == 1 and re.match(
+        r'- avg_in seed 3: test macro-F1 does not degrade over the fault '
+        r'grid: 0->1 rises \+0\.020, offset \+0\.0300 - ref \+0\.0200, '
+        r'both > SE [0-9.e+-]+$', bad[0]), bad
+    assert '8/9 arms pass, 1/45 fits violate; GK rule offset' in report
+    assert ('- Consequence: protocol check (fault mask, noise scale) before '
+            'the consensus reading (offset rule, protocol addendum, #81)\n'
+            ) in section
+    code, report, rows = _s3(tmp_path, s3, '--gk-rule', 'paired-se')
+    assert code == 1 and '7/9 arms pass, 2/45 fits violate |' in report
+    assert re.search(r'- cncp_cons seed 1: test macro-F1 does not degrade '
+                     r'over the fault grid: 0->1 rises \+0\.020 > SE', report)
+
+
+def test_s3co_an_arm_without_fits_fails(tmp_path, s3):
+    """A campaign arm without a fit fails the fits row and its GK arm."""
+    for seed in range(5):
+        del s3['ncp_med', seed]
+    code, report, rows = _s3(tmp_path, s3)
+    assert code == 1 and rows == {('fits', 'all'): 'FAIL',
+                                  ('config', 'all'): 'PASS',
+                                  ('GK', 'co'): 'FAIL'}, rows
+    assert '| 40/45 present |' in report
+    assert '| 8/9 arms pass, 0/40 fits violate; GK rule offset' in report
+    assert '- ncp_med: no fit\n' in report.split('## FAIL: GK co\n')[1]
