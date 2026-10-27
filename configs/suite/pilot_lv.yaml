@@ -1,0 +1,22 @@
+# S1 floor and protocol pilot (protocol freeze F1-2026-10-26, validation
+# ladder S1; #75): Lotka-Volterra, five arms x seeds 0-2 = 15 fits, no HPO:
+# lr 1e-3, clip off for every arm (fixed). Same budget, ode_unfolds, dt_scale
+# and forcing as lv_hpo.yaml; the manifest adds the multi-anchor endpoint and
+# --ic-spread 0.4. Checked by experiments/suite_gate.py --stage s1 (G1, G0-E;
+# cluster/README.md, "S1 pilot").
+#   ./cluster/submit_suite.sh --wandb configs/suite/pilot_lv.yaml s1-pilot-lv
+task: lv
+stage: final
+cells:
+  cfc_lrc: [ncp]
+  gru: [ncp, dense3]
+  cfc: [ncp]
+  lrc: [ncp]
+param_budget: 4000
+seeds: [0, 1, 2]
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

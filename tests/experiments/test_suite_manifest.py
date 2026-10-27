@@ -7,7 +7,9 @@
 # YAMLs (configs/suite/{lv,duffing,mt,pa,co}_*.yaml): fit counts per task,
 # endpoint flags, per-arm runs_per_gpu, config_from, committee result names and
 # resume per fit. Issue #72: the S0 smoke YAMLs (configs/suite/smoke_*.yaml),
-# one stage-1 fit per arm of the frozen HPO YAMLs, 93 arm-tasks.
+# one stage-1 fit per arm of the frozen HPO YAMLs, 93 arm-tasks. Issue #75:
+# stage final with a fixed lr/clipnorm instead of hpo_dir, the default stage-1
+# grid from run_grid_hpo.py, the six S1 pilot YAMLs (61 fits).
 import fnmatch
 import json
 from argparse import Namespace
@@ -18,6 +20,8 @@ import pytest
 import yaml
 
 from experiments import run_committee_benchmark as co_runner
+from experiments import run_grid_hpo
+from experiments import suite_manifest
 from experiments import run_lotka_volterra_benchmark as lv_runner
 from experiments import run_person_activity_benchmark as pa_runner
 from experiments.suite_manifest import (RUNNERS, _flag_value, arms, count,
@@ -163,7 +167,14 @@ def test_final_fails_on_a_missing_or_foreign_selection(tmp_path):
 @pytest.mark.parametrize('over, msg', [
     ({'seeds': [0, 0]}, 'two different tuning seeds'),
     ({'seeds': [100, 101, 102]}, 'one tuning seed or two'),
-    ({'stage': 'final'}, 'needs hpo_dir'),
+    ({'stage': 'final'}, 'exactly one of hpo_dir and fixed'),
+    ({'stage': 'final', 'hpo_dir': 'x', 'fixed': {'lr': 1e-3, 'clipnorm': None}},
+     'exactly one of hpo_dir and fixed'),
+    ({'fixed': {'lr': 1e-3, 'clipnorm': None}}, 'stage final only'),
+    ({'stage': 'final', 'fixed': {'lr': '1e-3', 'clipnorm': None}},
+     'fixed must be'),                       # YAML 1e-3 without a dot: a str
+    ({'stage': 'final', 'fixed': {'lr': 1e-3}}, 'fixed must be'),
+    ({'stage': 'final', 'fixed': {'lr': 1e-3, 'clipnorm': 0}}, 'fixed must be'),
     ({'task': 'pa'}, 'lv only'),
     ({'task': 'xx'}, 'task must be one of'),
     ({'arms': {'a': {'cell': 'gru', 'wiring': 'ncp'}}}, "either 'cells' or 'arms'"),
@@ -340,7 +351,7 @@ def test_frozen_arm_matrix():
     assert set(names['duffing_hpo']) - set(names['lv_hpo']) == {
         'cfc_static_ncp', 'ltc_ncp', 'mm_ltc_ncp', 'cfc_mm_ltc_ncp'}
     for path in SUITE.glob('*.yaml'):
-        if path.stem.startswith(('canary', 'smoke')):
+        if path.stem.startswith(('canary', 'smoke', 'pilot')):
             continue
         cfg = load(str(path))
         assert cfg['seeds'] == ([100, 101] if cfg['stage'] == 'hpo'
@@ -577,3 +588,124 @@ def test_smoke_matches_the_frozen_hpo_yaml(smoke):
     if smoke == 'smoke_pa':
         assert s['heavy'] == {'arms': f['heavy']['arms'],
                               'cluster': {'runs_per_gpu': 2}}
+
+
+# --- fixed lr/clipnorm and the S1 pilots (#75) -------------------------------
+
+def test_final_with_fixed_reads_no_selection(tmp_path, capsys):
+    """fixed instead of hpo_dir: every final line takes its lr (and clipnorm
+    unless null), no hpo_selection.json is read; config_from and extra_seeds
+    behave as with hpo_dir; --count, --list and --write work."""
+    cfg = load(_cfg(tmp_path, stage='final', seeds=[0, 1],
+                    fixed={'lr': 0.003, 'clipnorm': None},
+                    extra_seeds={'seeds': [5], 'arms': ['lrc_ncp']},
+                    config_from={'lrc_cncp': 'lrc_ncp'}))
+    lines = expand(cfg)
+    assert [line['id'] for line in lines][-3:] == [
+        'lrc_cncp_seed0', 'lrc_cncp_seed1', 'lrc_ncp_seed5']
+    assert len(lines) == count(cfg) == 6 * 2 + 1
+    for line in lines:
+        assert _flag_value(line['argv'], '--lr') == '0.003'
+        assert '--clipnorm' not in line['argv']
+    assert lines[0]['argv'][:13] == [
+        'uv', 'run', 'python', 'experiments/run_lotka_volterra_benchmark.py',
+        '--cell', 'cfc_lrc', '--wiring', 'dense3', '--seed', '0', '--system',
+        'duffing', '--lr']
+    cfg['fixed']['clipnorm'] = 1.0
+    assert all(line['argv'][line['argv'].index('--lr'):][:4] == [
+        '--lr', '0.003', '--clipnorm', '1'] for line in expand(cfg))
+    path = _cfg(tmp_path, stage='final', seeds=[0],
+                fixed={'lr': 0.001, 'clipnorm': None})
+    main(['--count', path])
+    main([path, '--list'])
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == '6' and len(out) == 7 and '--lr 0.001' in out[1]
+    plan = write(load(path), expand(load(path)), str(tmp_path)).splitlines()
+    assert plan[:3] == ['SUITE_BENCH=02_duffing', 'SUITE_STAGE=final',
+                        'SUITE_COUNT=6']
+
+
+def test_stage1_grid_defaults_to_run_grid_hpo(tmp_path, monkeypatch):
+    """--count of a one-seed hpo line without --grid-lr/--grid-clip takes the
+    grid of run_grid_hpo.py (GRID_LR x GRID_CLIP), not a hard-coded 4 x 2."""
+    assert (suite_manifest.GRID_LR, suite_manifest.GRID_CLIP) == (
+        run_grid_hpo.GRID_LR, run_grid_hpo.GRID_CLIP)
+    cfg = load(_cfg(tmp_path, seeds=[100]))
+    assert count(cfg) == 6 * len(run_grid_hpo.GRID_LR) * len(
+        run_grid_hpo.GRID_CLIP)
+    monkeypatch.setattr(suite_manifest, 'GRID_LR', (1e-3, 3e-3, 1e-2))
+    assert count(cfg) == 6 * 3 * 2
+    assert count(load(_cfg(tmp_path, seeds=[100], extra_args=[
+        '--grid-clip', 'off']))) == 6 * 3
+
+
+PILOTS = {'pilot_lv': 15, 'pilot_duffing': 15, 'pilot_mt': 6, 'pilot_pa': 6,
+          'pilot_lv_dt1': 3, 'pilot_co': 16}
+
+
+def test_pilot_counts_61(capsys):
+    """Validation ladder S1: 15 + 15 + 6 + 6 + 3 + 16 = 61 fits."""
+    for name, n in PILOTS.items():
+        assert count(_frozen(name)) == n, name
+    main(['--count', *(str(SUITE / f'{n}.yaml') for n in PILOTS)])
+    assert capsys.readouterr().out.strip() == '61'
+
+
+@pytest.mark.parametrize('name', [n for n in PILOTS if n != 'pilot_co'])
+def test_pilot_final_lines(name, tmp_path):
+    """lr 1e-3, clip off, the frozen budget, epochs (300 / 50), ode_unfolds 6,
+    dt_scale (auto; 1 for the control), mixed forcing and the multi-anchor
+    endpoint on the rollouts, seeds 0-2; the arms of the issue; resources of
+    the task's *_final.yaml; PA lrc/ncp alone on its GPU."""
+    cfg = _frozen(name)
+    final = _frozen({'pilot_lv_dt1': 'lv_final'}.get(
+        name, name.replace('pilot_', '') + '_final'), tmp_path / 'hpo')
+    lines = expand(cfg)
+    assert cfg['seeds'] == [0, 1, 2] and 'hpo_dir' not in cfg
+    assert cfg['param_budget'] == final['param_budget']
+    assert cfg['cluster'] == final['cluster']
+    assert [a[0] for a in arms(cfg)] == {
+        'pilot_mt': ['cfc_ncp', 'cfc_static_ncp'],
+        'pilot_pa': ['cfc_lrc_ncp', 'lrc_ncp'],
+        'pilot_lv_dt1': ['cfc_lrc_ncp']}.get(name, [
+            'cfc_lrc_ncp', 'gru_ncp', 'gru_dense3', 'cfc_ncp', 'lrc_ncp'])
+    for line in lines:
+        argv = line['argv']
+        flags = {f: _flag_value(argv, f) for f in (
+            '--lr', '--clipnorm', '--epochs', '--ode-unfolds', '--dt-scale',
+            '--forcing', '--anchors', '--horizon')}
+        rollout = cfg['task'] == 'lv'
+        assert flags == {
+            '--lr': '0.001', '--clipnorm': None,
+            '--epochs': '300' if rollout else '50', '--ode-unfolds': '6',
+            '--dt-scale': '1' if name == 'pilot_lv_dt1' else 'auto',
+            '--forcing': 'mixed' if rollout else None,
+            '--anchors': '8,16,24,32' if rollout else None,
+            '--horizon': '96' if rollout else None}
+    plan = dict(row.split('=', 1) for row in write(
+        cfg, lines, str(tmp_path)).splitlines())
+    if name == 'pilot_pa':
+        assert plan['SUITE_heavy_RUNS_PER_GPU'] == '1'
+        assert [line['id'] for line in lines if line['group'] == 'heavy'] == [
+            'lrc_ncp_seed0', 'lrc_ncp_seed1', 'lrc_ncp_seed2']
+    else:
+        assert 'SUITE_heavy_N' not in plan
+
+
+def test_pilot_co_is_the_k3_stage1_grid():
+    """The consensus pilot: the four core arms of co_k3_hpo.yaml, tuning seed
+    100 only, the default lr grid x clip off, K = 3, bb1, 40 epochs."""
+    cfg, ref = _frozen('pilot_co'), _frozen('co_k3_hpo')
+    assert arms(cfg) == [a for a in arms(ref) if a[0] in (
+        'ncp_cons', 'ncp_lam0', 'avg_in', 'aug_mono')]
+    assert (cfg['seeds'], cfg['epochs'], cfg['param_budget'],
+            cfg['cluster']) == ([100], 40, ref['param_budget'], ref['cluster'])
+    for line in expand(cfg):
+        argv = line['argv']
+        assert argv[3] == 'experiments/run_grid_hpo.py'
+        assert '--grid-lr' not in argv
+        assert [_flag_value(argv, f) for f in (
+            '--tuning-seeds', '--n-columns', '--backbone-layers',
+            '--grid-clip', '--epochs')] == [
+            '100', '1' if line['id'] == 'hpo_aug_mono' else '3', '1', 'off',
+            '40']

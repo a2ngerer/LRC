@@ -1,0 +1,20 @@
+# S1 floor and protocol pilot (F1-2026-10-26, ladder S1; #75): Duffing, the
+# five arms of pilot_lv.yaml x seeds 0-2 = 15 fits, lr 1e-3, clip off (fixed).
+# Same budget, ode_unfolds, dt_scale and forcing as duffing_hpo.yaml.
+#   ./cluster/submit_suite.sh --wandb configs/suite/pilot_duffing.yaml s1-pilot-duffing
+task: lv
+system: duffing
+stage: final
+cells:
+  cfc_lrc: [ncp]
+  gru: [ncp, dense3]
+  cfc: [ncp]
+  lrc: [ncp]
+param_budget: 4000
+seeds: [0, 1, 2]
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

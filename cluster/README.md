@@ -345,3 +345,73 @@ as DECISION "op-determinism off for the suite", a missing or unreadable probe
 file fails as "not measured") and a floor line per system and data seed. The
 report lists every check as PASS, FAIL or DECISION with the offending arms;
 exit 0 only when no check fails. A failed S0 is fixed and repeated.
+
+### S1 pilot (#75)
+
+Stage S1 of the frozen protocol pilots the floors, the epoch counts and the
+consensus protocol with a fixed learning rate before any HPO fit: six campaign
+YAMLs, 61 fits. The finals use `fixed: {lr: 0.001, clipnorm: null}` instead of
+`hpo_dir` (lr 1e-3, clip off, no `hpo_selection.json`) with the budget,
+`ode_unfolds`, `dt_scale` and forcing of the frozen `*_hpo.yaml`:
+`pilot_lv.yaml` and `pilot_duffing.yaml` (cfc_lrc/ncp, gru/ncp, gru/dense3,
+cfc/ncp, lrc/ncp; seeds 0-2, 300 epochs, 15 each), `pilot_mt.yaml` (cfc/ncp,
+cfc_static/ncp, 6), `pilot_pa.yaml` (cfc_lrc/ncp, lrc/ncp, 50 epochs, 6;
+lrc/ncp alone on its GPU, so its `wallclock_s` is the single-fit wall time)
+and the dt_scale control `pilot_lv_dt1.yaml` (cfc_lrc/ncp at `dt_scale: 1`, 3,
+its own run folder). `pilot_co.yaml` is stage 1 of the K = 3 consensus HPO for
+ncp_cons, ncp_lam0, avg_in and aug_mono (tuning seed 100, the default lr grid,
+clip off, 16). Submit order (the longest chains first):
+
+```bash
+uv run python experiments/suite_manifest.py --count configs/suite/pilot_{lv,duffing,mt,pa,lv_dt1,co}.yaml   # 61
+./cluster/submit_suite.sh --wandb configs/suite/pilot_pa.yaml s1-pilot-pa              # 03_person_activity
+./cluster/submit_suite.sh --wandb configs/suite/pilot_co.yaml s1-pilot-co              # 04_column_voting
+./cluster/submit_suite.sh --wandb configs/suite/pilot_lv.yaml s1-pilot-lv              # 01_lotka_volterra
+./cluster/submit_suite.sh --wandb configs/suite/pilot_duffing.yaml s1-pilot-duffing    # 02_duffing
+./cluster/submit_suite.sh --wandb configs/suite/pilot_mt.yaml s1-pilot-mt              # 01_lotka_volterra
+./cluster/submit_suite.sh --wandb configs/suite/pilot_lv_dt1.yaml s1-pilot-lv_dt1      # 01_lotka_volterra
+```
+
+Then fetch the six run folders, write the floor lines of the three rollout
+pilots and run the gate:
+
+```bash
+D=<YYYY-MM-DD>
+./cluster/fetch_run.sh 03_person_activity ${D}_s1-pilot-pa
+./cluster/fetch_run.sh 04_column_voting ${D}_s1-pilot-co
+./cluster/fetch_run.sh 02_duffing ${D}_s1-pilot-duffing
+for t in lv mt lv_dt1; do ./cluster/fetch_run.sh 01_lotka_volterra ${D}_s1-pilot-$t; done
+for t in lv mt; do
+    uv run python experiments/aggregate_results.py --runs none --out results/s1-gate/$t \
+        --rollout-runs results/01_lotka_volterra/${D}_s1-pilot-$t --floors
+done
+uv run python experiments/aggregate_results.py --runs none --out results/s1-gate/duffing \
+    --rollout-runs results/02_duffing/${D}_s1-pilot-duffing --floors
+uv run python experiments/suite_gate.py --stage s1 \
+    --runs results/01_lotka_volterra/${D}_s1-pilot-{lv,mt,lv_dt1} \
+           results/02_duffing/${D}_s1-pilot-duffing \
+           results/03_person_activity/${D}_s1-pilot-pa \
+           results/04_column_voting/${D}_s1-pilot-co \
+    --floors results/s1-gate/{lv,duffing,mt}/floors.json \
+    --out results/s1-gate/REPORT.md
+```
+
+`suite_gate.py --stage s1` reads every fit JSON below the run folders (a
+rollout fit at `dt_scale` 1 is the control), checks that all 61 fits and a
+floor line per rollout data seed are present, and evaluates the S1 go
+criteria with the frozen thresholds (test split for the rollouts):
+
+| Gate | Criterion | On FAIL (pre-registered) |
+|------|-----------|--------------------------|
+| G1 lv, duffing | `vpt_multi_median` of cfc_lrc/ncp > max(persistence, AR(1)) of its data seed + 2 steps in >= 2 of 3 seeds | floor-bound: H-b/H-c contrasts on this task are floor-bound, the H-c conjunction runs over the tasks that pass |
+| G1 multitimescale_lib | cfc/ncp >= 2 x persistence in >= 2 of 3 seeds, `rate_unbounded` 0 on every cfc/ncp fit | spread 0.25 or 256 steps, repeat once |
+| G0-E per task | an (arm, seed) qualifies when the mean of the last tenth of `val_loss_curve` (lower is better) or `val_macro_f1_curve` (Person Activity, higher is better) beats its value at 2/3 of the epochs by > 5 % relative; >= 2 pilot arms with >= 2 qualifying seeds give the DECISION "epochs x1.5 (300 to 450)" or "epochs x2 (50 to 100)", else "epochs unchanged" | a fit without the curve fails the row |
+| G2 pa | median test macro-F1 of cfc_lrc/ncp >= 0.60, every lrc/ncp fit finite (`training_diverged` false); `wallclock_s` of both arms listed | stop, find the cause before S2 |
+| G3 lv | descriptive: median VPT of the dt_scale=1 control next to the main arm | never fails |
+| GK co | per arm the fit with the best `val_macro_f1_mean`: validation macro-F1 at m=0 >= 0.60, `test_macro_f1_by_fault` non-increasing; ncp_cons `vote_lambda_final` in (0.05, 0.95) | architecture check (width, backbone) before the consensus continues; vote_init check (one fit) for lambda at the edges |
+
+The committee JSON stores no per-batch fault-count sequence or hash, so the
+gate says so and does not compare the fault schedule across the four arms
+(the runner draws every batch from `corruption_seed`, `CorruptedBatches`; the
+fault grid is K-specific). Every row is PASS, FAIL (with the consequence) or
+DECISION; exit 0 only when no row fails, a DECISION does not fail the gate.

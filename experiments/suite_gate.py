@@ -1,7 +1,7 @@
-"""S0 smoke gate of the frozen suite (#72; protocol freeze F1-2026-10-26,
-validation ladder S0).
+"""S0 smoke and S1 pilot gates of the frozen suite (#72, #75; protocol freeze
+F1-2026-10-26, validation ladder S0 and S1).
 
-Reads every fit JSON below the given run folders
+--stage s0 reads every fit JSON below the given run folders
 (<run>/results/hpo/<arm>/lr*_clip*_seed*/*.json, run_grid_hpo.py under
 cluster/submit_suite.sh) and checks the S0 criteria:
 
@@ -43,6 +43,38 @@ cluster/submit_suite.sh) and checks the S0 criteria:
                     floors.json): a floor line with a finite val and test
                     floor per rollout system and data seed of the fits
 
+--stage s1 reads every fit JSON below the pilot run folders (finals in
+results/, the consensus pilot under results/hpo/<arm>/lr*_clip*_seed100/; a
+rollout fit with config.effective.dt_scale 1 is the dt_scale control) and
+evaluates the S1 go criteria with the frozen thresholds:
+
+  fits   every fit of the six pilot YAMLs present once (--configs, default
+         configs/suite/pilot_{lv,duffing,mt,pa,lv_dt1,co}.yaml, 61 fits)
+  floors a floor line per rollout system and data seed (--floors)
+  G1     LV, Duffing: test vpt_multi_median of cfc_lrc/ncp above
+         max(persistence, AR(1)) of its data seed + 2 steps in >= 2 of 3 seeds;
+         multitimescale_lib: cfc/ncp >= 2 x persistence in >= 2 of 3 seeds and
+         rate_unbounded 0 on every cfc/ncp fit (test split)
+  G0-E   per task, an (arm, seed) qualifies when the validation metric's mean
+         over the last tenth of the epochs beats its value at two thirds of the
+         epochs by more than 5 % relative (rollouts val_loss_curve, lower is
+         better; Person Activity val_macro_f1_curve, higher is better);
+         DECISION epochs x1.5 (rollouts) or x2 (Person Activity) when >= 2
+         pilot arms have >= 2 qualifying seeds (F1 decision m)
+  G2     Person Activity: median test_macro_f1 of cfc_lrc/ncp >= 0.60, every
+         lrc/ncp fit finite (training_diverged false, finite macro-F1);
+         wallclock_s of both arms listed
+  G3     descriptive: median VPT of the dt_scale=1 control next to the main arm
+  GK     consensus pilot, per arm (ncp_cons, ncp_lam0, avg_in, aug_mono) the
+         fit with the best val_macro_f1_mean (the HPO key; grid order on
+         ties): validation macro-F1 at m=0 (best epoch) >= 0.60,
+         test_macro_f1_by_fault non-increasing over the fault grid; ncp_cons
+         vote_lambda_final in (0.05, 0.95). The committee JSON stores no
+         per-batch fault-count sequence or hash, so the fault schedule is not
+         compared (said so in the report)
+
+A FAIL row carries the pre-registered consequence of F1 section 7.
+
 The report (--out, Markdown, also printed) lists every check as PASS, FAIL or
 DECISION with the offending arms; the exit code is 0 only when no check
 fails.
@@ -52,6 +84,9 @@ Usage:
         --runs results/00_canary/<date>_s0-smoke-{lv,duffing,mt,pa,co} \\
         --determinism <probe run>/results/determinism_probe.json \\
         --floors <agg>/{lv,duffing,mt}/floors.json --out S0_GATE.md
+    uv run python experiments/suite_gate.py --stage s1 \\
+        --runs <the six pilot run folders> \\
+        --floors <agg>/{lv,duffing,mt}/floors.json --out S1_GATE.md
 """
 from __future__ import annotations
 
@@ -59,6 +94,7 @@ import argparse
 import json
 import math
 import os
+import statistics
 import sys
 from collections import Counter
 from functools import lru_cache
@@ -67,8 +103,8 @@ from glob import glob
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from experiments.suite_manifest import (LV_DEFAULT_SYSTEM, jobs,  # noqa: E402
-                                        load)
+from experiments.suite_manifest import (LV_DEFAULT_SYSTEM, grid,  # noqa: E402
+                                        jobs, load)
 from src.benchmark.registry import cell_kwargs  # noqa: E402
 from src.evaluation.rollout_metrics import ANCHORS  # noqa: E402
 
@@ -377,15 +413,354 @@ def report(results, exempt, listed, unexpected, runs, configs, n_fits):
     return "\n".join(lines) + "\n", ok
 
 
+# --- S1 pilot gate (#75) ----------------------------------------------------
+
+PILOT = [os.path.join(ROOT, "configs", "suite", f"pilot_{t}.yaml")
+         for t in ("lv", "duffing", "mt", "pa", "lv_dt1", "co")]
+DUF, MT = "duffing", "multitimescale_lib"
+CONTROL = "dt_scale 1"           # tag of the dt_scale control fits (F1 h)
+FLOOR_MARGIN, MT_FACTOR, MIN_SEEDS = 2, 2, 2          # G1
+TAIL, MARK, GAIN, MIN_ARMS = 0.1, 2 / 3, 0.05, 2      # G0-E (F1 decision m)
+CURVES = {"lv": ("val_loss_curve", False), "pa": ("val_macro_f1_curve", True)}
+EPOCH_FACTOR = {"lv": 1.5, "pa": 2}
+MIN_F1, LAMBDA = 0.60, (0.05, 0.95)                    # G2, GK
+GK_ARMS = ("ncp_cons", "ncp_lam0", "avg_in", "aug_mono")
+CONSEQUENCE = {   # F1 section 7, "Bei Fehlschlag"
+    "fits": "complete the pilot runs (cluster/submit_suite.sh --resume, one "
+            "run folder per pilot YAML) and rerun the gate",
+    "floors": "write the floor lines (aggregate_results.py --floors over the "
+              "pilot runs) and rerun the gate",
+    "G1": "floor-bound: H-b/H-c contrasts on this task are floor-bound, the "
+          "H-c conjunction runs over the tasks that pass",
+    "G1 mt": "spread 0.25 or 256 steps, repeat once",
+    "G0-E": "no validation curve: the epoch gate cannot be decided",
+    "G2": "stop, find the cause before S2",
+    "GK": "architecture check (width, backbone) before the consensus "
+          "continues",
+    "GK lambda": "vote_init check (one fit)",
+}
+
+
+def _name(key):
+    return "lv" if key == LV_DEFAULT_SYSTEM else key
+
+
+def _num(v, default=math.nan):
+    return v if _finite(v) else default
+
+
+def _median(xs):
+    return statistics.median(xs) if xs else math.nan
+
+
+def read_pilot_fits(runs):
+    """One dict per fit JSON below the run folders (as read_fits, plus seed
+    and tag): arm (task key, cell_wiring; an hpo fit: its hpo/<arm> folder),
+    tag CONTROL for a rollout fit at dt_scale 1, 'lr <lr>' for an hpo fit,
+    else ''. JSONs without config.effective.task (hpo_selection.json, wandb
+    files) are left out."""
+    fits = []
+    for run in runs:
+        for path in sorted(glob(os.path.join(run, "**", "*.json"),
+                                recursive=True)):
+            with open(path, encoding="utf-8") as f:
+                rec = json.load(f)
+            task = (TASKS.get(_eff(rec).get("task"))
+                    if isinstance(rec, dict) else None)
+            if task is None:
+                continue
+            parts = path.split(os.sep)
+            hpo = len(parts) > 3 and parts[-4] == "hpo"
+            arm = (parts[-3] if hpo
+                   else f"{rec.get('cell')}_{rec.get('wiring')}")
+            tag = (f"lr {rec.get('lr'):g}" if hpo else CONTROL
+                   if task == "lv" and _eff(rec).get("dt_scale") == 1 else "")
+            fits.append({"arm": (_task_key(task, rec.get("system")), arm),
+                         "task": task, "seed": rec.get("seed"), "tag": tag,
+                         "path": path, "rec": rec})
+    return fits
+
+
+def pilot_fits(configs):
+    """{(task key, arm, seed, tag)} of the pilot YAMLs: one per final line,
+    one per stage-1 grid lr on the first tuning seed per hpo line."""
+    out = set()
+    for path in configs:
+        cfg = load(path)
+        key = _task_key(cfg["task"], cfg.get("system"))
+        tag = CONTROL if cfg["task"] == "lv" and cfg["dt_scale"] == 1 else ""
+        for (name, _, _, flags), _, seed in jobs(cfg):
+            if seed is None:
+                out |= {(key, name, cfg["seeds"][0], f"lr {lr:g}")
+                        for lr in grid(cfg, flags)[0]}
+            else:
+                out.add((key, name, seed, tag))
+    return out
+
+
+def _pick(fits, key, arm=None, tag=""):
+    """The fits of one task key (and arm) with this tag (None: any)."""
+    return sorted((f for f in fits if f["arm"][0] == key
+                   and arm in (None, f["arm"][1]) and tag in (None, f["tag"])),
+                  key=lambda f: (f["arm"], f["seed"], f["path"]))
+
+
+def _vpt(rec):
+    """Test vpt_multi_median; non-finite or missing is 0 (the worst value)."""
+    return _num((rec.get("rollout_metrics_test") or {}).get(
+        "vpt_multi_median"), 0.0)
+
+
+def _row(gate, task, criterion, summary, bad=(), decision=None,
+         consequence=None, detail=()):
+    return {"gate": gate, "task": task, "criterion": criterion,
+            "summary": summary, "bad": list(bad), "decision": decision,
+            "consequence": consequence, "detail": list(detail)}
+
+
+def check_pilot_fits(fits, expected):
+    have, bad = Counter((*f["arm"], f["seed"], f["tag"]) for f in fits), []
+    for k, a, s, t in sorted(expected, key=str):
+        n = have[k, a, s, t]
+        if n != 1:
+            bad.append(f"{_name(k)}/{a} seed {s}{f' ({t})' if t else ''}: "
+                       + (f"{n} fits" if n else "no fit"))
+    return _row("fits", "all", "every fit of the pilot YAMLs present, once",
+                f"{sum(1 for e in expected if have[e])}/{len(expected)} "
+                f"present", bad, consequence=CONSEQUENCE["fits"])
+
+
+def gate_floors(fits, lines):
+    """G1: cfc_lrc/ncp above max(persistence, AR(1)) + 2 (LV, Duffing);
+    cfc/ncp at least 2 x persistence and never unbounded (multitimescale_lib).
+    lines: {(system, data seed): the test block of its floors.json draw}."""
+    rows = []
+    for key in (LV_DEFAULT_SYSTEM, DUF, MT):
+        mt = key == MT
+        arm = "cfc_ncp" if mt else "cfc_lrc_ncp"
+        fs, n_ok, bad, detail = _pick(fits, key, arm), 0, [], []
+        for f in fs:
+            rec, s = f["rec"], f["seed"]
+            ds = _eff(rec).get("data_seed")
+            line = lines.get((rec.get("system"), ds))
+            if line is None:
+                detail.append(f"seed {s} (data seed {ds}): no floor line")
+                continue
+            if mt:
+                p = line["persistence"]["vpt_multi_median"]
+                bar, why = MT_FACTOR * p, f"{MT_FACTOR} x persistence {p:g}"
+                ok = _vpt(rec) >= bar
+                unb = (rec.get("rollout_metrics_test") or {}).get(
+                    "rate_unbounded")
+                if unb != 0:
+                    bad.append(f"seed {s}: rate_unbounded {unb!r}")
+            else:
+                bar = line["floor"] + FLOOR_MARGIN
+                why = f"floor {line['floor']:g} + {FLOOR_MARGIN}"
+                ok = _vpt(rec) > bar
+            n_ok += ok
+            detail.append(f"seed {s} (data seed {ds}): VPT {_vpt(rec):g} vs "
+                          f"{bar:g} ({why}) -> {'pass' if ok else 'no'}")
+        if n_ok < MIN_SEEDS:
+            bad.insert(0, f"{n_ok} of {len(fs)} seeds pass (needs "
+                          f"{MIN_SEEDS})")
+        crit = (f"test VPT of cfc/ncp >= {MT_FACTOR} x persistence in >= "
+                f"{MIN_SEEDS} of 3 seeds; rate_unbounded 0 on every fit" if mt
+                else f"test VPT of cfc_lrc/ncp > max(persistence, AR(1)) + "
+                     f"{FLOOR_MARGIN} in >= {MIN_SEEDS} of 3 seeds")
+        rows.append(_row("G1", _name(key), crit,
+                         f"{n_ok}/{len(fs)} seeds pass", bad,
+                         consequence=CONSEQUENCE["G1 mt" if mt else "G1"],
+                         detail=detail))
+    return rows
+
+
+def gate_epochs(fits):
+    """G0-E per task over its pilot arms (the dt_scale control left out)."""
+    rows = []
+    for key in (LV_DEFAULT_SYSTEM, DUF, MT, "pa"):
+        kind = "pa" if key == "pa" else "lv"
+        curve_key, higher = CURVES[kind]
+        qualifying, bad, detail, epochs = {}, [], [], []
+        for f in _pick(fits, key):
+            label = f"{f['arm'][1]} seed {f['seed']}"
+            c = f["rec"].get(curve_key)
+            if not isinstance(c, list) or len(c) < 3:
+                bad.append(f"{label}: no {curve_key}")
+                continue
+            n, k = len(c), max(1, round(len(c) * TAIL))
+            mark, tail = c[round(n * MARK) - 1], sum(c[-k:]) / k
+            gain = (tail - mark if higher else mark - tail) / (
+                abs(mark) or math.nan)
+            q = gain > GAIN                         # NaN never qualifies
+            epochs.append(n)
+            qualifying.setdefault(f["arm"][1], []).append(q)
+            detail.append(f"{label}: {mark:.4g} at epoch {round(n * MARK)}, "
+                          f"{tail:.4g} over the last {k} ({gain:+.1%})"
+                          f"{' qualifies' if q else ''}")
+        arms = [a for a, qs in qualifying.items() if sum(qs) >= MIN_SEEDS]
+        decision = summary = None
+        if len(arms) >= MIN_ARMS:
+            e, x = max(epochs), EPOCH_FACTOR[kind]
+            decision = summary = f"epochs x{x:g} ({e} to {round(e * x)})"
+            decision += f": {', '.join(arms)} qualify"
+        rows.append(_row(
+            "G0-E", _name(key),
+            f"{curve_key} ({'higher' if higher else 'lower'} is better): "
+            f"mean over the last tenth beats the value at 2/3 of the epochs "
+            f"by > {GAIN:.0%}; >= {MIN_ARMS} arms with >= {MIN_SEEDS} "
+            f"qualifying seeds change the epochs",
+            summary or f"epochs unchanged ({len(arms)} of {len(qualifying)} "
+                       f"arms qualify)",
+            bad, decision, CONSEQUENCE["G0-E"], detail))
+    return rows
+
+
+def gate_pa(fits):
+    """G2: cfc_lrc/ncp median test macro-F1, lrc/ncp finite, wall times."""
+    main, solver = _pick(fits, "pa", "cfc_lrc_ncp"), _pick(fits, "pa",
+                                                           "lrc_ncp")
+    med = _median([_num(f["rec"].get("test_macro_f1"), -math.inf)
+                   for f in main])
+    bad = [] if med >= MIN_F1 else [
+        f"median test macro-F1 of cfc_lrc/ncp {med:.3f} < {MIN_F1:.2f}"]
+    bad += [] if solver else ["lrc/ncp: no fit"]
+    for f in solver:
+        r = f["rec"]
+        why = [k for k in PRIMARY["pa"] if not _finite(r.get(k))] + (
+            [] if r.get("training_diverged") is False
+            else [f"training_diverged {r.get('training_diverged')!r}"])
+        if why:
+            bad.append(f"lrc/ncp seed {f['seed']}: {', '.join(why)}")
+    detail = [f"{f['arm'][1]} seed {f['seed']}: test macro-F1 "
+              f"{_num(f['rec'].get('test_macro_f1')):.3f}, wallclock_s "
+              f"{f['rec'].get('wallclock_s')}" for f in main + solver]
+    return [_row("G2", "pa", f"median test macro-F1 of cfc_lrc/ncp >= "
+                 f"{MIN_F1:.2f}; every lrc/ncp fit finite (wallclock_s "
+                 f"listed)",
+                 f"median {med:.3f}; lrc/ncp wallclock_s "
+                 f"{[f['rec'].get('wallclock_s') for f in solver]}", bad,
+                 consequence=CONSEQUENCE["G2"], detail=detail)]
+
+
+def gate_dt_scale(fits):
+    """G3, descriptive: the dt_scale=1 control next to the main arm."""
+    arms = {t: _pick(fits, LV_DEFAULT_SYSTEM, "cfc_lrc_ncp", t)
+            for t in (CONTROL, "")}
+    med = {t: _median([_vpt(f["rec"]) for f in fs]) for t, fs in arms.items()}
+    detail = [f"{'dt_scale 1' if t else 'main arm'} seed {f['seed']}: VPT "
+              f"{_vpt(f['rec']):g} (dt_scale {_eff(f['rec']).get('dt_scale')})"
+              for t, fs in arms.items() for f in fs]
+    return [_row("G3", "lv", "descriptive: median test VPT of cfc_lrc/ncp at "
+                 "dt_scale 1 next to the main arm (dt_scale auto)",
+                 f"median VPT {med[CONTROL]:g} (dt_scale 1, "
+                 f"{len(arms[CONTROL])} fits) vs {med['']:g} (main, "
+                 f"{len(arms[''])} fits)", detail=detail)]
+
+
+def gate_consensus(fits):
+    """GK on the best-lr fit of each consensus pilot arm."""
+    bad, detail, consequences, corruption = [], [], [], set()
+    for arm in GK_ARMS:
+        fs = _pick(fits, "co", arm, None)
+        if not fs:
+            bad.append(f"{arm}: no fit")
+            consequences.append(CONSEQUENCE["fits"])
+            continue
+        r = min(fs, key=lambda f: (-_num(f["rec"].get("val_macro_f1_mean"),
+                                         -math.inf), f["rec"]["lr"]))["rec"]
+        corruption.add(r.get("corruption_seed"))
+        try:
+            m0 = r["val_macro_f1_grid_curve"][r["best_val_epoch"] - 1][
+                r["fault_counts"].index(0)]
+        except (KeyError, IndexError, TypeError, ValueError):
+            m0 = math.nan
+        grid_f1 = r.get("test_macro_f1_by_fault") or []
+        lam = _num(r.get("vote_lambda_final"))
+        detail.append(
+            f"{arm}: best lr {r['lr']:g} (val_macro_f1_mean "
+            f"{_num(r.get('val_macro_f1_mean')):.3f}), val macro-F1 at m=0 "
+            f"{_num(m0):.3f}, test macro-F1 by fault "
+            f"{[round(v, 3) for v in grid_f1]}"
+            + (f", vote_lambda_final {lam:.3f}" if arm == "ncp_cons" else ""))
+        if not _num(m0) >= MIN_F1:
+            bad.append(f"{arm}: validation macro-F1 at m=0 {_num(m0):.3f} < "
+                       f"{MIN_F1:.2f} at its best lr {r['lr']:g}")
+            consequences.append(CONSEQUENCE["GK"])
+        if not (grid_f1 and all(_finite(v) for v in grid_f1) and all(
+                a >= b for a, b in zip(grid_f1, grid_f1[1:]))):
+            bad.append(f"{arm}: test macro-F1 not non-increasing over the "
+                       f"fault grid {[round(v, 3) for v in grid_f1]}")
+            consequences.append(CONSEQUENCE["GK"])
+        if arm == "ncp_cons" and not LAMBDA[0] < lam < LAMBDA[1]:
+            bad.append(f"ncp_cons: vote_lambda_final {lam:.3f} outside "
+                       f"{LAMBDA}")
+            consequences.append(CONSEQUENCE["GK lambda"])
+    detail.append(f"fault schedule: the committee JSON stores no per-batch "
+                  f"fault-count sequence or hash (fault_counts is the grid; "
+                  f"corruption_seed {sorted(corruption, key=str)}), not compared")
+    return [_row("GK", "co", f"best lr per arm (val_macro_f1_mean): "
+                 f"validation macro-F1 at m=0 >= {MIN_F1:.2f}, test macro-F1 "
+                 f"non-increasing over the fault grid; ncp_cons "
+                 f"vote_lambda_final in {LAMBDA}",
+                 f"{len(GK_ARMS) - len({b.split(':')[0] for b in bad})}/"
+                 f"{len(GK_ARMS)} arms pass", bad,
+                 consequence="; ".join(dict.fromkeys(consequences)),
+                 detail=detail)]
+
+
+def gate_s1(fits, expected, floors):
+    """The S1 rows: fits, floors, G1, G0-E, G2, G3, GK."""
+    _, desc, bad, _ = check_floors(fits, floors)
+    lines = {(d.get("system"), d.get("data_seed")): d.get("test") or {}
+             for fl in floors for d in fl.get("floors", [])}
+    return [check_pilot_fits(fits, expected),
+            _row("floors", "rollouts", desc, f"{len(bad)} missing", bad,
+                 consequence=CONSEQUENCE["floors"]),
+            *gate_floors(fits, lines), *gate_epochs(fits), *gate_pa(fits),
+            *gate_dt_scale(fits), *gate_consensus(fits)]
+
+
+def _status(row):
+    return "FAIL" if row["bad"] else "DECISION" if row["decision"] else "PASS"
+
+
+def report_s1(rows, runs, configs, n_fits):
+    ok = not any(r["bad"] for r in rows)
+
+    def cell(text):
+        return text.replace("|", "\\|")
+    lines = [f"# S1 pilot gate: {'PASS' if ok else 'FAIL'}\n",
+             f"Runs: {', '.join(runs)}  ",
+             f"Fit JSONs: {n_fits}; expected fits from "
+             f"{', '.join(os.path.basename(c) for c in configs)}\n",
+             "| Gate | Task | Result | Criterion | Summary |",
+             "|------|------|--------|-----------|---------|"]
+    lines += [f"| {r['gate']} | {r['task']} | {_status(r)} | "
+              f"{cell(r['criterion'])} | {cell(r['summary'])} |" for r in rows]
+    for r in rows:
+        if not (r["bad"] or r["decision"] or r["detail"]):
+            continue
+        lines += ["", f"## {_status(r)}: {r['gate']} {r['task']}", ""]
+        lines += [f"- {b}" for b in r["bad"]]
+        if r["bad"]:
+            lines.append(f"- Consequence (F1 section 7): {r['consequence']}")
+        if r["decision"]:
+            lines.append(f"- DECISION: {r['decision']}")
+        lines += [f"- {d}" for d in r["detail"]]
+    return "\n".join(lines) + "\n", ok
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--stage", required=True, choices=["s0"])
+    ap.add_argument("--stage", required=True, choices=["s0", "s1"])
     ap.add_argument("--runs", nargs="+", required=True,
-                    help="run folders (searched for "
-                         "hpo/<arm>/lr*_clip*_seed*/)")
-    ap.add_argument("--configs", nargs="+", default=SMOKE,
+                    help="run folders (s0: searched for "
+                         "hpo/<arm>/lr*_clip*_seed*/; s1: every fit JSON)")
+    ap.add_argument("--configs", nargs="+", default=None,
                     help="campaign YAMLs of the expected arm-tasks (default: "
-                         "the four smoke YAMLs, 93 arm-tasks)")
+                         "s0 the four smoke YAMLs, 93 arm-tasks; s1 the six "
+                         "pilot YAMLs, 61 fits)")
     ap.add_argument("--determinism", default=None,
                     help="determinism_probe.json of the S0 probe (without "
                          "it the determinism check fails: not measured)")
@@ -406,12 +781,22 @@ def main(argv=None):
             return read(path) if path else None
         except (OSError, ValueError):
             return None
-    fits = read_fits(a.runs)
-    results, exempt, listed, unexpected = gate(
-        fits, expected_arms(a.configs), probe(a.determinism),
-        [read(p) for p in a.floors] if a.floors else None)
-    text, ok = report(results, exempt, listed, unexpected, a.runs, a.configs,
-                      len(fits))
+    if a.stage == "s1":
+        if not a.floors:
+            ap.error("--stage s1 needs --floors")
+        configs = a.configs or PILOT
+        fits = read_pilot_fits(a.runs)
+        text, ok = report_s1(gate_s1(fits, pilot_fits(configs),
+                                     [read(p) for p in a.floors]),
+                             a.runs, configs, len(fits))
+    else:
+        configs = a.configs or SMOKE
+        fits = read_fits(a.runs)
+        results, exempt, listed, unexpected = gate(
+            fits, expected_arms(configs), probe(a.determinism),
+            [read(p) for p in a.floors] if a.floors else None)
+        text, ok = report(results, exempt, listed, unexpected, a.runs,
+                          configs, len(fits))
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     with open(a.out, "w", encoding="utf-8") as f:
         f.write(text)
