@@ -9,7 +9,9 @@ import tensorflow as tf
 
 from src.tasks.committee.views import (partition_masks, masked_views,
                                        noisy_views, drop_features, add_noise,
-                                       make_views, average_views)
+                                       make_views, average_views, COORDS,
+                                       fault_counts, noise_sigma, corrupt_views,
+                                       fault_aware_mean, channel_fault)
 from src.tasks.committee.model import (build_committee_model, ChannelDropout,
                                        NoiseAugment, COMMITTEE_WIRINGS)
 from src.neurons import CfC_Cell, CfC_LRC_Cell
@@ -17,8 +19,9 @@ from src.tasks.person_activity.model import (backbone_override,
                                              effective_backbone_layers)
 from src.wirings import effective_param_count, match_param_budget
 from experiments import run_committee_benchmark as co_runner
-from experiments.run_committee_benchmark import (result_filename,
-                                                 position_metrics, steps_to)
+from experiments.run_committee_benchmark import (
+    result_filename, position_metrics, steps_to, CorruptedBatches,
+    GridValidation)
 from src.evaluation.metrics import confusion_matrix, macro_f1
 from src.wirings.committee import CommitteeVotingCell
 from src.wirings.tbt_cncp import MultiColumnVotingCell
@@ -448,16 +451,22 @@ def test_backbone_override_reaches_every_committee_arm(wiring, backbone_layers):
 
 def test_result_filename_backbone_suffix():
     a = SimpleNamespace(cell="cfc_lrc", wiring="cncp", n_columns=4, size=48,
-                        view_mode="partition", vote_lambda=None,
+                        view_mode="identical", vote_lambda=None,
                         consensus="mean", dense_vote_units=None,
                         view_average="off", train_drop=0.0, train_noise=0.0,
-                        test_corruption="dropout", seed=0, backbone_layers=None)
-    base = "cfc_lrc_cncp_K4_s48_partition_seed0"
-    assert result_filename(a) == base + ".json"
+                        test_corruption="dropout", train_corruption="on",
+                        lr=1e-3, clipnorm=None, corruption_seed=0, seed=0,
+                        backbone_layers=None)
+    tail = "_lr0.001_clipoff_cs0_seed0"
+    base = "cfc_lrc_cncp_K4_s48_identical"
+    assert result_filename(a) == base + tail + ".json"
     a.backbone_layers = 1
-    assert result_filename(a) == base + "_bb1.json"
-    a.view_average = "median"
-    assert result_filename(a) == base[:-6] + "_viewmed_seed0_bb1.json"
+    assert result_filename(a) == base + tail + "_bb1.json"
+    a.view_average, a.clipnorm, a.corruption_seed = "fault_mean", 1.0, 3
+    assert result_filename(a) == \
+        base + "_viewfm_lr0.001_clip1_cs3_seed0_bb1.json"
+    a.train_corruption = "off"
+    assert "_viewfm_trainclean_lr" in result_filename(a)
 
 
 # --- H-d endpoints: median-input monolith, per-position curve (#33) ---
@@ -497,36 +506,268 @@ def test_position_metrics_curves_and_window_scores():
     assert steps_to([0.0, 0.0]) == 1
 
 
-def test_runner_writes_per_position_endpoints_and_view_average_mode(
-        tmp_path, monkeypatch):
-    """One-epoch fit on a stub data set: the per-position arrays have one
-    length-32 entry per corruption level, and their mean over positions is
-    the window accuracy of that level."""
+# --- consensus-study corruption protocol (#55) ---
+
+def _windows(n, T=6, seed=0):
+    """(n, T, 7) windows: a one-hot sensor id and positive coordinates."""
+    rng = np.random.default_rng(seed)
+    X = np.zeros((n, T, 7), np.float32)
+    X[np.arange(n), :, rng.integers(0, 4, n)] = 1.0
+    X[..., COORDS] = rng.uniform(0.5, 2.0, (n, T, 3))
+    return X
+
+
+def test_fault_counts_per_K():
+    assert fault_counts(3) == [0, 1, 2]
+    assert fault_counts(30) == [0, 3, 9, 15, 20]
+    assert fault_counts(1) == [0.0, 0.1, 0.3, 0.5, 0.67]   # probabilities
+
+
+def test_noise_sigma_per_coordinate_feature():
+    X = _windows(50)
+    sigma = noise_sigma(X)
+    assert sigma.shape == (7,) and np.all(sigma[:4] == 0)
+    np.testing.assert_allclose(
+        sigma[COORDS], 0.3 * X[..., COORDS].reshape(-1, 3).std(axis=0),
+        rtol=1e-6)
+
+
+def test_corrupt_views_exact_columns_coords_only():
+    X = _windows(200)
+    sigma = noise_sigma(X)
+    v = corrupt_views(X, 30, 15, sigma, np.random.default_rng(0))
+    assert v.shape == (200, 6, 30, 7) and v.dtype == np.float32
+    failed = (v[..., COORDS] == 0).all(axis=(1, 3))          # (N, K)
+    assert np.all(failed.sum(axis=1) == 15)                  # exactly m
+    # the one-hot is untouched in every column
+    np.testing.assert_array_equal(v[..., :4],
+                                  np.repeat(X[:, :, None, :4], 30, axis=2))
+    # noise on the coordinates of the intact columns, sigma per feature
+    resid = (v - X[:, :, None, :])[..., COORDS][~failed[:, None, :, None]
+                                                .repeat(6, 1).repeat(3, 3)]
+    resid = resid.reshape(-1, 3)
+    np.testing.assert_allclose(resid.std(axis=0), sigma[COORDS], rtol=0.03)
+    # m = 0 without noise: K identical copies of the window
+    np.testing.assert_array_equal(
+        corrupt_views(X, 3, 0, np.zeros(7), np.random.default_rng(0)),
+        np.repeat(X[:, :, None], 3, axis=2))
+    with pytest.raises(ValueError):
+        corrupt_views(X, 3, 4, sigma, np.random.default_rng(0))
+
+
+def test_corrupt_views_k1_bernoulli():
+    v = corrupt_views(_windows(2000), 1, 0.3, np.zeros(7),
+                      np.random.default_rng(0))
+    rate = (v[..., COORDS] == 0).all(axis=(1, 2, 3)).mean()
+    assert abs(rate - 0.3) <= 0.03
+
+
+def test_corrupt_views_seeded_and_shared():
+    X, sigma = _windows(20), noise_sigma(_windows(20))
+
+    def draw(seed):
+        return corrupt_views(X, 30, 9, sigma, np.random.default_rng([seed, 9]))
+    np.testing.assert_array_equal(draw(0), draw(0))
+    assert not np.array_equal(draw(0), draw(1))
+
+
+def test_fault_aware_mean_recovers_intact_input():
+    X = _windows(40)
+    sigma = noise_sigma(X)
+    v = corrupt_views(X, 30, 15, sigma, np.random.default_rng(0))
+    fm = fault_aware_mean(v)
+    assert fm.shape == (40, 6, 1, 7)
+    alive = ~(v[..., COORDS] == 0).all(axis=(1, 3))          # (N, K)
+    expect = np.stack([v[n][:, alive[n]].mean(axis=1) for n in range(40)])
+    np.testing.assert_allclose(fm[:, :, 0], expect, atol=1e-5)
+    np.testing.assert_array_equal(fm[:, :, 0, :4], X[..., :4])
+    # without noise: the clean coordinates, no (1 - m/K) shrink
+    v0 = corrupt_views(X, 30, 15, np.zeros(7), np.random.default_rng(0))
+    np.testing.assert_allclose(fault_aware_mean(v0)[:, :, 0], X, atol=1e-6)
+    np.testing.assert_allclose(average_views(v0, "mean")[:, :, 0, COORDS],
+                               0.5 * X[..., COORDS], atol=1e-6)
+    # every column failed: 0 on the coordinates, the one-hot unchanged
+    vk = corrupt_views(X, 30, 30, sigma, np.random.default_rng(0))
+    fk = average_views(vk, "fault_mean")
+    assert np.all(fk[..., COORDS] == 0)
+    np.testing.assert_array_equal(fk[:, :, 0, :4], X[..., :4])
+
+
+def test_lower_median_breaks_at_half():
+    """K=30, m=15 on positive coordinates: the lower median of the views is
+    the fault value 0 (the median arms are read on m < K/2)."""
+    X = _windows(30)
+    v = corrupt_views(X, 30, 15, np.zeros(7), np.random.default_rng(0))
+    assert np.all(average_views(v, "median")[..., COORDS] == 0)
+    v = corrupt_views(X, 30, 14, np.zeros(7), np.random.default_rng(0))
+    np.testing.assert_array_equal(average_views(v, "median")[:, :, 0], X)
+
+
+def test_channel_fault_zeros_one_coordinate_in_every_column():
+    v = corrupt_views(_windows(10), 4, 0, np.zeros(7),
+                      np.random.default_rng(0))
+    out = channel_fault(v, 5)
+    assert np.all(out[..., 5] == 0) and np.all(v[..., 5] > 0)   # a copy
+    np.testing.assert_array_equal(np.delete(out, 5, -1), np.delete(v, 5, -1))
+
+
+def _batches(view_average, seed=0, n=50):
+    X = _windows(n)
+    y = np.tile(np.arange(n)[:, None], (1, 6)).astype(np.int32)  # window id
+    return CorruptedBatches(X, np.ones((n, 6, 1), np.float32), y, 30,
+                            fault_counts(30), noise_sigma(X), seed, 16,
+                            view_average)
+
+
+def test_sequence_draws_identical_across_arms():
+    """Same --corruption-seed, different arms: the same m sequence, column
+    choices and batch order; the monolith arm averages exactly those views."""
+    a, b, c = _batches("off"), _batches("mean"), _batches("off", seed=1)
+    assert len(a) == 4
+    for epoch in range(2):
+        ms = []
+        for i in range(len(a)):
+            ia, ma, va = a.corrupted(i)
+            ib, mb, vb = b.corrupted(i)
+            np.testing.assert_array_equal(ia, ib)
+            np.testing.assert_array_equal(va, vb)
+            assert ma == mb
+            assert np.all((va[..., COORDS] == 0).all(axis=(1, 3)).sum(1) == ma)
+            (xa, _), ya = a[i]
+            (xb, _), yb = b[i]
+            np.testing.assert_array_equal(ya[:, 0], ia)    # the permutation
+            np.testing.assert_array_equal(xa, va)
+            np.testing.assert_allclose(xb, average_views(va, "mean"))
+            ms.append(ma)
+        assert np.array_equal(np.sort(a.perm), np.arange(50))
+        a.on_epoch_end(), b.on_epoch_end(), c.on_epoch_end()
+    assert not np.array_equal(a.perm, c.perm)
+    assert a.epoch == 2
+
+
+def test_grid_validation_selects_best_epoch_and_restores_weights():
+    class Scripted(GridValidation):
+        means = iter([0.2, 0.5, 0.3])
+
+        def score(self):
+            m = next(self.means)
+            return [m - 0.1, m + 0.1]
+
+    x = np.random.default_rng(0).standard_normal((32, 3)).astype(np.float32)
+    model = tf.keras.Sequential([tf.keras.Input((3,)), tf.keras.layers.Dense(2)])
+    model.compile("sgd", "mse")
+    seen = []
+    gv = Scripted([], 2, 32)
+    model.fit(x, np.ones((32, 2)), epochs=3, verbose=0, callbacks=[
+        gv, tf.keras.callbacks.LambdaCallback(
+            on_epoch_end=lambda e, logs: seen.append(
+                (model.get_weights(), dict(logs))))])
+    assert gv.best_epoch == 2 and gv.best == pytest.approx(0.5)
+    np.testing.assert_allclose(gv.curve, [[0.1, 0.3], [0.4, 0.6], [0.2, 0.4]])
+    for got, want in zip(model.get_weights(), seen[1][0]):
+        np.testing.assert_array_equal(got, want)
+    assert not np.allclose(model.get_weights()[0], seen[2][0][0])
+    assert seen[1][1]["val_macro_f1_mean"] == pytest.approx(0.5)
+    assert seen[1][1]["val_macro_f1_grid"] == pytest.approx([0.4, 0.6])
+
+
+def test_steps_to_90_plateau_reference():
+    """Referenced to the plateau (mean of positions 25-32), not to the last
+    position alone."""
+    curve = [0.1] * 24 + [0.6] * 7 + [1.0]
+    assert steps_to(curve) == 25          # 0.9 * 0.65; curve[-1] gave 32
+    assert steps_to([0.2] * 32) == 1
+
+
+def test_build_uses_rmsprop_with_global_clipnorm():
+    m = build_committee_model("dense", 2, size=4, feature_size=7, seq_len=6,
+                              clipnorm=1.0, lr=3e-3)
+    assert isinstance(m.optimizer, tf.keras.optimizers.RMSprop)
+    assert m.optimizer.global_clipnorm == 1.0
+    assert m.optimizer.learning_rate.numpy() == pytest.approx(3e-3)
+
+
+def _stub(T=32):
     rng = np.random.default_rng(0)
-    def split(n):
-        return (rng.standard_normal((n, 32, 7)).astype(np.float32),
-                np.ones((n, 32, 1), np.float32),
-                rng.integers(0, 7, (n, 32)).astype(np.int32))
-    (trx, trt, tr_y), (tex, tet, te_y) = split(16), split(12)
-    stub = SimpleNamespace(train_x=trx, train_t=trt, train_y=tr_y,
-                           test_x=tex, test_t=tet, test_y=te_y,
-                           feature_size=7, num_classes=7)
+    parts = {}
+    for part, n in (("train", 20), ("val", 12), ("test", 12)):
+        parts[f"{part}_x"] = _windows(n, T, seed=n)
+        parts[f"{part}_t"] = np.ones((n, T, 1), np.float32)
+        parts[f"{part}_y"] = rng.integers(0, 7, (n, T)).astype(np.int32)
+        parts[f"{part}_rec"] = np.array(["A01", "B01"] * (n // 2))
+    return SimpleNamespace(**parts, feature_size=7, num_classes=7, seq_len=T,
+                           split="grouped", split_seed=0,
+                           recordings={"train": ["A01"], "val": ["A01"],
+                                       "test": ["A01", "B01"]})
+
+
+def test_runner_writes_grid_endpoints(tmp_path, monkeypatch):
+    """Two-epoch fit on a stub data set: the fault-grid endpoints, the
+    selection fields and lambda; the training batches follow (epoch, batch)."""
+    calls = []
+    real = CorruptedBatches.__getitem__
+
+    def spy(self, i):
+        calls.append((self.epoch, i))
+        return real(self, i)
+    monkeypatch.setattr(CorruptedBatches, "__getitem__", spy)
     monkeypatch.setattr(co_runner, "load_person_activity",
-                        lambda seq_len: stub)
+                        lambda **kw: _stub())
     monkeypatch.setattr(sys, "argv", [
         "run_committee_benchmark.py", "--wiring", "dense", "--n-columns", "3",
-        "--size", "4", "--epochs", "1", "--view-mode", "noisy",
-        "--view-average", "median", "--drop-fracs", "0.0,0.3",
-        "--drop-seeds", "0,1", "--batch-size", "16",
-        "--outdir", str(tmp_path)])
+        "--size", "4", "--epochs", "2", "--batch-size", "8",
+        "--test-seeds", "0,1", "--outdir", str(tmp_path)])
+    co_runner.main()
+    # dataset() peeks batch 0 once, then 3 batches per epoch in order
+    assert calls == [(0, 0), (0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]
+    (path,) = tmp_path.glob("*.json")
+    assert path.name == \
+        "cfc_lrc_dense_K3_s4_identical_lr0.001_clipoff_cs0_seed0.json"
+    assert (tmp_path / (path.name[:-len(".json")] + ".weights.h5")).is_file()
+    r = json.loads(path.read_text())
+    assert r["fault_counts"] == [0, 1, 2] and r["view_mode"] == "identical"
+    assert (r["batch_size"], r["lr"], r["split"]) == (8, 1e-3, "grouped")
+    assert r["test_seeds"] == [0, 1] and r["val_seed"] == 100
+    assert r["noise_sigma"][:4] == [0, 0, 0, 0] and min(r["noise_sigma"][4:]) > 0
+    assert np.array(r["val_macro_f1_grid_curve"]).shape == (2, 3)
+    assert r["best_val_epoch"] in (1, 2)
+    assert r["val_macro_f1_mean"] == pytest.approx(
+        np.mean(r["val_macro_f1_grid_curve"][r["best_val_epoch"] - 1]))
+    assert len(r["test_macro_f1_by_fault"]) == 3
+    assert r["test_macro_f1_mean_grid"] == pytest.approx(
+        np.mean(r["test_macro_f1_by_fault"]))
+    assert [sorted(d) for d in r["test_macro_f1_per_recording_by_fault"]] \
+        == [["A01", "B01"]] * 3
+    cms = np.array([[c for c in d.values()]
+                    for d in r["test_confusion_by_recording_by_fault"]])
+    assert cms.shape == (3, 2, 7, 7) and np.all(cms.sum(axis=(1, 2, 3))
+                                                == 2 * 12 * 32)
+    assert np.array(r["per_position_macro_f1"]).shape == (3, 32)
+    np.testing.assert_allclose(r["per_position_macro_f1_auc"],
+                               np.mean(r["per_position_macro_f1"], axis=1),
+                               atol=1e-4)
+    assert all(1 <= s <= 32 for s in r["steps_to_90"])
+    assert sorted(r["channel_fault_macro_f1"]) == ["mean", "x", "y", "z"]
+    assert 0.0 < r["vote_lambda_final"] < 1.0
+    assert len(r["vote_lambda_curve"]) == 2
+    assert r["vote_lambda_curve"][-1] == pytest.approx(r["vote_lambda_final"],
+                                                       abs=0.05)
+    assert r["wallclock_s"] >= 0 and "drop_accs" not in r
+
+
+def test_runner_monolith_arm_shares_the_draws(tmp_path, monkeypatch):
+    """The fault-aware-mean monolith: one model column, same file stem
+    fields, the exploratory sweep only when its levels are given."""
+    monkeypatch.setattr(co_runner, "load_person_activity",
+                        lambda **kw: _stub())
+    monkeypatch.setattr(sys, "argv", [
+        "run_committee_benchmark.py", "--wiring", "dense", "--n-columns", "3",
+        "--size", "4", "--epochs", "1", "--view-average", "fault_mean",
+        "--drop-fracs", "0.0,0.3", "--drop-seeds", "0",
+        "--no-save-weights", "--outdir", str(tmp_path)])
     co_runner.main()
     (path,) = tmp_path.glob("*.json")
-    assert path.name == "cfc_lrc_dense_K3_s4_noisy_viewmed_seed0.json"
+    assert "_viewfm_" in path.name
     r = json.loads(path.read_text())
-    assert r["view_average"] == "median" and r["model_columns"] == 1
-    for key in ("per_position_accuracy", "per_position_macro_f1"):
-        assert np.array(r[key]).shape == (2, 32)
-    np.testing.assert_allclose(np.mean(r["per_position_accuracy"], axis=1),
-                               r["drop_accs"], atol=1.5e-4)
-    assert all(1 <= s <= 32 for s in r["steps_to_90"])
-    assert len(r["per_position_macro_f1_auc"]) == len(r["drop_macro_f1"]) == 2
+    assert r["model_columns"] == 1 and r["weights_path"] is None
+    assert len(r["drop_accs"]) == 2 and len(r["test_macro_f1_by_fault"]) == 3

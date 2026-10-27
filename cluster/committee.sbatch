@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Single SLURM job for the partial-view VOTING COMMITTEE benchmark (Iteration 7):
-# do K weight-shared columns, each seeing a PART of the input, degrade more
-# gracefully under sensor dropout than a single monolith at matched parameters --
-# and does a cortical (cNCP) column beat a plain dense cell as the weak learner?
+# Single SLURM job for the VOTING COMMITTEE benchmark: the consensus study of
+# Chapter 5 (identical views, per-column faults and coordinate noise, grid
+# validation; experiments/run_committee_benchmark.py, issue #55) by default;
+# CO_VIEWMODE=partition|noisy and CO_DROPFRACS / CO_TRAINDROP / CO_TRAINNOISE /
+# CO_TESTCORRUPT drive the exploratory July 2026 path (not part of the suite).
 # Runs the matrix (wirings x K x seeds) in ONE job on one GPU, then renders the
 # plot. Submitted by cluster/submit_committee.sh from the ISOLATED ~/thesis-person
 # repo (own uv venv). Reads the person-activity CSV rsynced under data/person/.
@@ -45,8 +46,8 @@ KS="${CO_KS:-1 2 4}"
 SEEDS="${CO_SEEDS:-0 1 2}"
 SEQLEN="${CO_SEQLEN:-32}"
 BATCH="${CO_BATCH:-128}"     # larger batch -> fewer, bigger steps (cell is launch-bound)
-VIEWMODE="${CO_VIEWMODE:-partition}"
-DROPFRACS="${CO_DROPFRACS:-0.0,0.15,0.3,0.45}"
+VIEWMODE="${CO_VIEWMODE:-identical}"
+DROPFRACS="${CO_DROPFRACS:-}"        # exploratory sweep, e.g. 0.0,0.15,0.3,0.45; empty = off
 TRAINDROP="${CO_TRAINDROP:-0.0}"     # >0 -> train-time sensor-dropout baseline
 TRAINNOISE="${CO_TRAINNOISE:-0.0}"   # >0 -> train-time Gaussian-noise baseline (7d)
 TESTCORRUPT="${CO_TESTCORRUPT:-dropout}"   # dropout | noise (7d test corruption)
@@ -58,10 +59,12 @@ PARAM_BUDGET="${CO_PARAM_BUDGET:-30000}"   # 0 = no --param-budget (use --size v
 MAXPAR="${CO_MAXPAR:-4}"
 
 OUTDIR="$RUN_DIR/results"
-EXTRA="${CO_EXTRA:-}"   # extra runner flags, e.g. "--vote-lambda 0 --consensus median"
-# CfC-family backbone depth for every arm (V2s control: CO_BACKBONE=1); empty = flag
-# not passed; results get a _bb<N> filename suffix.
-BACKBONE="${CO_BACKBONE:-}"
+DATA_PATH="$PWD/data/person/ConfLongDemo_JSI.txt"
+EXTRA="${CO_EXTRA:-}"   # extra runner flags, e.g. "--vote-lambda 0 --lr 3e-3 --clipnorm 1"
+# CfC-family backbone depth for every arm: 1 (suite protocol) until the
+# backbone default of issue #21 is merged (CO_BACKBONE=0: no backbone); results
+# get a _bb<N> filename suffix.
+BACKBONE="${CO_BACKBONE:-1}"
 [[ -n "${BACKBONE}" ]] && EXTRA="--backbone-layers ${BACKBONE} ${EXTRA}"
 
 run_one() {
@@ -72,7 +75,7 @@ run_one() {
     uv run python experiments/run_committee_benchmark.py \
         --wiring "$wiring" --n-columns "$K" $budget_flag \
         --cell "$cell" --seed "$seed" --epochs "$EPOCHS" --seq-len "$SEQLEN" \
-        --batch-size "$BATCH" \
+        --batch-size "$BATCH" --data-path "$DATA_PATH" \
         --view-mode "$VIEWMODE" --drop-fracs "$DROPFRACS" \
         --train-drop "$TRAINDROP" --train-noise "$TRAINNOISE" \
         --test-corruption "$TESTCORRUPT" --noise-sigmas "$NOISESIGMAS" \
@@ -83,7 +86,7 @@ run_one() {
 }
 export -f run_one
 export EPOCHS SEQLEN BATCH VIEWMODE DROPFRACS PARAM_BUDGET TRAINDROP \
-       TRAINNOISE TESTCORRUPT NOISESIGMAS OUTDIR EXTRA
+       TRAINNOISE TESTCORRUPT NOISESIGMAS OUTDIR EXTRA DATA_PATH
 
 JOBS=""
 for cell in $CELL; do

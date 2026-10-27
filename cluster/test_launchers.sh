@@ -66,6 +66,10 @@ out="$(DP_LV_ARGS="--epochs 3" ./cluster/submit_determinism_probe.sh -n smoke 2>
 check determinism "$out" "00_canary/runs/${today}_smoke" "DP_LV_ARGS='--epochs 3'" \
     "cluster/determinism_probe.sbatch" "test -f wk/code/data/person/ConfLongDemo_JSI.txt"
 
+out="$(GH_TASK=co GH_CELL=cfc_lrc GH_WIRING=ncp GH_EXTRA="--grid-clip off --n-columns 3" ./cluster/submit_grid_hpo.sh -n smoke 2>&1)"
+check grid_hpo_co "$out" "04_column_voting/runs/${today}_smoke" "GH_TASK='co'" \
+    "test -f wk/code/data/person/ConfLongDemo_JSI.txt"
+
 # sync_to_cluster.sh has no dry run: check the filter statically.
 grep -qF -- "--filter='P data/'" cluster/sync_to_cluster.sh \
     || { echo "FAIL [sync_to_cluster]: data/ not protected from --delete"; fail=1; }

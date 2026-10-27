@@ -11,8 +11,20 @@ fixed epoch count. Unknown flags (e.g. --epochs 2) go to the runner unchanged.
 Selection key from the runner JSON (higher wins): LV/Duffing
 rollout_metrics_val.vpt_multi_median (multi-anchor VPT, #62), ties broken by
 the lower rollout_metrics_val.nrmse_32_anchor_8, then grid order; PA
-val_macro_f1 (grid order on ties). --select-on KEY [--minimize] overrides the
-primary key for diagnostics only; the task's tie-break stays. NaN ranks last.
+val_macro_f1 (grid order on ties); committee (co) val_macro_f1_mean, the mean
+validation macro-F1 over the fault grid. --select-on KEY [--minimize] overrides
+the primary key for diagnostics only; the task's tie-break stays. NaN ranks
+last.
+
+Consensus study (co, protocol freeze F1-2026-10-26, issue #55): learning rate
+only, one fixed --grid-clip value. Epoch guard: if best_val_epoch >= 36 in more
+than half of the fits, hpo_selection.json sets epochs_guard_triggered and
+final_epochs 60 (else final_epochs = the fits' epochs). Transfer K=3 -> K=30:
+    run_grid_hpo.py --transfer-guard K3/hpo_selection.json K30_SEED0.json
+exits 1 when the K=30 fit's m=0 validation macro-F1 (at its best epoch) lies
+more than 5 pp below the K=3 selection's (mean over its tuning seeds); the
+fallback is a three-point lr grid at K=30 with one tuning seed
+(--tuning-seeds 100 runs stage 1 only).
 
 Every fit is one subprocess call of the task runner (uv run python
 experiments/run_*_benchmark.py) into its own folder
@@ -49,11 +61,17 @@ EDGE_EXTENSION = {1e-4: 3e-5, 1e-2: 3e-2}
 TOP_K = 2
 FINAL_SEEDS = range(10)                 # the final replicates; tuning stays out
 RUNNERS = {"lv": "experiments/run_lotka_volterra_benchmark.py",
-           "pa": "experiments/run_person_activity_benchmark.py"}
+           "pa": "experiments/run_person_activity_benchmark.py",
+           "co": "experiments/run_committee_benchmark.py"}
 # task -> (primary key, higher wins), tie-break key (lower wins)
 SELECT = {"lv": ("rollout_metrics_val.vpt_multi_median",
                  "rollout_metrics_val.nrmse_32_anchor_8"),
-          "pa": ("val_macro_f1", None)}
+          "pa": ("val_macro_f1", None),
+          "co": ("val_macro_f1_mean", None)}
+# co epoch guard: best_val_epoch >= LATE in more than half the fits -> finals
+# run FINAL_EPOCHS (of the default 40)
+EPOCHS_GUARD_LATE, EPOCHS_GUARD_FINAL = 36, 60
+TRANSFER_GUARD = 0.05            # co K=3 -> K=30: m=0 val macro-F1 tolerance
 
 
 def _clip(s):
@@ -104,6 +122,8 @@ class GridHPO:
             "lr": lr, "clipnorm": clip, "seed": seed,
             "data_seed": rec.get("data_seed", rec.get("split_seed")),
             "system": rec.get("system"),
+            "epochs": rec.get("epochs"),
+            "best_val_epoch": rec.get("best_val_epoch"),
             "score": _metric(rec, self.select_on, path),
             "tie_break": (_metric(rec, self.tie_break, path)
                           if self.tie_break else None),
@@ -133,11 +153,13 @@ class GridHPO:
 
     def select(self, grid):
         """Stage 1 on s1 over the grid, stage 2 (top 2) ranked by the mean
-        over s1 and s2."""
-        s1, s2 = self.a.tuning_seeds
+        over s1 and s2; a single tuning seed ranks stage 1 only."""
+        s1, *s2 = self.a.tuning_seeds
         stage1 = self._rank([self.summary(lr, c, [s1])
                              for lr in grid for c in self.a.grid_clip])
-        return self._rank([self.summary(r["lr"], r["clipnorm"], [s1, s2])
+        if not s2:
+            return stage1
+        return self._rank([self.summary(r["lr"], r["clipnorm"], [s1, *s2])
                            for r in stage1[:TOP_K]])
 
     def run(self):
@@ -149,6 +171,13 @@ class GridHPO:
             grid = sorted(grid + [EDGE_EXTENSION[best]])
             ranking = self.select(grid)
         a, fits = self.a, list(self.fits.values())
+        guard = {}
+        if a.task == "co":
+            late = sum(f["best_val_epoch"] >= EPOCHS_GUARD_LATE for f in fits)
+            hit = late > len(fits) / 2
+            guard = {"epochs_guard_triggered": hit,
+                     "final_epochs": (EPOCHS_GUARD_FINAL if hit
+                                      else fits[0]["epochs"])}
         return {
             "task": a.task, "system": fits[0]["system"], "cell": a.cell,
             "wiring": a.wiring, "param_budget": a.param_budget,
@@ -163,10 +192,43 @@ class GridHPO:
             "lr_at_grid_edge": ranking[0]["lr"] in (grid[0], grid[-1]),
             "ranking": ranking, "candidates": fits,
             "runner_args": self.runner_args,
+            **guard,
         }
 
 
+def _val_m0(path):
+    """m = 0 validation macro-F1 of a committee result at its best epoch."""
+    with open(path) as f:
+        rec = json.load(f)
+    return rec["val_macro_f1_grid_curve"][rec["best_val_epoch"] - 1][
+        rec["fault_counts"].index(0)]
+
+
+def transfer_guard(selection_path, k30_path, tol=TRANSFER_GUARD):
+    """co K=3 -> K=30: the K=30 fit with the K=3 configuration passes when
+    its m=0 validation macro-F1 is at most tol below the K=3 value (mean over
+    the selected configuration's tuning fits)."""
+    with open(selection_path) as f:
+        sel = json.load(f)
+    best = sel["ranking"][0]
+    k3 = [_val_m0(os.path.join(os.path.dirname(selection_path), c["result"]))
+          for c in sel["candidates"]
+          if c["lr"] == best["lr"] and c["clipnorm"] == best["clipnorm"]]
+    k3, k30 = sum(k3) / len(k3), _val_m0(k30_path)
+    return {"k3_val_macro_f1_m0": k3, "k30_val_macro_f1_m0": k30,
+            "tolerance": tol, "passed": k30 >= k3 - tol}
+
+
 def main(argv=None):
+    guard = argparse.ArgumentParser(add_help=False)
+    guard.add_argument("--transfer-guard", nargs=2,
+                       metavar=("K3_SELECTION", "K30_RESULT"))
+    g, _ = guard.parse_known_args(argv)
+    if g.transfer_guard:
+        res = transfer_guard(*g.transfer_guard)
+        print(json.dumps(res))
+        return 0 if res["passed"] else 1
+
     ap = argparse.ArgumentParser(allow_abbrev=False, description=__doc__.split(
         "\n\n")[0], epilog="Unknown flags are forwarded to the task runner.")
     ap.add_argument("--task", required=True, choices=sorted(RUNNERS))
@@ -175,8 +237,9 @@ def main(argv=None):
     ap.add_argument("--system", default=None,
                     help="lv only: neural_ode system (runner default if unset)")
     ap.add_argument("--param-budget", type=int, default=None)
-    ap.add_argument("--tuning-seeds", type=int, nargs=2, required=True,
-                    metavar=("S1", "S2"))
+    ap.add_argument("--tuning-seeds", type=int, nargs="+", required=True,
+                    help="S1 [S2]: stage 1 on S1, top 2 confirmed on S2; one "
+                         "seed ranks stage 1 only")
     ap.add_argument("--allow-seed-overlap", action="store_true",
                     help="allow tuning seeds in the final seed range 0..9")
     ap.add_argument("--outdir", required=True)
@@ -193,8 +256,12 @@ def main(argv=None):
     args, runner_args = ap.parse_known_args(argv)
     if args.system and args.task != "lv":
         ap.error("--system applies to --task lv only")
-    if args.tuning_seeds[0] == args.tuning_seeds[1]:
-        ap.error("--tuning-seeds needs two different seeds")
+    if len(args.tuning_seeds) > 2 or len(set(args.tuning_seeds)) < len(
+            args.tuning_seeds):
+        ap.error("--tuning-seeds takes one seed or two different seeds")
+    if args.task == "co" and len(args.grid_clip) != 1:
+        ap.error("--task co tunes the learning rate only: pass one fixed "
+                 "--grid-clip value")
     overlap = [s for s in args.tuning_seeds if s in FINAL_SEEDS]
     if overlap and not args.allow_seed_overlap:
         ap.error(f"--tuning-seeds {overlap} lie in the final seed range 0..9 "
@@ -215,4 +282,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

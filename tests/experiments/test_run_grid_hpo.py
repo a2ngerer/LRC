@@ -15,7 +15,7 @@ import src.tasks.person_activity as pa_pkg
 from experiments import run_committee_benchmark as co_runner
 from experiments import run_lotka_volterra_benchmark as lv_runner
 from experiments import run_person_activity_benchmark as pa_runner
-from experiments.run_grid_hpo import GRID_LR, main
+from experiments.run_grid_hpo import GRID_LR, main, transfer_guard
 from tests.benchmark.test_checkpoints import T, _capture_builds, _pa_stub
 
 FAKE = Path(__file__).with_name('fake_grid_runner.sh')
@@ -112,6 +112,68 @@ def test_tie_break_lower_nrmse32_wins(tmp_path, monkeypatch):
     sel, _ = _hpo(tmp_path, monkeypatch, table)
     assert [r['lr'] for r in sel['ranking']] == [3e-3, 1e-3]
     assert sel['ranking'][0]['tie_break'] == pytest.approx(0.2)
+
+
+def test_co_tunes_lr_only_on_the_grid_mean(tmp_path, monkeypatch, capsys):
+    table = {(lr, None): (0, 0) for lr in GRID_LR}
+    table[(3e-3, None)] = (0.6, 0.62)
+    sel, fits = _hpo(tmp_path, monkeypatch, table, '--grid-clip', 'off',
+                     task='co')
+    assert (sel['lr'], sel['clipnorm']) == (3e-3, None)
+    assert sel['select_on'] == 'val_macro_f1_mean' and len(fits) == 4 + 2
+    assert sel['epochs_guard_triggered'] is False and sel['final_epochs'] == 40
+    with pytest.raises(SystemExit):            # clipping is not tuned for co
+        _hpo(tmp_path, monkeypatch, _table(), task='co')
+    assert 'one fixed --grid-clip' in capsys.readouterr().err
+
+
+def test_co_epochs_guard_triggers_on_late_best_epochs(tmp_path, monkeypatch):
+    monkeypatch.setenv('FAKE_BEST_EPOCH', '36')
+    table = {(lr, None): (0, 0) for lr in GRID_LR}
+    table[(1e-3, None)] = (0.6, 0.6)
+    sel, _ = _hpo(tmp_path, monkeypatch, table, '--grid-clip', 'off',
+                  task='co')
+    assert sel['epochs_guard_triggered'] is True and sel['final_epochs'] == 60
+
+
+def test_single_tuning_seed_ranks_stage1_only(tmp_path, monkeypatch):
+    # the K=30 fallback mini-grid: three lr points, one seed, no confirmation
+    table = {(lr, None): (s,) for lr, s in ((1e-3, 0.4), (3e-3, 0.5),
+                                             (5e-3, 0.45))}
+    sel, fits = _hpo(tmp_path, monkeypatch, table, '--grid-clip', 'off',
+                     '--grid-lr', '1e-3', '3e-3', '5e-3', task='co',
+                     seeds=(100,))
+    assert len(fits) == 3 and sel['tuning_seeds'] == [100]
+    assert [r['lr'] for r in sel['ranking']] == [3e-3, 5e-3, 1e-3]
+
+
+def _co_result(path, m0_curve, best):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        'fault_counts': [0, 1, 2], 'best_val_epoch': best,
+        'val_macro_f1_grid_curve': [[v, 0.0, 0.0] for v in m0_curve]}))
+
+
+def test_transfer_guard_5pp_on_m0_val_macro_f1(tmp_path):
+    for seed, v in ((100, 0.70), (101, 0.66)):
+        _co_result(tmp_path / 'k3' / f'lr0.001_clipoff_seed{seed}' / 'r.json',
+                   [0.1, v, 0.2], best=2)
+    _co_result(tmp_path / 'k3' / 'lr0.003_clipoff_seed100' / 'r.json',
+               [0.9], best=1)
+    (tmp_path / 'k3' / 'hpo_selection.json').write_text(json.dumps({
+        'ranking': [{'lr': 1e-3, 'clipnorm': None}],
+        'candidates': [{'lr': lr, 'clipnorm': None,
+                        'result': f'lr{lr:g}_clipoff_seed{s}/r.json'}
+                       for lr, s in ((1e-3, 100), (1e-3, 101),
+                                     (3e-3, 100))]}))
+    sel = str(tmp_path / 'k3' / 'hpo_selection.json')
+    _co_result(tmp_path / 'ok.json', [0.64], best=1)       # 0.68 - 0.04
+    _co_result(tmp_path / 'bad.json', [0.5, 0.62], best=2)  # 0.68 - 0.06
+    ok = transfer_guard(sel, str(tmp_path / 'ok.json'))
+    assert ok['passed'] and ok['k3_val_macro_f1_m0'] == pytest.approx(0.68)
+    assert not transfer_guard(sel, str(tmp_path / 'bad.json'))['passed']
+    assert main(['--transfer-guard', sel, str(tmp_path / 'bad.json')]) == 1
+    assert main(['--transfer-guard', sel, str(tmp_path / 'ok.json')]) == 0
 
 
 def test_pa_selects_on_val_macro_f1(tmp_path, monkeypatch):

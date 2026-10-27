@@ -148,11 +148,20 @@ the finished fits.
 ```bash
 GH_TASK=lv GH_CELL=cfc_lrc GH_WIRING=ncp GH_SYSTEM=duffing ./cluster/submit_grid_hpo.sh <label>
 GH_TASK=pa GH_CELL=gru GH_WIRING=ncp ./cluster/submit_grid_hpo.sh --dry-run <label>
+GH_TASK=co GH_CELL=cfc_lrc GH_WIRING=ncp GH_EXTRA="--grid-clip off --n-columns 3 --backbone-layers 1" \
+    ./cluster/submit_grid_hpo.sh <label>
 ```
+
+`GH_TASK=co` is the consensus study (committee runner, `04_column_voting`):
+learning rate only with one fixed `--grid-clip`, selection on
+`val_macro_f1_mean`, epoch guard in `hpo_selection.json`
+(`epochs_guard_triggered`, `final_epochs`) and the K=3 -> K=30 transfer check
+`run_grid_hpo.py --transfer-guard <K3 hpo_selection.json> <K30 result JSON>`
+(see the driver docstring).
 
 `GH_TUNING_SEEDS` (default `100 101`, disjoint from the final seeds 0..9;
 `run_grid_hpo.py` refuses seeds in 0..9 without `--allow-seed-overlap`),
-`GH_PARAM_BUDGET` (default 4000 lv / 30000 pa) and `GH_EXTRA` (driver flags
+`GH_PARAM_BUDGET` (default 4000 lv / 30000 pa, co) and `GH_EXTRA` (driver flags
 such as `--grid-lr`, `--grid-clip`, and runner flags such as `--epochs`,
 forwarded) are optional. Clipping is on the global gradient norm
 (`optimizer.global_clipnorm`). `run_lotka_volterra_hpo.py`
@@ -195,7 +204,7 @@ cluster from `--delete`. A launch from a checkout without `data/` (a fresh
 worktree) leaves the cluster copy untouched; a checkout that has `data/`
 (e.g. the `data` symlink to the main checkout, followed by `--copy-links`)
 still updates it. `submit_person_activity.sh`, `submit_committee.sh` and
-`submit_grid_hpo.sh` with `GH_TASK=pa` check the file with `ssh test -f`
+`submit_grid_hpo.sh` with `GH_TASK=pa|co` check the file with `ssh test -f`
 after the rsync and abort before `sbatch` when it is missing. Copy it once:
 
 ```bash
