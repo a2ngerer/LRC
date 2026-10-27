@@ -1,5 +1,6 @@
-"""S0 smoke and S1 pilot gates of the frozen suite (#72, #75-#77; protocol
-freeze F1-2026-10-26, validation ladder S0 and S1).
+"""S0 smoke and S1 pilot gates of the frozen suite and the S3 consensus GK
+reading (#72, #75-#77, #81; protocol freeze F1-2026-10-26, validation ladder
+S0 and S1).
 
 --stage s0 reads every fit JSON below the given run folders
 (<run>/results/hpo/<arm>/lr*_clip*_seed*/*.json, run_grid_hpo.py under
@@ -84,7 +85,20 @@ evaluates the S1 go criteria with the frozen thresholds:
          MF1(m_max) < MF1(0) (without the confusions: strict, non-increasing);
          ncp_cons vote_lambda_final in (0.05, 0.95). The committee JSON
          stores no per-batch fault-count sequence or hash, so the fault
-         schedule is not compared (said so in the report)
+         schedule is not compared (said so in the report). --gk-rule offset
+         (#81; default paired-se, the S1 reading) reads the same best-lr
+         fits by the offset rule (_degradation; the S3 reading: s3co)
+
+--stage s3co (#81) reads the S3 consensus finals (--configs, default
+configs/suite/co_k3_final.yaml; the fits flat in results/, each named by its
+campaign arm from its record fields, co_arm_names): fits (every arm x seed
+once) and config as s1, and GK on every fit of every arm by the offset rule
+(--gk-rule, default offset here): a step up by more than one paired
+bootstrap SE of an arm outside REF_ARMS violates only when its test minus
+validation offset also exceeds the median offset of every usable REF_ARMS
+fit in the runs by more than one SE; REF_ARMS by the paired-se rule; an arm
+fails when one of its fits violates. Pass only the campaign's run folder:
+the reference fits are pooled over every fit below --runs.
 
 A FAIL row carries its consequence, which names its source: F1 section 7,
 the readings pre-registered in F1 section 10.5, or an operational rule.
@@ -101,6 +115,8 @@ Usage:
     uv run python experiments/suite_gate.py --stage s1 \\
         --runs <the six pilot run folders> \\
         --floors <agg>/{lv,duffing,mt}/floors.json --out S1_GATE.md
+    uv run python experiments/suite_gate.py --stage s3co \\
+        --runs results/04_column_voting/<co-k3-final run> --out S3_GK.md
 """
 from __future__ import annotations
 
@@ -119,7 +135,8 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from experiments.suite_manifest import (LV_DEFAULT_SYSTEM, grid,  # noqa: E402
+from experiments.suite_manifest import (LV_DEFAULT_SYSTEM,  # noqa: E402
+                                        _flag_value, _flags, arms, grid,
                                         jobs, load)
 from src.benchmark.registry import cell_kwargs  # noqa: E402
 from src.evaluation.metrics import (CHANCE_MARGIN, at_chance,  # noqa: E402
@@ -435,6 +452,7 @@ def report(results, exempt, listed, unexpected, runs, configs, n_fits):
 
 PILOT = [os.path.join(ROOT, "configs", "suite", f"pilot_{t}.yaml")
          for t in ("lv", "duffing", "mt", "pa", "lv_dt1", "co")]
+FINAL_CO = [os.path.join(ROOT, "configs", "suite", "co_k3_final.yaml")]
 DUF, MT = "duffing", "multitimescale_lib"
 CONTROL = "dt_scale 1"           # tag of the dt_scale control fits (F1 h)
 FLOOR_MARGIN, MT_FACTOR, MIN_SEEDS = 2, 2, 2          # G1
@@ -445,6 +463,7 @@ MIN_F1, LAMBDA = 0.60, (0.05, 0.95)                    # G2, GK
 GK_ARMS = ("ncp_cons", "ncp_lam0", "avg_in", "aug_mono")
 CM_KEY = "test_confusion_by_recording_by_fault"        # GK bootstrap units
 BOOT_N, BOOT_SEED = 10_000, 0                          # GK (F1 section 10.5)
+REF_ARMS = ("aug_mono", "fault_mean")                  # GK offset rule (#81)
 CONSEQUENCE = {   # on FAIL (G1 duffing: the DECISION); each names its source
     "fits": "complete the pilot runs (cluster/submit_suite.sh --resume, one "
             "run folder per pilot YAML) and rerun the gate (operational "
@@ -470,6 +489,8 @@ CONSEQUENCE = {   # on FAIL (G1 duffing: the DECISION); each names its source
               "section 10.5)",
     "GK monotone": "protocol check (fault mask, noise scale) before the "
                    "consensus study (F1 section 10.5)",
+    "GK offset": "protocol check (fault mask, noise scale) before the "
+                 "consensus reading (offset rule, protocol addendum, #81)",
     "GK lambda": "vote_init check of one fit (F1 section 7)",
 }
 
@@ -486,12 +507,40 @@ def _median(xs):
     return statistics.median(xs) if xs else math.nan
 
 
-def read_pilot_fits(runs):
+CO_FIELDS = ("cell", "wiring", "n_columns", "vote_lambda", "consensus",
+             "view_average")
+
+
+def co_arm_names(configs):
+    """{CO_FIELDS values: arm name} of the committee campaign arms (#81), as
+    the committee runner records them from the campaign's extra_args and the
+    arm's flags (runner defaults otherwise): names a flat final fit (outdir
+    '.', no hpo/<arm> folder) by its campaign arm."""
+    out = {}
+    for path in configs:
+        cfg = load(path)
+        if cfg["task"] != "co":
+            continue
+        for name, cell, wiring, flags in arms(cfg):
+            argv = [*map(str, cfg.get("extra_args") or []), *_flags(flags)]
+            lam = _flag_value(argv, "--vote-lambda")
+            key = (cell, wiring, int(_flag_value(argv, "--n-columns") or 4),
+                   None if lam is None else float(lam),
+                   _flag_value(argv, "--consensus") or "mean",
+                   _flag_value(argv, "--view-average") or "off")
+            if out.setdefault(key, name) != name:
+                raise SystemExit(f"{path}: arms {out[key]} and {name} write "
+                                 f"the same record fields {key}")
+    return out
+
+
+def read_pilot_fits(runs, co_arms=None):
     """One dict per fit JSON below the run folders (as read_fits, plus seed
-    and tag): arm (task key, cell_wiring; an hpo fit: its hpo/<arm> folder),
+    and tag): arm (task key, cell_wiring; an hpo fit: its hpo/<arm> folder;
+    a flat committee fit found in co_arms (co_arm_names): its campaign arm),
     tag CONTROL for a rollout fit at dt_scale 1, 'lr <lr>' for an hpo fit,
     else ''. JSONs without config.effective.task (hpo_selection.json, wandb
-    files) are left out."""
+    files, *.evalonly.json) are left out."""
     fits = []
     for run in runs:
         for path in sorted(glob(os.path.join(run, "**", "*.json"),
@@ -506,6 +555,8 @@ def read_pilot_fits(runs):
             hpo = len(parts) > 3 and parts[-4] == "hpo"
             arm = (parts[-3] if hpo
                    else f"{rec.get('cell')}_{rec.get('wiring')}")
+            if not hpo and task == "co" and co_arms:
+                arm = co_arms.get(tuple(rec.get(k) for k in CO_FIELDS), arm)
             tag = (f"lr {rec.get('lr'):g}" if hpo else CONTROL
                    if task == "lv" and _eff(rec).get("dt_scale") == 1 else "")
             fits.append({"arm": (_task_key(task, rec.get("system")), arm),
@@ -551,14 +602,14 @@ def _row(gate, task, criterion, summary, bad=(), decision=None,
             "consequence": consequence, "detail": list(detail)}
 
 
-def check_pilot_fits(fits, expected):
+def check_pilot_fits(fits, expected, what="pilot"):
     have, bad = Counter((*f["arm"], f["seed"], f["tag"]) for f in fits), []
     for k, a, s, t in sorted(expected, key=str):
         n = have[k, a, s, t]
         if n != 1:
             bad.append(f"{_name(k)}/{a} seed {s}{f' ({t})' if t else ''}: "
                        + (f"{n} fits" if n else "no fit"))
-    return _row("fits", "all", "every fit of the pilot YAMLs present, once",
+    return _row("fits", "all", f"every fit of the {what} YAMLs present, once",
                 f"{sum(1 for e in expected if have[e])}/{len(expected)} "
                 f"present", bad, consequence=CONSEQUENCE["fits"])
 
@@ -779,11 +830,60 @@ def _steps(cm_rec, f1):
     return mf1, [(b - a, float(s)) for a, b, s in zip(mf1, mf1[1:], se)]
 
 
-def _degradation(r, grid_f1):
+def _val_at_best(r):
+    """Validation macro-F1 per fault count at best_val_epoch (1-based), or
+    None without the curve."""
+    try:
+        return r["val_macro_f1_grid_curve"][r["best_val_epoch"] - 1]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _usable(r):
+    """A reference fit: finite test and best-epoch validation macro-F1 on
+    every entry of its fault grid."""
+    g, t, v = (r.get("fault_counts"), r.get("test_macro_f1_by_fault"),
+               _val_at_best(r))
+    return (isinstance(g, list) and isinstance(t, list)
+            and isinstance(v, list) and 1 < len(g) == len(t) == len(v)
+            and all(_finite(x) for x in t + v))
+
+
+def _frac(r, m):
+    """Fault fraction of grid entry m: m / K; at K = 1 (n_columns 1 or
+    missing) the grid entry is the window failure probability itself."""
+    return m / (r.get("n_columns") or 1)
+
+
+def _ref_offset(refs, fa, fb):
+    """Median over the reference fits of the offset [T(b) - T(a)] - [V(b) -
+    V(a)] between their grid entries a, b nearest the fault fractions fa, fb
+    (test macro-F1 T, validation macro-F1 V at best_val_epoch). A K = 3 step
+    m -> m' reads a fault_mean fit (K = 3) on the same counts and an
+    aug_mono fit (K = 1) on the probabilities nearest m/3 and m'/3."""
+    offs = []
+    for r in refs:
+        g, t, v = (r["fault_counts"], r["test_macro_f1_by_fault"],
+                   _val_at_best(r))
+        a, b = (min(range(len(g)), key=lambda i: abs(_frac(r, g[i]) - f))
+                for f in (fa, fb))
+        offs.append((t[b] - t[a]) - (v[b] - v[a]))
+    return statistics.median(offs)
+
+
+def _degradation(r, grid_f1, refs=None):
     """GK degradation over the fault grid (F1 section 10.5): ([violations],
     detail text). A step m -> m' violates when MF1(m') - MF1(m) exceeds one
     paired bootstrap SE (_steps); MF1(m_max) < MF1(0) is required. Without
-    usable CM_KEY confusions: the strict check (non-increasing)."""
+    usable CM_KEY confusions: the strict check (non-increasing).
+
+    refs (--gk-rule offset, #81): the usable REF_ARMS fits of the campaign.
+    A step then violates only when it violates the paired-se rule (a rise
+    by more than its SE) and its offset (the test step minus the validation
+    step at best_val_epoch) exceeds the reference offset (_ref_offset) by
+    more than its SE as well: a strict relaxation of the paired-se rule.
+    Without a reference fit (refs []) the paired-se rule applies and the
+    text says so."""
     fc = r.get("fault_counts") or list(range(len(grid_f1)))
     pairs = [f"{a:g}->{b:g}" for a, b in zip(fc, fc[1:])]
     try:
@@ -798,20 +898,67 @@ def _degradation(r, grid_f1):
         bad = [f"{p} rises {b - a:+.3f} (strict)"
                for p, a, b in zip(pairs, vals, vals[1:]) if not b <= a]
     else:
-        text = (f"steps MF1(m') - MF1(m) with paired bootstrap SE ("
-                f"{len(r[CM_KEY][0])} test recordings, {BOOT_N} resamples): "
-                + ", ".join(f"{p} {d:+.3f} (SE {s:.2g})"
-                            for p, (d, s) in zip(pairs, steps)))
-        bad = [f"{p} rises {d:+.3f} > SE {s:.2g}"
-               for p, (d, s) in zip(pairs, steps) if not d <= s]
+        boot = (f"paired bootstrap SE ({len(r[CM_KEY][0])} test recordings, "
+                f"{BOOT_N} resamples)")
+        if refs:
+            v = _val_at_best(r)
+            v = ([_num(x) for x in v] if isinstance(v, list)
+                 and len(v) == len(fc) else [math.nan] * len(fc))
+            rows = [(p, d, d - (v[i + 1] - v[i]),
+                     _ref_offset(refs, _frac(r, fc[i]), _frac(r, fc[i + 1])),
+                     s) for i, (p, (d, s)) in enumerate(zip(pairs, steps))]
+            text = (f"offset rule ({len(refs)} reference fits): steps "
+                    f"MF1(m') - MF1(m), offset "
+                    f"(test step minus validation step at the best epoch), "
+                    f"median reference offset and {boot}: "
+                    + ", ".join(f"{p} {d:+.3f} offset {o:+.4f} ref "
+                                f"{ro:+.4f} (SE {s:.2g})"
+                                for p, d, o, ro, s in rows))
+            bad = [f"{p} rises {d:+.3f}, offset {o:+.4f} - ref {ro:+.4f}, "
+                   f"both > SE {s:.2g}" for p, d, o, ro, s in rows
+                   if not d <= s and not o - ro <= s]
+        else:
+            text = (f"steps MF1(m') - MF1(m) with {boot}: "
+                    + ", ".join(f"{p} {d:+.3f} (SE {s:.2g})"
+                                for p, (d, s) in zip(pairs, steps)))
+            bad = [f"{p} rises {d:+.3f} > SE {s:.2g}"
+                   for p, (d, s) in zip(pairs, steps) if not d <= s]
+            if refs is not None:
+                text = (f"offset rule: no reference fit of "
+                        f"{', '.join(REF_ARMS)}, paired-se rule; {text}")
     if not vals[-1] < vals[0]:
         bad.append(f"m={fc[-1]:g} {vals[-1]:.3f} not below m=0 {vals[0]:.3f}")
     return bad, text
 
 
-def gate_consensus(fits):
-    """GK on the best-lr fit of each consensus pilot arm."""
+def _offset_refs(fits):
+    """(the usable REF_ARMS fits, the summary note) of the offset rule."""
+    n_ref = {a: [f["rec"] for f in _pick(fits, "co", a, None)
+                 if _usable(f["rec"])] for a in REF_ARMS}
+    refs = [r for rs in n_ref.values() for r in rs]
+    return refs, ("; GK rule offset (reference fits: " + ", ".join(
+        f"{a} {len(rs)}" for a, rs in n_ref.items()) + ")"
+        + ("" if refs else ", none: paired-se"))
+
+
+def _mono(refs):
+    """The GK monotonicity criterion text (refs None: the paired-se rule)."""
+    ref = "/".join(REF_ARMS)
+    return ("no step up by more than one paired bootstrap SE over the test "
+            "recordings" if refs is None else
+            f"offset rule: a step up by more than one paired bootstrap SE "
+            f"over the test recordings of an arm outside {ref} fails only "
+            f"when its test minus validation offset also exceeds the median "
+            f"offset of the {ref} fits by more than one SE, {ref} by the "
+            f"paired-se rule")
+
+
+def gate_consensus(fits, rule="paired-se"):
+    """GK on the best-lr fit of each consensus pilot arm; rule 'offset'
+    (--gk-rule, #81) reads the arms outside REF_ARMS against every usable
+    REF_ARMS fit of the campaign, the reference arms by the paired-se rule."""
     bad, detail, consequences, corruption = [], [], [], set()
+    refs, rule_note = _offset_refs(fits) if rule == "offset" else (None, "")
     for arm in GK_ARMS:
         fs = _pick(fits, "co", arm, None)
         if not fs:
@@ -828,7 +975,10 @@ def gate_consensus(fits):
             m0 = math.nan
         grid_f1 = r.get("test_macro_f1_by_fault") or []
         lam = _num(r.get("vote_lambda_final"))
-        violated, text = _degradation(r, grid_f1)
+        own = None if arm in REF_ARMS else refs
+        violated, text = _degradation(r, grid_f1, own)
+        if refs is not None and own is None:
+            text = f"reference arm, paired-se rule; {text}"
         detail.append(
             f"{arm}: best lr {r['lr']:g} (val_macro_f1_mean "
             f"{_num(r.get('val_macro_f1_mean')):.3f}), val macro-F1 at m=0 "
@@ -844,7 +994,8 @@ def gate_consensus(fits):
         if violated:
             bad.append(f"{arm}: test macro-F1 does not degrade over the "
                        f"fault grid: {'; '.join(violated)}")
-            consequences.append(CONSEQUENCE["GK monotone"])
+            consequences.append(
+                CONSEQUENCE["GK offset" if own else "GK monotone"])
         if arm == "ncp_cons" and not LAMBDA[0] < lam < LAMBDA[1]:
             bad.append(f"ncp_cons: vote_lambda_final {lam:.3f} outside "
                        f"{LAMBDA}")
@@ -854,17 +1005,56 @@ def gate_consensus(fits):
                   f"corruption_seed {sorted(corruption, key=str)}), not compared")
     return [_row("GK", "co", f"best lr per arm (val_macro_f1_mean): "
                  f"validation macro-F1 at m=0 >= {MIN_F1:.2f}; test macro-F1 "
-                 f"degrades over the fault grid (no step up by more than one "
-                 f"paired bootstrap SE over the test recordings, MF1(m_max) "
+                 f"degrades over the fault grid ({_mono(refs)}, MF1(m_max) "
                  f"< MF1(0)); ncp_cons vote_lambda_final in {LAMBDA}",
                  f"{len(GK_ARMS) - len({b.split(':')[0] for b in bad})}/"
-                 f"{len(GK_ARMS)} arms pass", bad,
+                 f"{len(GK_ARMS)} arms pass{rule_note}", bad,
                  consequence="; ".join(dict.fromkeys(consequences)),
                  detail=detail)]
 
 
-def gate_s1(fits, expected, floors):
-    """The S1 rows: fits, config, floors, G1, G0-E, G2, G3, GK."""
+def gate_s3_consensus(fits, names, rule):
+    """GK reading of the S3 consensus finals (#81): every fit (seed) of each
+    campaign arm (names) by _degradation; under rule 'offset' the arms
+    outside REF_ARMS against every usable REF_ARMS fit of the runs, REF_ARMS
+    by the paired-se rule. An arm fails when one of its fits violates or it
+    has no fit."""
+    refs, note = _offset_refs(fits) if rule == "offset" else (None, "")
+    bad, detail, consequences, failed, n, n_bad = [], [], [], set(), 0, 0
+    for arm in names:
+        own = None if arm in REF_ARMS else refs
+        fs = _pick(fits, "co", arm, None)
+        if not fs:
+            bad.append(f"{arm}: no fit")
+            consequences.append(CONSEQUENCE["fits"])
+            failed.add(arm)
+        for f in fs:
+            r, n, who = f["rec"], n + 1, f"{arm} seed {f['seed']}"
+            grid_f1 = r.get("test_macro_f1_by_fault") or []
+            violated, text = _degradation(r, grid_f1, own)
+            if refs is not None and own is None:
+                text = f"reference arm, paired-se rule; {text}"
+            detail.append(f"{who}: lr {_num(r.get('lr')):g}, test macro-F1 "
+                          f"by fault {[round(v, 3) for v in grid_f1]}; {text}")
+            if violated:
+                bad.append(f"{who}: test macro-F1 does not degrade over the "
+                           f"fault grid: {'; '.join(violated)}")
+                consequences.append(
+                    CONSEQUENCE["GK offset" if own else "GK monotone"])
+                failed.add(arm)
+                n_bad += 1
+    return [_row("GK", "co", f"every fit of every arm: test macro-F1 degrades "
+                 f"over the fault grid ({_mono(refs)}, MF1(m_max) < MF1(0)); "
+                 f"an arm fails when one of its fits does",
+                 f"{len(names) - len(failed)}/{len(names)} arms pass, "
+                 f"{n_bad}/{n} fits violate{note}", bad,
+                 consequence="; ".join(dict.fromkeys(consequences)),
+                 detail=detail)]
+
+
+def gate_s1(fits, expected, floors, gk_rule="paired-se"):
+    """The S1 rows: fits, config, floors, G1, G0-E, G2, G3, GK (gk_rule:
+    gate_consensus)."""
     _, desc, bad, _ = check_floors(fits, floors)
     lines = {(d.get("system"), d.get("data_seed")): d.get("test") or {}
              for fl in floors for d in fl.get("floors", [])}
@@ -873,19 +1063,19 @@ def gate_s1(fits, expected, floors):
                  consequence=CONSEQUENCE["floors"]),
             *gate_floors(fits, lines, expected), *gate_epochs(fits, expected),
             *gate_pa(fits),
-            *gate_dt_scale(fits), *gate_consensus(fits)]
+            *gate_dt_scale(fits), *gate_consensus(fits, gk_rule)]
 
 
 def _status(row):
     return "FAIL" if row["bad"] else "DECISION" if row["decision"] else "PASS"
 
 
-def report_s1(rows, runs, configs, n_fits):
+def report_s1(rows, runs, configs, n_fits, title="S1 pilot gate"):
     ok = not any(r["bad"] for r in rows)
 
     def cell(text):
         return text.replace("|", "\\|")
-    lines = [f"# S1 pilot gate: {'PASS' if ok else 'FAIL'}\n",
+    lines = [f"# {title}: {'PASS' if ok else 'FAIL'}\n",
              f"Runs: {', '.join(runs)}  ",
              f"Fit JSONs: {n_fits}; expected fits from "
              f"{', '.join(os.path.basename(c) for c in configs)}\n",
@@ -908,20 +1098,27 @@ def report_s1(rows, runs, configs, n_fits):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--stage", required=True, choices=["s0", "s1"])
+    ap.add_argument("--stage", required=True, choices=["s0", "s1", "s3co"])
     ap.add_argument("--runs", nargs="+", required=True,
                     help="run folders (s0: searched for "
-                         "hpo/<arm>/lr*_clip*_seed*/; s1: every fit JSON)")
+                         "hpo/<arm>/lr*_clip*_seed*/; s1, s3co: every fit "
+                         "JSON)")
     ap.add_argument("--configs", nargs="+", default=None,
                     help="campaign YAMLs of the expected arm-tasks (default: "
                          "s0 the four smoke YAMLs, 93 arm-tasks; s1 the six "
-                         "pilot YAMLs, 61 fits)")
+                         "pilot YAMLs, 61 fits; s3co co_k3_final.yaml, 45 "
+                         "fits)")
     ap.add_argument("--determinism", default=None,
                     help="determinism_probe.json of the S0 probe (without "
                          "it the determinism check fails: not measured)")
     ap.add_argument("--floors", nargs="+", default=None,
                     help="floors.json of aggregate_results.py --floors")
     ap.add_argument("--out", required=True, help="Markdown report")
+    ap.add_argument("--gk-rule", choices=["paired-se", "offset"],
+                    default=None,
+                    help="GK monotonicity reading: paired-se (the S1 "
+                         "reading, default of s1) or offset (#81, default "
+                         "of s3co)")
     a = ap.parse_args(argv)
     for p in a.runs:
         if not os.path.isdir(p):
@@ -942,8 +1139,19 @@ def main(argv=None):
         configs = a.configs or PILOT
         fits = read_pilot_fits(a.runs)
         text, ok = report_s1(gate_s1(fits, pilot_fits(configs),
-                                     [read(p) for p in a.floors]),
+                                     [read(p) for p in a.floors],
+                                     a.gk_rule or "paired-se"),
                              a.runs, configs, len(fits))
+    elif a.stage == "s3co":
+        configs = a.configs or FINAL_CO
+        names = co_arm_names(configs)
+        fits = read_pilot_fits(a.runs, names)
+        text, ok = report_s1(
+            [check_pilot_fits(fits, pilot_fits(configs), "campaign"),
+             check_pilot_config(fits),
+             *gate_s3_consensus(fits, list(dict.fromkeys(names.values())),
+                                a.gk_rule or "offset")],
+            a.runs, configs, len(fits), "S3 consensus GK reading")
     else:
         configs = a.configs or SMOKE
         fits = read_fits(a.runs)
