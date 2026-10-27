@@ -21,7 +21,11 @@ cluster/submit_suite.sh) and checks the S0 criteria:
                     Person Activity and committee: the validation and test
                     primary metric finite
   nan               no NaN or Inf anywhere in a fit JSON; the inv_drift_*
-                    fields of multitimescale_lib are exempt (listed)
+                    fields of multitimescale_lib are exempt (listed), and a
+                    NaN rollout_metrics_{val,test}.inv_drift_* of a block
+                    with n_inv_drift_undefined > 0 is listed, not failed (the
+                    summary drops undefined trajectories, so NaN means all
+                    were undefined; F1 decision i: descriptive metric)
   budget            budget_above_tolerance true only on gru/dense3 and
                     lstm/dense3
   elastance         elastance_type 'asymmetric' on every cell whose registry
@@ -80,6 +84,8 @@ OVER_BUDGET = {("gru", "dense3"), ("lstm", "dense3")}   # known, F1 S0
 ODE_UNFOLDS = 6                                          # F1 decision a
 MAX_RATIO, MAX_DELTA = 1.3, 1e-3                         # F1 decision l
 EXEMPT_SYSTEM, EXEMPT_PREFIX = "multitimescale_lib", "inv_drift_"
+DRIFT_BLOCKS = ("rollout_metrics_val", "rollout_metrics_test")
+UNDEFINED = "n_inv_drift_undefined"
 
 
 def _eff(rec):
@@ -158,8 +164,21 @@ def _non_finite(x, path=""):
     return sorted({p for sub, v in items for p in _non_finite(v, sub)})
 
 
+def _undefined_drift(rec, path):
+    """path is a NaN rollout_metrics_{val,test}.inv_drift_* summary of a
+    block with n_inv_drift_undefined > 0 (the summary drops undefined
+    trajectories, so NaN means every one was undefined)."""
+    block, _, key = path.partition(".")
+    m = rec.get(block) if block in DRIFT_BLOCKS else None
+    return (isinstance(m, dict) and key.startswith(EXEMPT_PREFIX)
+            and isinstance(m.get(key), float) and math.isnan(m[key])
+            and _finite(m.get(UNDEFINED)) and m[UNDEFINED] > 0)
+
+
 def check_fit(fit):
-    """{check: [problems]} of one fit, plus its exempt NaN paths."""
+    """{check: [problems]} of one fit, its exempt NaN paths and its listed
+    undefined inv_drift_* blocks ("<block> (n_inv_drift_undefined n):
+    <keys>")."""
     rec, task = fit["rec"], fit["task"]
     eff = _eff(rec)
     cell, wiring = rec.get("cell"), rec.get("wiring")
@@ -189,13 +208,18 @@ def check_fit(fit):
     for k in PRIMARY.get(task, ()):
         if not _finite(rec.get(k)):
             out["metrics"].append(f"{k} {rec.get(k)!r}")
-    exempt = []
+    exempt, undefined = [], {}
     for p in _non_finite(rec):
         if (rec.get("system") == EXEMPT_SYSTEM
                 and p.rsplit(".", 1)[-1].startswith(EXEMPT_PREFIX)):
             exempt.append(p)
+        elif _undefined_drift(rec, p):
+            block, _, key = p.partition(".")
+            undefined.setdefault(block, []).append(key)
         else:
             out["nan"].append(p)
+    listed = [f"{b} ({UNDEFINED} {rec[b][UNDEFINED]}): {', '.join(ks)}"
+              for b, ks in undefined.items()]
     over = rec.get("budget_above_tolerance")
     if over is None:
         out["budget"].append("budget_above_tolerance missing")
@@ -208,7 +232,7 @@ def check_fit(fit):
             f"elastance_type {eff.get('elastance_type')!r}")
     if _solver(cell) and eff.get("ode_unfolds") != ODE_UNFOLDS:
         out["ode_unfolds"].append(f"ode_unfolds {eff.get('ode_unfolds')!r}")
-    return out, exempt
+    return out, exempt, listed
 
 
 DESCRIPTION = {
@@ -217,7 +241,8 @@ DESCRIPTION = {
     "protocol_version": "protocol_version on every fit, one value",
     "metrics": "rollout keys, outcome rates, non_finite false; PA/committee "
                "primary metric finite",
-    "nan": "no NaN/Inf (multitimescale_lib inv_drift_* exempt)",
+    "nan": "no NaN/Inf (multitimescale_lib inv_drift_* exempt, all-undefined "
+           "inv_drift_* listed)",
     "budget": "budget_above_tolerance only on gru/dense3, lstm/dense3",
     "elastance": "elastance_type 'asymmetric' on the elastance cells",
     "ode_unfolds": f"ode_unfolds {ODE_UNFOLDS} on the solver cells",
@@ -226,7 +251,8 @@ DESCRIPTION = {
 
 def gate(fits, expected, determinism=None, floors=None):
     """[(check, description, [offending entries])], {arm label: exempt
-    paths}, [arm labels outside the expected list]."""
+    paths}, {arm label: listed undefined inv_drift_* blocks}, [arm labels
+    outside the expected list]."""
     n = Counter(f["arm"] for f in fits)
     missing = [a for a in expected if not n[a]]
     results = [("arms", f"{len(expected) - len(missing)}/{len(expected)} "
@@ -234,13 +260,15 @@ def gate(fits, expected, determinism=None, floors=None):
                 [f"{_label(a)}: no fit" for a in missing]
                 + [f"{_label(a)}: {k} fits" for a, k in sorted(n.items())
                    if k > 1])]
-    per_check, exempt = {k: [] for k in DESCRIPTION}, {}
+    per_check, exempt, listed = {k: [] for k in DESCRIPTION}, {}, {}
     for fit in fits:
-        problems, ex = check_fit(fit)
+        problems, ex, li = check_fit(fit)
         for k, msgs in problems.items():
             per_check[k] += [f"{_label(fit['arm'])}: {m}" for m in msgs]
         if ex:
             exempt[_label(fit["arm"])] = ex
+        if li:
+            listed[_label(fit["arm"])] = li
     versions = sorted({str(v) for v in (
         _field(f["rec"], "protocol_version")[1] for f in fits)
         if v is not None})
@@ -256,7 +284,7 @@ def gate(fits, expected, determinism=None, floors=None):
     if floors is not None:
         results.append(check_floors(fits, floors))
     unexpected = sorted(_label(a) for a in n if a not in expected)
-    return results, exempt, unexpected
+    return results, exempt, listed, unexpected
 
 
 def check_determinism(probe):
@@ -300,7 +328,7 @@ def check_floors(fits, floors):
             f"({len(want)} draws)", bad)
 
 
-def report(results, exempt, unexpected, runs, configs, n_fits):
+def report(results, exempt, listed, unexpected, runs, configs, n_fits):
     ok = all(not bad for _, _, bad in results)
     lines = [f"# S0 smoke gate: {'PASS' if ok else 'FAIL'}\n",
              f"Runs: {', '.join(runs)}  ",
@@ -317,6 +345,11 @@ def report(results, exempt, unexpected, runs, configs, n_fits):
         lines += ["", f"## Exempt ({EXEMPT_SYSTEM} {EXEMPT_PREFIX}*, listed, "
                   "not failed)", ""]
         lines += [f"- {a}: {', '.join(p)}" for a, p in sorted(exempt.items())]
+    if listed:
+        lines += ["", f"## Listed ({EXEMPT_PREFIX}* undefined on every "
+                  "trajectory, descriptive, not failed)", ""]
+        lines += [f"- {a}: {b}" for a, bs in sorted(listed.items())
+                  for b in bs]
     if unexpected:
         lines += ["", "## Fits outside the expected arm list (checked, not "
                   "counted)", ""] + [f"- {a}" for a in unexpected]
@@ -346,11 +379,11 @@ def main(argv=None):
         with open(path, encoding="utf-8") as f:
             return json.load(f)
     fits = read_fits(a.runs)
-    results, exempt, unexpected = gate(
+    results, exempt, listed, unexpected = gate(
         fits, expected_arms(a.configs),
         read(a.determinism) if a.determinism else None,
         [read(p) for p in a.floors] if a.floors else None)
-    text, ok = report(results, exempt, unexpected, a.runs, a.configs,
+    text, ok = report(results, exempt, listed, unexpected, a.runs, a.configs,
                       len(fits))
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     with open(a.out, "w", encoding="utf-8") as f:

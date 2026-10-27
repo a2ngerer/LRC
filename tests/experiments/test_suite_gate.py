@@ -26,7 +26,17 @@ def _rollout_metrics():
     return {'vpt_multi_median': 4.0, 'nrmse_32_anchor_8': 0.9,
             'nrmse_32_median': 0.9, 'non_finite': False, 'rate_ok': 0.5,
             'rate_bounded_wrong': 0.5, 'rate_unbounded': 0.0,
+            'inv_drift_32_median': 0.1, 'n_inv_drift_undefined': 0,
             **{f'vpt_anchor_{a}': 4.0 for a in (8, 16, 24, 32)}}
+
+
+def _undefined(m, **extra):
+    """Every trajectory of a rollout metrics block violates positivity (the
+    ctrnn/dense LV fit of the first S0 run): the inv_drift_* summaries are
+    NaN and n_inv_drift_undefined equals the trajectory count."""
+    m.update({**{f'inv_drift_{h}_{s}': math.nan for h in (32, 128, 'max')
+                 for s in ('median', 'mean')},
+              'n_inv_drift_undefined': 16, **extra})
 
 
 def _fit(key, cell, wiring):
@@ -140,6 +150,12 @@ FAILURES = {
     'inv_drift NaN outside multitimescale_lib': ('nan', lambda f, p, fl: _arm(
         f, LV, 'gru_dense')['rollout_metrics_val'].__setitem__(
             'inv_drift_32_median', math.nan)),
+    'NaN beside undefined inv_drift': ('nan', lambda f, p, fl: _undefined(
+        _arm(f, LV, 'ctrnn_dense')['rollout_metrics_val'],
+        nrmse_32_median=math.nan)),
+    'Inf inv_drift of an undefined block': ('nan', lambda f, p, fl: _undefined(
+        _arm(f, DUF, 'gru_dense')['rollout_metrics_test'],
+        inv_drift_32_mean=math.inf)),
     'over budget': ('budget', lambda f, p, fl: _arm(
         f, 'pa', 'cfc_ncp').__setitem__('budget_above_tolerance', True)),
     'interp elastance': ('elastance', lambda f, p, fl: _eff(
@@ -159,6 +175,21 @@ FAILURES = {
     'NaN test floor': ('floors', lambda f, p, fl: fl['floors'][2][
         'test'].__setitem__('floor', math.nan)),
 }
+
+
+def test_all_undefined_inv_drift_is_listed(tmp_path, suite):
+    fit = _arm(suite[0], LV, 'ctrnn_dense')
+    for split in ('val', 'test'):
+        _undefined(fit[f'rollout_metrics_{split}'])
+    code, report = _gate(tmp_path, *suite)
+    assert code == 0, report
+    assert '| nan | PASS |' in report
+    listed = report.split('## Listed')[1]
+    for split in ('val', 'test'):
+        assert (f'- periodic_predator_prey/ctrnn_dense: '
+                f'rollout_metrics_{split} (n_inv_drift_undefined 16): '
+                f'inv_drift_128_mean, inv_drift_128_median, '
+                f'inv_drift_32_mean, ') in listed
 
 
 @pytest.mark.parametrize('case', FAILURES)
