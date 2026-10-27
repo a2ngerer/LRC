@@ -7,15 +7,22 @@
 # (#75): a synthetic set of the 61 pilot fits passes; one fixture per gate
 # branch (PASS, FAIL and the G0-E epoch DECISION) built from synthetic records.
 # #76: a pilot fit without config.effective.deterministic true fails S1.
+# #77 (readings pre-registered in F1 section 10.5): G0-E needs ceil(2n/3) of a
+# task's n pilot arms; a Duffing G1 seed failure is a DECISION, an LV one a
+# FAIL; GK tolerates a step up within one paired bootstrap SE over the test
+# recordings, needs MF1(m_max) < MF1(0) and falls back to the strict check
+# without the per-recording confusions.
 import copy
 import json
 import math
 import re
 
+import numpy as np
 import pytest
 
-from experiments.suite_gate import (PILOT, SMOKE, expected_arms, main,
-                                    pilot_fits)
+from experiments.suite_gate import (CM_KEY, PILOT, SMOKE, _steps,
+                                    expected_arms, main, pilot_fits)
+from src.evaluation.metrics import confusion_matrix, macro_f1
 
 # Written out here rather than taken from the gate: the passing fixture checks
 # the gate's registry-derived cell sets.
@@ -354,7 +361,11 @@ def test_s1_passing_fixture(tmp_path, pilot):
     assert report.startswith('# S1 pilot gate: PASS')
     assert _only(rows, 'PASS'), rows
     assert '61/61 present' in report and '61/61 fits deterministic' in report
-    assert 'epochs unchanged (0 of 5 arms qualify)' in report
+    assert 'epochs unchanged (0 of 5 arms qualify, needs 4)' in report
+    assert 'epochs unchanged (0 of 2 arms qualify, needs 2)' in report
+    assert ('test macro-F1 by fault [0.64, 0.6, 0.52]; no '
+            'test_confusion_by_recording_by_fault; strict check '
+            '(non-increasing, no tolerance)') in report
     assert '- lrc_ncp seed 2: test macro-F1 0.630, wallclock_s 102.0' in report
     assert ('- ncp_cons: best lr 0.001 (val_macro_f1_mean 0.600), val '
             'macro-F1 at m=0 0.650') in report
@@ -390,12 +401,13 @@ S1_FAILURES = {
         lambda f, fl: _set(f, LVK, 'cfc_lrc_ncp', (0, 1),
                            'rollout_metrics_test.vpt_multi_median',
                            FLOOR + 2), ('G1', 'lv'),
-        'floor-bound: H-b/H-c contrasts on this task are floor-bound, the '
-        'H-c conjunction runs over the tasks that pass'),
+        'stop: find the cause (endpoint, floors, dt_scale) before S2; H-c '
+        'and RQ1 are affected (operational rule, F1 section 10.5)'),
     'G1 duffing non-finite VPT': (
         lambda f, fl: _set(f, DUF, 'cfc_lrc_ncp', (1, 2),
                            'rollout_metrics_test.vpt_multi_median', math.nan),
-        ('G1', 'duffing'), 'floor-bound'),
+        ('G1', 'duffing'), 'a missing or non-finite fit or floor line '
+                           'decides no floor'),
     'G1 mt below 2 x persistence': (
         lambda f, fl: _set(f, MT, 'cfc_ncp', (0, 2),
                            'rollout_metrics_test.vpt_multi_median', 9.0),
@@ -416,18 +428,23 @@ S1_FAILURES = {
     'G2 lrc/ncp NaN macro-F1': (
         lambda f, fl: _set(f, 'pa', 'lrc_ncp', (2,), 'test_macro_f1',
                            math.nan), ('G2', 'pa'), 'stop, find the cause'),
-    'GK below 0.60 at m=0': (
-        lambda f, fl: _set(f, 'co', 'ncp_lam0', (100,),
+    'GK ncp_cons below 0.60 at m=0': (
+        lambda f, fl: _set(f, 'co', 'ncp_cons', (100,),
                            'val_macro_f1_grid_curve', [[0.55, 0.5, 0.4]] * 40),
         ('GK', 'co'), 'architecture check (width, backbone) before the '
-                      'consensus continues'),
-    'GK not monotone over the fault grid': (
+                      'consensus study (F1 section 7)'),
+    'GK other arm below 0.60 at m=0': (
+        lambda f, fl: _set(f, 'co', 'ncp_lam0', (100,),
+                           'val_macro_f1_grid_curve', [[0.55, 0.5, 0.4]] * 40),
+        ('GK', 'co'), 'arm check (lr grid, head) before the consensus study'),
+    'GK not monotone, strict without confusions': (
         lambda f, fl: _set(f, 'co', 'avg_in', (100,),
                            'test_macro_f1_by_fault', [0.6, 0.62, 0.5]),
-        ('GK', 'co'), 'architecture check'),
+        ('GK', 'co'), 'protocol check (fault mask, noise scale) before the '
+                      'consensus study'),
     'GK lambda at the edge': (
         lambda f, fl: _set(f, 'co', 'ncp_cons', (100,), 'vote_lambda_final',
-                           0.96), ('GK', 'co'), 'vote_init check (one fit)'),
+                           0.96), ('GK', 'co'), 'vote_init check of one fit'),
 }
 
 
@@ -440,8 +457,10 @@ def test_s1_one_failure_per_gate_branch(case, tmp_path, pilot):
     assert report.startswith('# S1 pilot gate: FAIL')
     assert _only(rows, 'FAIL', row), rows
     section = report.split(f'## FAIL: {row[0]} {row[1]}\n')[1].split('## ')[0]
-    assert f'- Consequence (F1 section 7): ' in section
+    assert '- Consequence: ' in section
     assert consequence in section
+    if 'consensus study' in consequence:     # only its own GK consequence
+        assert section.count('before the consensus study') == 1, section
 
 
 def test_s1_config_requires_op_determinism(tmp_path, pilot):
@@ -471,26 +490,171 @@ def test_s1_one_seed_below_the_floor_passes(tmp_path, pilot):
 
 
 @pytest.mark.parametrize('key, arms, curve, decision', [
-    (LVK, LV_ARMS[:2], [1.0] * 270 + [0.9] * 30, 'epochs x1.5 (300 to 450)'),
-    (DUF, LV_ARMS[3:], [1.0] * 199 + [2.0] + [1.0] * 70 + [1.875] * 30,
-     'epochs x1.5 (300 to 450)'),
+    (LVK, LV_ARMS[:4], [1.0] * 270 + [0.9] * 30,
+     'epochs x1.5 (300 to 450; 4 of 5 arms qualify, needs 4)'),
+    (DUF, LV_ARMS[1:], [1.0] * 199 + [2.0] + [1.0] * 70 + [1.875] * 30,
+     'epochs x1.5 (300 to 450; 4 of 5 arms qualify, needs 4)'),
+    (MT, ('cfc_ncp', 'cfc_static_ncp'), [1.0] * 270 + [0.9] * 30,
+     'epochs x1.5 (300 to 450; 2 of 2 arms qualify, needs 2)'),
     ('pa', ('cfc_lrc_ncp', 'lrc_ncp'), [0.5] * 45 + [0.6] * 5,
-     'epochs x2 (50 to 100)')])
+     'epochs x2 (50 to 100; 2 of 2 arms qualify, needs 2)')])
 def test_s1_epoch_gate_decision(key, arms, curve, decision, tmp_path, pilot):
-    """Two pilot arms with two qualifying seeds each change the task's epochs
-    (a DECISION, exit 0); one arm with three does not."""
+    """Two thirds of a task's pilot arms (4 of 5, 2 of 2) with two qualifying
+    seeds each change the task's epochs (a DECISION, exit 0); one arm with
+    three does not."""
     _curve(pilot[0], key, arms, (0, 1), curve)
     code, report, rows = _s1(tmp_path, *pilot)
     task = 'lv' if key == LVK else key
     assert code == 0, report
     assert _only(rows, 'DECISION', ('G0-E', task)), rows
-    assert f'- DECISION: {decision}: {", ".join(arms)} qualify' in report
+    assert f'| {decision} |' in report
+    span = decision.split(';')[0]
+    assert f'- DECISION: {span}): {", ".join(sorted(arms))} qualify' in report
 
     _curve(pilot[0], key, arms[1:], (0, 1), [1.0] * len(curve))
     _curve(pilot[0], key, arms[:1], (2,), curve)
     code, report, rows = _s1(tmp_path / 'one_arm', *pilot)
     assert code == 0 and _only(rows, 'PASS'), rows
     assert 'epochs unchanged (1 of' in report
+
+
+@pytest.mark.parametrize('k', [2, 3])
+def test_s1_epoch_gate_needs_two_thirds_of_the_arms(k, tmp_path, pilot):
+    """Two or three of the five LV pilot arms qualifying leave the epochs
+    unchanged: the threshold is ceil(2 x 5 / 3) = 4, not an absolute 2."""
+    _curve(pilot[0], LVK, LV_ARMS[:k], (0, 1, 2), [1.0] * 270 + [0.9] * 30)
+    code, report, rows = _s1(tmp_path, *pilot)
+    assert code == 0 and _only(rows, 'PASS'), rows
+    assert f'| epochs unchanged ({k} of 5 arms qualify, needs 4) |' in report
+    assert '(needs 4 of 5) |' in report and '(needs 2 of 2) |' in report
+    assert '- DECISION' not in report
+
+
+def test_s1_duffing_floor_failure_is_a_decision(tmp_path, pilot):
+    """Two of three Duffing seeds at or below floor + 2 (every seed evaluated)
+    are the F1 section 7 continuation: DECISION, exit 0."""
+    _set(pilot[0], DUF, 'cfc_lrc_ncp', (0, 2),
+         'rollout_metrics_test.vpt_multi_median', FLOOR + 1)
+    code, report, rows = _s1(tmp_path, *pilot)
+    assert code == 0, report
+    assert report.startswith('# S1 pilot gate: PASS')
+    assert _only(rows, 'DECISION', ('G1', 'duffing')), rows
+    section = report.split('## DECISION: G1 duffing\n')[1].split('## ')[0]
+    assert ('- DECISION: Duffing stays in the plan: H-b/H-c Duffing '
+            'contrasts floor-bound, H-c conjunction over LV and PA (F1 '
+            'section 7)') in section
+    assert '- seed 0 (data seed 20261700): VPT 11 vs 12 (floor 10 + 2) -> ' \
+           'no' in section
+    assert 'Consequence' not in section
+
+
+def test_s1_duffing_missing_fit_fails(tmp_path, pilot):
+    """A Duffing seed failure with a missing fit is no floor result: FAIL
+    (besides the fits row), with the missing seed listed."""
+    fits = pilot[0]
+    del fits[DUF, 'cfc_lrc_ncp', 2, '']
+    _set(fits, DUF, 'cfc_lrc_ncp', (0,),
+         'rollout_metrics_test.vpt_multi_median', FLOOR)
+    code, report, rows = _s1(tmp_path, *pilot)
+    assert code == 1
+    assert _only(rows, 'FAIL', ('fits', 'all'), ('G1', 'duffing')), rows
+    section = report.split('## FAIL: G1 duffing\n')[1].split('## ')[0]
+    assert '- 1 of 2 seeds pass (needs 2)\n- seed 2: no fit\n' in section
+    assert 'a missing or non-finite fit or floor line decides no floor' \
+        in section
+
+
+RECS = ('A01', 'B01', 'C01', 'D01', 'E01')
+
+
+def _confusions(*accuracies):
+    """One {recording: 3 x 3 confusion} per fault count: 100 samples per
+    class, the given accuracy per recording, the errors on the next class
+    (so the macro-F1 of a sum is its pooled accuracy)."""
+    def cm(a):
+        hit = round(100 * a)
+        return [[hit if j == i else 100 - hit if j == (i + 1) % 3 else 0
+                 for j in range(3)] for i in range(3)]
+    return [{r: cm(a) for r, a in zip(RECS, acc)} for acc in accuracies]
+
+
+def _with_confusions(fits, arm, *accuracies):
+    """Set the per-recording confusions on the arm's fits and
+    test_macro_f1_by_fault to the macro-F1 of their sums (as the runner)."""
+    cms = _confusions(*accuracies)
+    _set(fits, 'co', arm, (100,), CM_KEY, cms)
+    _set(fits, 'co', arm, (100,), 'test_macro_f1_by_fault',
+         [macro_f1(np.sum(list(c.values()), axis=0)) for c in cms])
+
+
+def test_gk_uptick_within_one_se_passes(tmp_path, pilot):
+    """m=0 -> m=1 rises by 0.004 while the recordings disagree (SE about
+    0.15): within one SE, PASS; the raw list and the steps are printed."""
+    _with_confusions(pilot[0], 'avg_in', [0.9, 0.5, 0.9, 0.5, 0.9],
+                     [0.5, 0.92, 0.9, 0.9, 0.5], [0.3] * 5)
+    code, report, rows = _s1(tmp_path, *pilot)
+    assert code == 0 and _only(rows, 'PASS'), report
+    line = next(x for x in report.splitlines() if x.startswith('- avg_in:'))
+    assert 'test macro-F1 by fault [0.74, 0.744, 0.3]; steps ' in line
+    se = [float(s) for s in re.findall(r'\(SE ([0-9.]+)\)', line)]
+    assert re.search(r'\(5 test recordings, 10000 resamples\): 0->1 \+0\.004 '
+                     r'\(SE [0-9.]+\), 1->2 -0\.444 \(SE [0-9.]+\)$', line)
+    assert len(se) == 2 and se[0] > 0.004 and all(math.isfinite(s) for s in se)
+
+
+@pytest.mark.parametrize('accuracies, why', [
+    # every recording rises by 0.02 at m=1: SE 0, the step is above one SE
+    (([0.9, 0.5, 0.9, 0.5, 0.9], [0.92, 0.52, 0.92, 0.52, 0.92], [0.3] * 5),
+     r'0->1 rises \+0\.020 > SE [0-9.e+-]+'),
+    # flat over the grid: no step up, but MF1(m_max) is not below MF1(0)
+    (([0.7, 0.6, 0.7, 0.6, 0.7],) * 3, r'm=2 0\.660 not below m=0 0\.660')])
+def test_gk_degradation_violations_fail(accuracies, why, tmp_path, pilot):
+    _with_confusions(pilot[0], 'avg_in', *accuracies)
+    code, report, rows = _s1(tmp_path, *pilot)
+    assert code == 1 and _only(rows, 'FAIL', ('GK', 'co')), rows
+    section = report.split('## FAIL: GK co\n')[1]
+    assert re.search(r'- avg_in: test macro-F1 does not degrade over the '
+                     r'fault grid: ' + why + r'\n', section), section
+    assert ('- Consequence: protocol check (fault mask, noise scale) before '
+            'the consensus study (F1 section 10.5)\n') in section
+    assert 'architecture check' not in section
+
+
+def test_gk_unusable_confusions_fall_back_to_the_strict_check(tmp_path,
+                                                              pilot):
+    """Confusions that do not reproduce test_macro_f1_by_fault are not
+    bootstrapped: the strict check runs and the detail line says why."""
+    _with_confusions(pilot[0], 'avg_in', [0.9, 0.5, 0.9, 0.5, 0.9],
+                     [0.5, 0.92, 0.9, 0.9, 0.5], [0.3] * 5)
+    _set(pilot[0], 'co', 'avg_in', (100,), 'test_macro_f1_by_fault',
+         [0.74, 0.75, 0.3])
+    code, report, rows = _s1(tmp_path, *pilot)
+    assert code == 1 and _only(rows, 'FAIL', ('GK', 'co')), rows
+    assert ('test_confusion_by_recording_by_fault unusable: summed '
+            'confusions give') in report
+    assert ('- avg_in: test macro-F1 does not degrade over the fault grid: '
+            '0->1 rises +0.010 (strict)') in report
+
+
+def test_gk_full_sums_reproduce_the_runner_macro_f1():
+    """The point estimates of _steps are the macro-F1 of the summed
+    per-recording confusions, which equal test_macro_f1_by_fault as the
+    committee runner computes it (pooled over every test sample); the
+    bootstrap is reproducible (fixed seed)."""
+    rng = np.random.default_rng(1)
+    rec = rng.integers(0, 5, 600)
+    cm_rec, by_fault = [], []
+    for noise in (0.1, 0.3, 0.6):
+        y = rng.integers(0, 7, 600)
+        pred = np.where(rng.random(600) < noise, rng.integers(0, 7, 600), y)
+        by_fault.append(macro_f1(confusion_matrix(y, pred, 7)))
+        cm_rec.append({str(r): confusion_matrix(y[rec == r], pred[rec == r],
+                                                7).tolist() for r in range(5)})
+    mf1, steps = _steps(cm_rec, by_fault)
+    assert mf1 == pytest.approx(by_fault, rel=0, abs=1e-12)
+    assert [d for d, _ in steps] == pytest.approx(np.diff(by_fault), abs=1e-12)
+    assert all(s > 0 and math.isfinite(s) for _, s in steps)
+    assert _steps(cm_rec, by_fault) == (mf1, steps)
 
 
 def test_s1_dt_scale_control_is_descriptive(tmp_path, pilot):
@@ -508,6 +672,6 @@ def test_s1_dt_scale_control_is_descriptive(tmp_path, pilot):
     code, report, rows = _s1(tmp_path, fits, pilot[1])
     assert code == 1 and _only(rows, 'FAIL', ('G1', 'lv')), rows
     assert '| G1 | lv | FAIL |' in report and '1/3 seeds pass' in report
-    assert 'epochs unchanged (1 of 5 arms qualify)' in report
+    assert 'epochs unchanged (1 of 5 arms qualify, needs 4)' in report
     assert ('median VPT 31 (dt_scale 1, 3 fits) vs 3 (main, 3 fits)'
             in report)

@@ -1,4 +1,4 @@
-"""S0 smoke and S1 pilot gates of the frozen suite (#72, #75, #76; protocol
+"""S0 smoke and S1 pilot gates of the frozen suite (#72, #75-#77; protocol
 freeze F1-2026-10-26, validation ladder S0 and S1).
 
 --stage s0 reads every fit JSON below the given run folders
@@ -55,27 +55,35 @@ evaluates the S1 go criteria with the frozen thresholds:
   floors a floor line per rollout system and data seed (--floors)
   G1     LV, Duffing: test vpt_multi_median of cfc_lrc/ncp above
          max(persistence, AR(1)) of its data seed + 2 steps in >= 2 of 3 seeds;
-         multitimescale_lib: cfc/ncp >= 2 x persistence in >= 2 of 3 seeds and
-         rate_unbounded 0 on every cfc/ncp fit (test split)
+         below it LV fails (stop before S2) and Duffing is the F1 section 7
+         DECISION (floor-bound, stays in the plan) unless a seed is missing,
+         non-finite or without a floor line (FAIL); multitimescale_lib:
+         cfc/ncp >= 2 x persistence in >= 2 of 3 seeds and rate_unbounded 0
+         on every cfc/ncp fit (test split)
   G0-E   per task, an (arm, seed) qualifies when the validation metric's mean
          over the last tenth of the epochs beats its value at two thirds of the
          epochs by more than 5 % relative (rollouts val_loss_curve, lower is
          better; Person Activity val_macro_f1_curve, higher is better);
-         DECISION epochs x1.5 (rollouts) or x2 (Person Activity) when >= 2
-         pilot arms have >= 2 qualifying seeds (F1 decision m)
+         DECISION epochs x1.5 (rollouts) or x2 (Person Activity) when
+         ceil(2n/3) of the task's n pilot arms have >= 2 qualifying seeds
+         (F1 decision m: LV, Duffing 4 of 5, MT, PA 2 of 2)
   G2     Person Activity: median test_macro_f1 of cfc_lrc/ncp >= 0.60, every
          lrc/ncp fit finite (training_diverged false, finite macro-F1);
          wallclock_s of both arms listed
   G3     descriptive: median VPT of the dt_scale=1 control next to the main arm
   GK     consensus pilot, per arm (ncp_cons, ncp_lam0, avg_in, aug_mono) the
          fit with the best val_macro_f1_mean (the HPO key; grid order on
-         ties): validation macro-F1 at m=0 (best epoch) >= 0.60,
-         test_macro_f1_by_fault non-increasing over the fault grid; ncp_cons
-         vote_lambda_final in (0.05, 0.95). The committee JSON stores no
-         per-batch fault-count sequence or hash, so the fault schedule is not
-         compared (said so in the report)
+         ties): validation macro-F1 at m=0 (best epoch) >= 0.60; test
+         macro-F1 degrades over the fault grid: no step m -> m' rises by
+         more than one paired bootstrap SE over the test recordings
+         (test_confusion_by_recording_by_fault, BOOT_N resamples) and
+         MF1(m_max) < MF1(0) (without the confusions: strict, non-increasing);
+         ncp_cons vote_lambda_final in (0.05, 0.95). The committee JSON
+         stores no per-batch fault-count sequence or hash, so the fault
+         schedule is not compared (said so in the report)
 
-A FAIL row carries the pre-registered consequence of F1 section 7.
+A FAIL row carries its consequence, which names its source: F1 section 7,
+the readings pre-registered in F1 section 10.5, or an operational rule.
 
 The report (--out, Markdown, also printed) lists every check as PASS, FAIL or
 DECISION with the offending arms; the exit code is 0 only when no check
@@ -102,12 +110,15 @@ from collections import Counter
 from functools import lru_cache
 from glob import glob
 
+import numpy as np
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from experiments.suite_manifest import (LV_DEFAULT_SYSTEM, grid,  # noqa: E402
                                         jobs, load)
 from src.benchmark.registry import cell_kwargs  # noqa: E402
+from src.evaluation.metrics import macro_f1  # noqa: E402
 from src.evaluation.rollout_metrics import ANCHORS  # noqa: E402
 
 SMOKE = [os.path.join(ROOT, "configs", "suite", f"smoke_{t}.yaml")
@@ -422,26 +433,39 @@ PILOT = [os.path.join(ROOT, "configs", "suite", f"pilot_{t}.yaml")
 DUF, MT = "duffing", "multitimescale_lib"
 CONTROL = "dt_scale 1"           # tag of the dt_scale control fits (F1 h)
 FLOOR_MARGIN, MT_FACTOR, MIN_SEEDS = 2, 2, 2          # G1
-TAIL, MARK, GAIN, MIN_ARMS = 0.1, 2 / 3, 0.05, 2      # G0-E (F1 decision m)
+TAIL, MARK, GAIN = 0.1, 2 / 3, 0.05                    # G0-E (F1 decision m)
 CURVES = {"lv": ("val_loss_curve", False), "pa": ("val_macro_f1_curve", True)}
 EPOCH_FACTOR = {"lv": 1.5, "pa": 2}
 MIN_F1, LAMBDA = 0.60, (0.05, 0.95)                    # G2, GK
 GK_ARMS = ("ncp_cons", "ncp_lam0", "avg_in", "aug_mono")
-CONSEQUENCE = {   # F1 section 7, "Bei Fehlschlag"
+CM_KEY = "test_confusion_by_recording_by_fault"        # GK bootstrap units
+BOOT_N, BOOT_SEED = 10_000, 0                          # GK (F1 section 10.5)
+CONSEQUENCE = {   # on FAIL (G1 duffing: the DECISION); each names its source
     "fits": "complete the pilot runs (cluster/submit_suite.sh --resume, one "
-            "run folder per pilot YAML) and rerun the gate",
+            "run folder per pilot YAML) and rerun the gate (operational "
+            "rule, #75)",
     "config": "rerun the offending fits with --deterministic (extra_args of "
-              "the pilot YAML) and rerun the gate",
+              "the pilot YAML) and rerun the gate; operational rule (#76)",
     "floors": "write the floor lines (aggregate_results.py --floors over the "
-              "pilot runs) and rerun the gate",
-    "G1": "floor-bound: H-b/H-c contrasts on this task are floor-bound, the "
-          "H-c conjunction runs over the tasks that pass",
-    "G1 mt": "spread 0.25 or 256 steps, repeat once",
-    "G0-E": "no validation curve: the epoch gate cannot be decided",
-    "G2": "stop, find the cause before S2",
-    "GK": "architecture check (width, backbone) before the consensus "
-          "continues",
-    "GK lambda": "vote_init check (one fit)",
+              "pilot runs) and rerun the gate (operational rule, #75)",
+    "G1 lv": "stop: find the cause (endpoint, floors, dt_scale) before S2; "
+             "H-c and RQ1 are affected (operational rule, F1 section 10.5)",
+    "G1 duffing": "Duffing stays in the plan: H-b/H-c Duffing contrasts "
+                  "floor-bound, H-c conjunction over LV and PA (F1 section 7)",
+    "G1 unevaluated": "a missing or non-finite fit or floor line decides no "
+                      "floor: find the cause and rerun the gate (operational "
+                      "rule, #77)",
+    "G1 mt": "spread 0.25 or 256 steps, repeat once (F1 section 7)",
+    "G0-E": "no validation curve: the epoch gate cannot be decided "
+            "(operational rule, #75)",
+    "G2": "stop, find the cause before S2 (F1 section 7)",
+    "GK": "architecture check (width, backbone) before the consensus study "
+          "(F1 section 7)",
+    "GK arm": "arm check (lr grid, head) before the consensus study (F1 "
+              "section 10.5)",
+    "GK monotone": "protocol check (fault mask, noise scale) before the "
+                   "consensus study (F1 section 10.5)",
+    "GK lambda": "vote_init check of one fit (F1 section 7)",
 }
 
 
@@ -549,21 +573,31 @@ def check_pilot_config(fits):
                 consequence=CONSEQUENCE["config"])
 
 
-def gate_floors(fits, lines):
+def gate_floors(fits, lines, expected):
     """G1: cfc_lrc/ncp above max(persistence, AR(1)) + 2 (LV, Duffing);
     cfc/ncp at least 2 x persistence and never unbounded (multitimescale_lib).
-    lines: {(system, data seed): the test block of its floors.json draw}."""
+    lines: {(system, data seed): the test block of its floors.json draw};
+    expected: pilot_fits(). Too few passing seeds fail LV; on Duffing they
+    are the F1 section 7 DECISION when every expected seed has a fit with a
+    finite VPT and a floor line, else FAIL (#77)."""
     rows = []
     for key in (LV_DEFAULT_SYSTEM, DUF, MT):
         mt = key == MT
         arm = "cfc_ncp" if mt else "cfc_lrc_ncp"
         fs, n_ok, bad, detail = _pick(fits, key, arm), 0, [], []
+        unevaluated = [f"seed {s}: no fit" for s in sorted(
+            {s for k, a, s, t in expected if (k, a, t) == (key, arm, "")}
+            - {f["seed"] for f in fs}, key=str)]
         for f in fs:
             rec, s = f["rec"], f["seed"]
             ds = _eff(rec).get("data_seed")
             line = lines.get((rec.get("system"), ds))
+            v = (rec.get("rollout_metrics_test") or {}).get("vpt_multi_median")
+            if not _finite(v):
+                unevaluated.append(f"seed {s}: test vpt_multi_median {v!r}")
             if line is None:
                 detail.append(f"seed {s} (data seed {ds}): no floor line")
+                unevaluated.append(detail[-1])
                 continue
             if mt:
                 p = line["persistence"]["vpt_multi_median"]
@@ -580,22 +614,30 @@ def gate_floors(fits, lines):
             n_ok += ok
             detail.append(f"seed {s} (data seed {ds}): VPT {_vpt(rec):g} vs "
                           f"{bar:g} ({why}) -> {'pass' if ok else 'no'}")
-        if n_ok < MIN_SEEDS:
-            bad.insert(0, f"{n_ok} of {len(fs)} seeds pass (needs "
-                          f"{MIN_SEEDS})")
+        decision = None
+        consequence = CONSEQUENCE["G1 mt" if mt else f"G1 {_name(key)}"]
+        if n_ok < MIN_SEEDS and key == DUF and fs and not unevaluated:
+            decision = consequence
+        elif n_ok < MIN_SEEDS:
+            bad[:0] = [f"{n_ok} of {len(fs)} seeds pass (needs "
+                       f"{MIN_SEEDS})"] + ([] if mt else unevaluated)
+            if key == DUF:
+                consequence = CONSEQUENCE["G1 unevaluated"]
         crit = (f"test VPT of cfc/ncp >= {MT_FACTOR} x persistence in >= "
                 f"{MIN_SEEDS} of 3 seeds; rate_unbounded 0 on every fit" if mt
                 else f"test VPT of cfc_lrc/ncp > max(persistence, AR(1)) + "
                      f"{FLOOR_MARGIN} in >= {MIN_SEEDS} of 3 seeds")
         rows.append(_row("G1", _name(key), crit,
-                         f"{n_ok}/{len(fs)} seeds pass", bad,
-                         consequence=CONSEQUENCE["G1 mt" if mt else "G1"],
-                         detail=detail))
+                         f"{n_ok}/{len(fs)} seeds pass", bad, decision,
+                         consequence, detail))
     return rows
 
 
-def gate_epochs(fits):
-    """G0-E per task over its pilot arms (the dt_scale control left out)."""
+def gate_epochs(fits, expected):
+    """G0-E per task over its pilot arms (the dt_scale control left out):
+    DECISION when ceil(2n/3) of the task's n pilot arms in the pilot YAMLs
+    (expected: pilot_fits()) have >= 2 qualifying seeds (F1 decision m, read
+    as a two-thirds share in F1 section 10.5)."""
     rows = []
     for key in (LV_DEFAULT_SYSTEM, DUF, MT, "pa"):
         kind = "pa" if key == "pa" else "lv"
@@ -618,20 +660,23 @@ def gate_epochs(fits):
                           f"{tail:.4g} over the last {k} ({gain:+.1%})"
                           f"{' qualifies' if q else ''}")
         arms = [a for a, qs in qualifying.items() if sum(qs) >= MIN_SEEDS]
-        decision = summary = None
-        if len(arms) >= MIN_ARMS:
+        n_arms = len({a for k, a, _, t in expected if k == key and t == ""})
+        need = math.ceil(2 * n_arms / 3)
+        share = f"{len(arms)} of {n_arms} arms qualify, needs {need}"
+        decision, summary = None, f"epochs unchanged ({share})"
+        if arms and len(arms) >= need:
             e, x = max(epochs), EPOCH_FACTOR[kind]
-            decision = summary = f"epochs x{x:g} ({e} to {round(e * x)})"
-            decision += f": {', '.join(arms)} qualify"
+            span = f"epochs x{x:g} ({e} to {round(e * x)}"
+            decision = f"{span}): {', '.join(arms)} qualify"
+            summary = f"{span}; {share})"
         rows.append(_row(
             "G0-E", _name(key),
             f"{curve_key} ({'higher' if higher else 'lower'} is better): "
             f"mean over the last tenth beats the value at 2/3 of the epochs "
-            f"by > {GAIN:.0%}; >= {MIN_ARMS} arms with >= {MIN_SEEDS} "
-            f"qualifying seeds change the epochs",
-            summary or f"epochs unchanged ({len(arms)} of {len(qualifying)} "
-                       f"arms qualify)",
-            bad, decision, CONSEQUENCE["G0-E"], detail))
+            f"by > {GAIN:.0%}; ceil(2n/3) of the n pilot arms with >= "
+            f"{MIN_SEEDS} qualifying seeds change the epochs (needs {need} "
+            f"of {n_arms})",
+            summary, bad, decision, CONSEQUENCE["G0-E"], detail))
     return rows
 
 
@@ -677,6 +722,58 @@ def gate_dt_scale(fits):
                  f"{len(arms[''])} fits)", detail=detail)]
 
 
+def _steps(cm_rec, f1):
+    """Macro-F1 per fault count from the per-recording test confusions summed
+    over the recordings, and per adjacent step m -> m' the pair (MF1(m') -
+    MF1(m), SE): SE is the standard deviation of that difference over BOOT_N
+    paired resamples of the recording ids (with replacement, BOOT_SEED; each
+    resample sums the confusions of the drawn recordings at m and at m').
+    cm_rec: one {recording: confusion} per fault count; ValueError when the
+    full sums do not reproduce f1 (test_macro_f1_by_fault)."""
+    recs = sorted(cm_rec[0])
+    cms = np.array([[c[r] for r in recs] for c in cm_rec], dtype=np.int64)
+    mf1 = [macro_f1(c.sum(axis=0)) for c in cms]
+    if len(mf1) != len(f1) or not np.allclose(mf1, f1, rtol=0, atol=1e-9):
+        raise ValueError(f"summed confusions give {mf1}, not {f1}")
+    draws = np.random.default_rng(BOOT_SEED).integers(
+        len(recs), size=(BOOT_N, len(recs)))
+    counts = (draws[..., None] == np.arange(len(recs))).sum(axis=1)
+    boot = np.array([[macro_f1(c) for c in s]      # (resample, fault count)
+                     for s in np.einsum("br,frij->bfij", counts, cms)])
+    se = np.diff(boot, axis=1).std(axis=0, ddof=1)
+    return mf1, [(b - a, float(s)) for a, b, s in zip(mf1, mf1[1:], se)]
+
+
+def _degradation(r, grid_f1):
+    """GK degradation over the fault grid (F1 section 10.5): ([violations],
+    detail text). A step m -> m' violates when MF1(m') - MF1(m) exceeds one
+    paired bootstrap SE (_steps); MF1(m_max) < MF1(0) is required. Without
+    usable CM_KEY confusions: the strict check (non-increasing)."""
+    fc = r.get("fault_counts") or list(range(len(grid_f1)))
+    pairs = [f"{a:g}->{b:g}" for a, b in zip(fc, fc[1:])]
+    try:
+        vals, steps = _steps(r[CM_KEY], grid_f1)
+    except (KeyError, IndexError, TypeError, ValueError) as e:
+        why = f"no {CM_KEY}" if CM_KEY not in r else f"{CM_KEY} unusable: {e}"
+        vals = grid_f1
+        if not (vals and all(_finite(v) for v in vals)):
+            return [f"test macro-F1 by fault {vals} not finite"], (
+                f"{why}; strict check")
+        text = f"{why}; strict check (non-increasing, no tolerance)"
+        bad = [f"{p} rises {b - a:+.3f} (strict)"
+               for p, a, b in zip(pairs, vals, vals[1:]) if not b <= a]
+    else:
+        text = (f"steps MF1(m') - MF1(m) with paired bootstrap SE ("
+                f"{len(r[CM_KEY][0])} test recordings, {BOOT_N} resamples): "
+                + ", ".join(f"{p} {d:+.3f} (SE {s:.2g})"
+                            for p, (d, s) in zip(pairs, steps)))
+        bad = [f"{p} rises {d:+.3f} > SE {s:.2g}"
+               for p, (d, s) in zip(pairs, steps) if not d <= s]
+    if not vals[-1] < vals[0]:
+        bad.append(f"m={fc[-1]:g} {vals[-1]:.3f} not below m=0 {vals[0]:.3f}")
+    return bad, text
+
+
 def gate_consensus(fits):
     """GK on the best-lr fit of each consensus pilot arm."""
     bad, detail, consequences, corruption = [], [], [], set()
@@ -696,21 +793,23 @@ def gate_consensus(fits):
             m0 = math.nan
         grid_f1 = r.get("test_macro_f1_by_fault") or []
         lam = _num(r.get("vote_lambda_final"))
+        violated, text = _degradation(r, grid_f1)
         detail.append(
             f"{arm}: best lr {r['lr']:g} (val_macro_f1_mean "
             f"{_num(r.get('val_macro_f1_mean')):.3f}), val macro-F1 at m=0 "
             f"{_num(m0):.3f}, test macro-F1 by fault "
             f"{[round(v, 3) for v in grid_f1]}"
-            + (f", vote_lambda_final {lam:.3f}" if arm == "ncp_cons" else ""))
+            + (f", vote_lambda_final {lam:.3f}" if arm == "ncp_cons" else "")
+            + f"; {text}")
         if not _num(m0) >= MIN_F1:
             bad.append(f"{arm}: validation macro-F1 at m=0 {_num(m0):.3f} < "
                        f"{MIN_F1:.2f} at its best lr {r['lr']:g}")
-            consequences.append(CONSEQUENCE["GK"])
-        if not (grid_f1 and all(_finite(v) for v in grid_f1) and all(
-                a >= b for a, b in zip(grid_f1, grid_f1[1:]))):
-            bad.append(f"{arm}: test macro-F1 not non-increasing over the "
-                       f"fault grid {[round(v, 3) for v in grid_f1]}")
-            consequences.append(CONSEQUENCE["GK"])
+            consequences.append(
+                CONSEQUENCE["GK" if arm == "ncp_cons" else "GK arm"])
+        if violated:
+            bad.append(f"{arm}: test macro-F1 does not degrade over the "
+                       f"fault grid: {'; '.join(violated)}")
+            consequences.append(CONSEQUENCE["GK monotone"])
         if arm == "ncp_cons" and not LAMBDA[0] < lam < LAMBDA[1]:
             bad.append(f"ncp_cons: vote_lambda_final {lam:.3f} outside "
                        f"{LAMBDA}")
@@ -719,9 +818,10 @@ def gate_consensus(fits):
                   f"fault-count sequence or hash (fault_counts is the grid; "
                   f"corruption_seed {sorted(corruption, key=str)}), not compared")
     return [_row("GK", "co", f"best lr per arm (val_macro_f1_mean): "
-                 f"validation macro-F1 at m=0 >= {MIN_F1:.2f}, test macro-F1 "
-                 f"non-increasing over the fault grid; ncp_cons "
-                 f"vote_lambda_final in {LAMBDA}",
+                 f"validation macro-F1 at m=0 >= {MIN_F1:.2f}; test macro-F1 "
+                 f"degrades over the fault grid (no step up by more than one "
+                 f"paired bootstrap SE over the test recordings, MF1(m_max) "
+                 f"< MF1(0)); ncp_cons vote_lambda_final in {LAMBDA}",
                  f"{len(GK_ARMS) - len({b.split(':')[0] for b in bad})}/"
                  f"{len(GK_ARMS)} arms pass", bad,
                  consequence="; ".join(dict.fromkeys(consequences)),
@@ -736,7 +836,8 @@ def gate_s1(fits, expected, floors):
     return [check_pilot_fits(fits, expected), check_pilot_config(fits),
             _row("floors", "rollouts", desc, f"{len(bad)} missing", bad,
                  consequence=CONSEQUENCE["floors"]),
-            *gate_floors(fits, lines), *gate_epochs(fits), *gate_pa(fits),
+            *gate_floors(fits, lines, expected), *gate_epochs(fits, expected),
+            *gate_pa(fits),
             *gate_dt_scale(fits), *gate_consensus(fits)]
 
 
@@ -763,7 +864,7 @@ def report_s1(rows, runs, configs, n_fits):
         lines += ["", f"## {_status(r)}: {r['gate']} {r['task']}", ""]
         lines += [f"- {b}" for b in r["bad"]]
         if r["bad"]:
-            lines.append(f"- Consequence (F1 section 7): {r['consequence']}")
+            lines.append(f"- Consequence: {r['consequence']}")
         if r["decision"]:
             lines.append(f"- DECISION: {r['decision']}")
         lines += [f"- {d}" for d in r["detail"]]
