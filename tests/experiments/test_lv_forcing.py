@@ -45,6 +45,7 @@ def test_teacher_default_matches_pre_change_runner(cell, wiring, tmp_path,
     assert (r['forcing'], r['alpha_min'], r['alpha_curve']) == (
         'teacher', None, None)
     assert r['config']['effective']['forcing'] == 'teacher'
+    assert r['config']['effective']['deterministic'] is False   # #70
 
 
 def test_mixed_forcing_run(tmp_path, monkeypatch):

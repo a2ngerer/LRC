@@ -53,6 +53,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 
 import numpy as np
 import tensorflow as tf
@@ -345,6 +346,9 @@ def main():
                     help="ncp x CfC family: drop the diagonal self-recurrence "
                          "of the NCP layers (issue #23 stability pilot)")
     ap.add_argument("--verbose", type=int, default=0)
+    ap.add_argument("--deterministic", action="store_true",
+                    help="tf.config.experimental.enable_op_determinism() "
+                         "before model construction (#70)")
     ap.add_argument("--probe-stability", action="store_true",
                     help="record per-state norms at init, after one step and "
                          "after epoch 1, plus the epoch-1 train loss "
@@ -369,6 +373,8 @@ def main():
     if not 0.0 <= args.alpha_min <= 1.0:
         ap.error("--alpha-min must lie in [0, 1]")
 
+    if args.deterministic:
+        tf.config.experimental.enable_op_determinism()
     cell_kwargs = registry_cell_kwargs(args.cell, args.elastance_type)
     cell_kwargs.update(backbone_override(args.cell, args.backbone_layers))
     if args.head_activation != "none":     # non-CfC cells reject the kwarg
@@ -457,6 +463,7 @@ def main():
         alpha = tf.Variable(1.0, trainable=False, name="alpha")
         schedule = AlphaSchedule(alpha, args.epochs, args.alpha_min)
         train_model = forced_rollout_model(model, alpha)
+    t0 = time.time()
     with track(args.wandb, group=args.cell, job_type=args.wiring, name=tag,
                config=wandb_config) as run_:
         hist = train_model.fit(
@@ -466,6 +473,7 @@ def main():
             verbose=args.verbose,
             callbacks=([schedule] if schedule else []) + keras_callbacks(run_)
             + [test_tap] + ([probe] if probe else []) + ([diag] if diag else []))
+    wall = time.time() - t0
     val_curve = hist.history["val_loss"]
     best = int(np.argmin(np.nan_to_num(val_curve, nan=np.inf)))  # NaN never wins
 
@@ -523,6 +531,7 @@ def main():
         "teacher_forced_traj": _round(tf_traj),
         "closed_loop_traj": _round(cl_traj),
         "training_diverged": not np.isfinite(hist.history["loss"][-1]),
+        "wallclock_s": round(wall, 1),
         "forcing": args.forcing,
         "alpha_min": args.alpha_min if mixed else None,
         "alpha_curve": _round(schedule.curve, 6) if mixed else None,
@@ -535,6 +544,7 @@ def main():
             "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
             "forcing": args.forcing,
             "alpha_min": args.alpha_min if mixed else None,
+            "deterministic": args.deterministic,
             "build": dict(wiring=args.wiring, cell=args.cell, size=args.size,
                           seed=args.seed, feature_size=data.feature_size,
                           loc_dim=data.loc_dim, lr=args.lr,
