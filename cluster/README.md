@@ -255,6 +255,8 @@ data draw and, per task, the evaluation knobs (LV: anchors, horizon, theta) and
 the corruption protocol (committee), so two fits that differ in any of them
 differ in `config_hash`. Any change of the frozen protocol after the smoke
 stage S0, including what `config_hash` covers, is a new `PROTOCOL_VERSION`.
+Exception: a key that records a decision pre-registered in F1 and taken at S0
+(op-determinism, F1 decision l, #76) does not bump the version.
 
 The frozen protocol (F1-2026-10-26, #71) is one hpo and one final YAML per task:
 `configs/suite/{lv,duffing,mt,pa}_{hpo,final}.yaml` and the consensus study
@@ -409,18 +411,23 @@ floor line per rollout data seed are present and that every fit ran with
 op-determinism (`config.effective.deterministic` true), and evaluates the S1
 go criteria with the frozen thresholds (test split for the rollouts):
 
-| Gate | Criterion | On FAIL (pre-registered) |
-|------|-----------|--------------------------|
-| config | `config.effective.deterministic` true on every pilot fit (#76); the offending fits are listed | rerun them with `--deterministic` (the pilot YAML's `extra_args`) and rerun the gate |
-| G1 lv, duffing | `vpt_multi_median` of cfc_lrc/ncp > max(persistence, AR(1)) of its data seed + 2 steps in >= 2 of 3 seeds | floor-bound: H-b/H-c contrasts on this task are floor-bound, the H-c conjunction runs over the tasks that pass |
-| G1 multitimescale_lib | cfc/ncp >= 2 x persistence in >= 2 of 3 seeds, `rate_unbounded` 0 on every cfc/ncp fit | spread 0.25 or 256 steps, repeat once |
-| G0-E per task | an (arm, seed) qualifies when the mean of the last tenth of `val_loss_curve` (lower is better) or `val_macro_f1_curve` (Person Activity, higher is better) beats its value at 2/3 of the epochs by > 5 % relative; >= 2 pilot arms with >= 2 qualifying seeds give the DECISION "epochs x1.5 (300 to 450)" or "epochs x2 (50 to 100)", else "epochs unchanged" | a fit without the curve fails the row |
-| G2 pa | median test macro-F1 of cfc_lrc/ncp >= 0.60, every lrc/ncp fit finite (`training_diverged` false); `wallclock_s` of both arms listed | stop, find the cause before S2 |
+| Gate | Criterion | On FAIL (source) |
+|------|-----------|------------------|
+| config | `config.effective.deterministic` true on every pilot fit (#76); the offending fits are listed | operational rule (#76): rerun them with `--deterministic` (the pilot YAML's `extra_args`) and rerun the gate |
+| G1 lv | `vpt_multi_median` of cfc_lrc/ncp > max(persistence, AR(1)) of its data seed + 2 steps in >= 2 of 3 seeds | FAIL: stop, find the cause (endpoint, floors, dt_scale) before S2; H-c and RQ1 are affected (operational rule, F1 section 10.5) |
+| G1 duffing | as G1 lv | DECISION (exit 0): Duffing stays in the plan, H-b/H-c Duffing contrasts floor-bound, H-c conjunction over LV and PA (F1 section 7); FAIL only when a cfc_lrc/ncp seed is missing, has a non-finite VPT or no floor line (operational rule, #77) |
+| G1 multitimescale_lib | cfc/ncp >= 2 x persistence in >= 2 of 3 seeds, `rate_unbounded` 0 on every cfc/ncp fit | spread 0.25 or 256 steps, repeat once (F1 section 7) |
+| G0-E per task | an (arm, seed) qualifies when the mean of the last tenth of `val_loss_curve` (lower is better) or `val_macro_f1_curve` (Person Activity, higher is better) beats its value at 2/3 of the epochs by > 5 % relative; `ceil(2n/3)` of the task's n pilot arms (LV, Duffing 4 of 5; MT, PA 2 of 2; the dt_scale control not counted) with >= 2 qualifying seeds give the DECISION "epochs x1.5 (300 to 450)" or "epochs x2 (50 to 100)", else "epochs unchanged"; the summary reads "k of n arms qualify, needs t" | a fit without the curve fails the row (operational rule, #75) |
+| G2 pa | median test macro-F1 of cfc_lrc/ncp >= 0.60, every lrc/ncp fit finite (`training_diverged` false); `wallclock_s` of both arms listed | stop, find the cause before S2 (F1 section 7) |
 | G3 lv | descriptive: median VPT of the dt_scale=1 control next to the main arm | never fails |
-| GK co | per arm the fit with the best `val_macro_f1_mean`: validation macro-F1 at m=0 >= 0.60, `test_macro_f1_by_fault` non-increasing; ncp_cons `vote_lambda_final` in (0.05, 0.95) | architecture check (width, backbone) before the consensus continues; vote_init check (one fit) for lambda at the edges |
+| GK co | per arm the fit with the best `val_macro_f1_mean`: validation macro-F1 at m=0 >= 0.60; test macro-F1 degrades over the fault grid: no step m -> m' with MF1(m') - MF1(m) above one paired bootstrap SE (10 000 resamples of the test recordings in `test_confusion_by_recording_by_fault`, fixed seed, macro-F1 of the summed confusions) and MF1(m_max) < MF1(0); without the confusions the strict check (`test_macro_f1_by_fault` non-increasing), said so in the detail line; ncp_cons `vote_lambda_final` in (0.05, 0.95) | ncp_cons below 0.60 at m=0: architecture check (width, backbone) before the consensus study (F1 section 7); another arm below 0.60: arm check (lr grid, head) before the consensus study (F1 section 10.5); no degradation: protocol check (fault mask, noise scale) before the consensus study (F1 section 10.5); vote_init check of one fit for lambda at the edges (F1 section 7) |
 
-The committee JSON stores no per-batch fault-count sequence or hash, so the
-gate says so and does not compare the fault schedule across the four arms
-(the runner draws every batch from `corruption_seed`, `CorruptedBatches`; the
-fault grid is K-specific). Every row is PASS, FAIL (with the consequence) or
-DECISION; exit 0 only when no row fails, a DECISION does not fail the gate.
+The GK detail line prints the raw `test_macro_f1_by_fault` list (the strict
+reading) and every step `m->m' difference (SE ...)`. The committee JSON
+stores no per-batch fault-count sequence or hash, so the gate says so and
+does not compare the fault schedule across the four arms (the runner draws
+every batch from `corruption_seed`, `CorruptedBatches`; the fault grid is
+K-specific). Every row is PASS, FAIL (with the consequence, which names its
+source) or DECISION; exit 0 only when no row fails, a DECISION does not fail
+the gate. The readings of G0-E, G1 and GK follow protocol freeze
+F1-2026-10-26, section 10.5 (#77).
