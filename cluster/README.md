@@ -460,45 +460,73 @@ defaults, so a fixed difference between the test and the validation
 evaluation (an offset of the campaign, shared by every arm) recurs in S3 and
 does not average out over seeds. The S3 consensus GK reading therefore reads
 the K = 3 monotonicity against the reference arms of the same campaign; the
-S1 reading stays the pre-registered paired-se rule (the default). The offset
-rule is to be pre-registered in the protocol addendum by the author before
-any S3 consensus result is read.
+S1 reading stays the pre-registered paired-se rule (the default of
+`--stage s1`). The offset rule, including the choices listed below, is to be
+pre-registered in the protocol addendum by the author before any S3
+consensus result is read.
 
-`suite_gate.py --stage s1 ... --gk-rule offset` (default `paired-se`): per
-GK arm the same fit as the paired-se row (best `val_macro_f1_mean`). For
-every arm outside the reference arms aug_mono and fault_mean and every
-adjacent step m -> m' of its fault grid, with T = `test_macro_f1_by_fault`
-and V = `val_macro_f1_grid_curve[best_val_epoch - 1]`:
+The offset rule, with T = `test_macro_f1_by_fault` and
+V = `val_macro_f1_grid_curve[best_val_epoch - 1]`, for every arm outside the
+reference arms aug_mono and fault_mean and every adjacent step m -> m' of its
+fault grid:
 
 - offset off_a = [T(m') - T(m)] - [V(m') - V(m)];
-- reference offset off_ref = the median of the same offset over every fit
-  (all learning rates and seeds) of aug_mono and fault_mean in the campaign
-  with finite T and V on its whole grid, taken between the reference fit's
-  grid entries nearest the fault fractions m/K and m'/K (fault_mean, K = 3:
-  the same counts; aug_mono, K = 1: the window failure probabilities nearest
-  m/3 and m'/3, i.e. 0, 0.3 and 0.67 on the default rho grid);
-- a step violates when T(m') - T(m) > 0 and off_a - off_ref > SE, the
-  paired bootstrap SE of the test step over the test recordings (as the
-  paired-se rule); MF1(m_max) < MF1(0) stays required.
+- reference offset off_ref = the median of the same offset over every
+  usable fit (finite T and V on its whole grid) of aug_mono and fault_mean
+  below `--runs`, taken between the reference fit's grid entries nearest
+  the fault fractions m/K and m'/K (fault_mean, K = 3: the same counts;
+  aug_mono, K = 1: the window failure probabilities nearest m/3 and m'/3,
+  i.e. 0, 0.3 and 0.67 on the default rho grid);
+- a step violates when it violates the paired-se rule, T(m') - T(m) > SE
+  (the paired bootstrap SE of the test step over the test recordings), and
+  off_a - off_ref > SE as well; MF1(m_max) < MF1(0) stays required.
 
-The reference arms themselves keep the paired-se rule. Without a usable
-reference fit the paired-se rule applies to every arm, said so in the
-summary and the detail lines. The summary names the rule and the reference
-fits per arm; each detail line prints per step the test step, the offset,
-the reference offset and the SE. A violation's consequence is the protocol
-check (fault mask, noise scale) of the offset rule (#81).
+The rule only relaxes the paired-se rule: it never fails a step that the
+paired-se rule accepts. Choices the addendum names: a rise seen on both
+splits is absolved (a negative offset); aug_mono is matched by fault
+fraction, not by grid index; the median runs over every learning rate and
+seed of the reference arms (on the S1 pilot including the lr 1e-4 fits); the
+reference fits are pooled over every fit below `--runs` (pass only the
+campaign's run folder). The reference arms keep the paired-se rule. Without
+a usable reference fit the paired-se rule applies to every arm, said so in
+the summary and the detail lines. The summary names the rule and the
+reference fits per arm; each detail line prints per step the test step, the
+offset, the reference offset and the SE. A violation's consequence is the
+protocol check (fault mask, noise scale) of the offset rule (#81).
 
-`run_committee_benchmark.py --eval-only --weights <stem>.weights.h5`
-re-scores a stored committee fit without training: the model is rebuilt
-from the record's `config.effective` (`rebuild_from_result`) and its weights
-loaded; the record is `<stem>.json` next to the weights (or `--record`).
-It refuses (exit 1) a `config.effective` that does not hash to its
-`config_hash` and a weights file that is not the record's `weights_path`.
-`--test-seeds` (default: the record's `test_seeds`) draws `_rng(seed, m)` as
-the runner; `--val-draws N` (default 1) draws validation k from
-`_rng(val_seed + 1000 k, m)`, so draw 0 is the stored validation draw. The
-output `<out>/<stem>.evalonly.json` (`--out`, default the record's folder;
-pass a scratch folder for a fetched results tree) holds
+`suite_gate.py --stage s3co --runs <co-k3-final run> --out <report>` is the
+S3 reading. It reads the finals of `configs/suite/co_k3_final.yaml`
+(`--configs`), which the suite writes flat into `results/` (no
+`hpo/<arm>` folder), and names each fit by its campaign arm from the record
+fields `cell`, `wiring`, `n_columns`, `vote_lambda`, `consensus` and
+`view_average` (the stem suffixes `_lam0`, `_median`, `_viewavg`, `_viewfm`,
+`K1`, the cncp wiring). Rows: fits (every arm x seed 0-4 once, 45), config
+(`deterministic` true) and GK, which reads every fit of every arm by the
+offset rule (`--gk-rule`, default `offset` here); an arm fails when one of
+its seeds violates (a choice for the addendum) or it has no fit. The
+validation macro-F1 at
+m=0 and the `vote_lambda_final` criteria of the S1 GK row are not part of
+the S3 reading.
+
+`suite_gate.py --stage s1 ... --gk-rule offset` applies the same rule to the
+S1 pilot (one best-lr fit per arm, as the paired-se row); it is a check of
+the rule on the pilot, not the S3 reading.
+
+`run_committee_benchmark.py --eval-only --weights <stem>.weights.h5 --out
+<folder>` re-scores a stored committee fit without training: the model is
+rebuilt from the record's `config.effective` (`rebuild_from_result`) and its
+weights loaded; the record is `<stem>.json` next to the weights (or
+`--record`). `--out` is required and refused when it is the record's folder
+or below it: a fit folder holds exactly one result JSON (`run_grid_hpo.py`,
+`determinism_probe.py` and the S0 gate unpack it so), and a fetched results
+tree stays read-only. It refuses (exit 1) a `config.effective` that does not
+hash to its `config_hash` and a weights file that is missing or is not the
+record's `weights_path` next to the record; the record stores no hash of
+the weights, so a different file put in place under that name is not
+detected. `--test-seeds` (default: the record's `test_seeds`) draws
+`_rng(seed, m)` as the runner; `--val-draws N` (default 1) draws validation
+k from `_rng(val_seed + 1000 k, m)`, so draw 0 is the stored validation
+draw. The output `<out>/<stem>.evalonly.json` holds
 `test_confusion_by_recording_by_fault_by_seed` (`{seed: [{recording:
 confusion} per fault count]}`, one seed's entry in the layout of
 `test_confusion_by_recording_by_fault`), `val_confusion_by_fault_by_draw`
@@ -512,4 +540,6 @@ confusion} per fault count]}`, one seed's entry in the layout of
 uv run python experiments/run_committee_benchmark.py --eval-only \
     --weights results/04_column_voting/<run>/results/hpo/ncp_cons/<point>/<stem>.weights.h5 \
     --test-seeds 0,1,2,3,4 --val-draws 5 --out <scratch folder>
+uv run python experiments/suite_gate.py --stage s3co \
+    --runs results/04_column_voting/<co-k3-final run> --out <scratch folder>/S3_GK.md
 ```
