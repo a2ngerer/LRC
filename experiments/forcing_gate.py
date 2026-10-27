@@ -1,27 +1,33 @@
-"""Training-protocol gate of the rollout tasks (issue #25, pre-registered).
+"""Rank report of the forcing pilot (issue #25 pilot, per-fit report #69).
+
+Descriptive only (protocol freeze F1-2026-10-26, section 6): mixed forcing is
+the primary protocol by that freeze; this report attaches no threshold and no
+decision to the numbers below.
 
 Reads the pilot's LV runner JSONs ({gru, cfc, cfc_lrc} x {dense3, ncp} x
-seeds, each under --forcing teacher and mixed, per system) and applies the
-pre-registered rule:
+seeds, each under --forcing teacher and mixed, per system) and reports:
 
-  * arm score = median VPT(0.5) over seeds x test trajectories (pooled), from
-    the stored de-normalised test rollouts (src/evaluation/rollout_metrics);
-    a fit with training_diverged scores -inf on every trajectory (worst rank);
-  * per system: Kendall tau_b between the teacher and the mixed arm scores
-    (tau_b from src.evaluation.stats, issue #29);
-  * per system: sign of the paired median difference VPT(gru/dense3) -
-    VPT(cfc_lrc/dense3) over (seed, test trajectory) pairs; a flip is a
-    strictly opposite sign under the two protocols (a zero is reported, not a
-    flip);
-  * mixed forcing becomes primary if tau_b < 0.6 or a sign flips on either
-    system; otherwise teacher forcing stays primary.
+  * fit score per endpoint
+      k0           -- median VPT(0.5) over the fit's test trajectories of the
+                      stored closed-loop rollout (free run from the initial
+                      state, src/evaluation/rollout_metrics);
+      multi_anchor -- rollout_metrics_test.vpt_multi_median (#62), only when
+                      every fit of the system carries it (the feat-25 pilot
+                      JSONs do after `run_lotka_volterra_benchmark.py
+                      --eval-only`);
+    a fit with training_diverged scores -inf (worst rank);
+  * arm score: median of the fit scores over seeds (per-fit aggregation);
+  * Kendall tau_b with its standard error for the n arms between the teacher
+    and the mixed ranking per endpoint, and between the k0 and the
+    multi-anchor ranking per forcing.
 
-Without #29 the tau_b part reports "n/a"; the decision is then final only if a
-sign flip already decides it.
+The #25 gate pooled seeds x trajectories into one median per arm;
+arm_score(pooled=True) keeps that aggregation only so the historical values
+can be reproduced (tests/experiments/test_lv_forcing.py).
 
 Usage:
     uv run python experiments/forcing_gate.py \
-        '<lv run>/results/*.json' '<duffing run>/results/*.json' [--out gate.json]
+        '<lv run>/results/*.json' '<duffing run>/results/*.json' [--out rank.json]
 """
 from __future__ import annotations
 
@@ -33,13 +39,13 @@ from glob import glob
 import numpy as np
 
 from src.evaluation.rollout_metrics import rollout_metrics
+from src.evaluation.stats import kendall_tau_b, kendall_tau_b_se
 
 CELLS = ("gru", "cfc", "cfc_lrc")
 WIRINGS = ("dense3", "ncp")
 ARMS = tuple((c, w) for c in CELLS for w in WIRINGS)
 FORCINGS = ("teacher", "mixed")
-PAIR = (("gru", "dense3"), ("cfc_lrc", "dense3"))
-TAU_MIN = 0.6
+ENDPOINTS = ("k0", "multi_anchor")
 
 
 def trajectory_vpt(r):
@@ -53,54 +59,62 @@ def trajectory_vpt(r):
                      for i in range(len(gt))])
 
 
-def kendall_tau_b(a, b):
-    """tau_b from #29's src.evaluation.stats; None until that is merged."""
-    try:
-        from src.evaluation.stats import kendall_tau_b as tau
-    except ImportError:
-        return None
-    return tau(a, b)
+def arm_score(fits, endpoint="k0", pooled=False):
+    """Score of one arm from its fits [result dict, one per seed]: median over
+    the per-fit scores, or (pooled=True, k0 only, the #25 gate) the median
+    over all seeds x trajectories."""
+    if endpoint == "multi_anchor":
+        per_fit = [-np.inf if r.get("training_diverged")
+                   else r["rollout_metrics_test"]["vpt_multi_median"]
+                   for r in fits]
+        return float(np.median(per_fit))
+    vpts = [trajectory_vpt(r) for r in fits]
+    return float(np.median(np.concatenate(vpts) if pooled
+                           else [np.median(v) for v in vpts]))
 
 
-def gate(records):
-    """records: result dicts -> {system: report} and the decision."""
-    vpt, seeds = {}, {}
+def collect(records):
+    """records -> {(system, forcing, cell, wiring): [fit per seed]}; raises
+    ValueError if a pilot fit is missing."""
+    fits, seeds = {}, {}
     for r in records:
         key = (r["system"], r.get("forcing", "teacher"), r["cell"], r["wiring"])
         if key[1] in FORCINGS and key[2:] in ARMS:
-            vpt.setdefault(key, {})[r["seed"]] = trajectory_vpt(r)
+            fits.setdefault(key, {})[r["seed"]] = r
             seeds.setdefault(r["system"], set()).add(r["seed"])
     missing = [f"{s}/{f}/{c}_{w}_seed{k}" for s in seeds for f in FORCINGS
                for c, w in ARMS for k in sorted(seeds[s])
-               if k not in vpt.get((s, f, c, w), {})]
+               if k not in fits.get((s, f, c, w), {})]
     if missing:
         raise ValueError(f"{len(missing)} pilot fits missing: {missing}")
+    return {key: [by_seed[k] for k in sorted(by_seed)]
+            for key, by_seed in fits.items()}
 
-    report = {}
-    for s in sorted(seeds):
-        pooled = {(f, a): np.stack([vpt[(s, f, *a)][k] for k in sorted(seeds[s])])
-                  for f in FORCINGS for a in ARMS}
-        score = {f: [float(np.median(pooled[(f, a)])) for a in ARMS]
-                 for f in FORCINGS}
-        with np.errstate(invalid="ignore"):            # -inf - -inf: both failed
-            diff = {f: float(np.nanmedian(pooled[(f, PAIR[0])]
-                                          - pooled[(f, PAIR[1])]))
-                    for f in FORCINGS}
-        sign = {f: int(np.sign(np.nan_to_num(d))) for f, d in diff.items()}
-        tau = kendall_tau_b(score["teacher"], score["mixed"])
-        report[s] = {"arms": [f"{c}/{w}" for c, w in ARMS],
-                     "median_vpt": score, "tau_b": tau,
-                     "pair_median_diff": diff, "pair_sign": sign,
-                     "sign_flip": sign["teacher"] * sign["mixed"] < 0}
-    flip = any(r["sign_flip"] for r in report.values())
-    taus = [r["tau_b"] for r in report.values()]
-    if flip or any(t is not None and t < TAU_MIN for t in taus):
-        decision = "mixed"
-    elif None in taus:
-        decision = "undecided (tau_b needs #29)"
-    else:
-        decision = "teacher"
-    return report, decision
+
+def report(records, pooled=False):
+    """records: result dicts -> {system: rank report} (see module docstring);
+    pooled=True scores k0 the #25 way (reproduction only)."""
+    fits = collect(records)
+    out = {}
+    for s in sorted({k[0] for k in fits}):
+        arm_fits = {(f, a): fits[(s, f, *a)] for f in FORCINGS for a in ARMS}
+        endpoints = ENDPOINTS if all(
+            "vpt_multi_median" in r.get("rollout_metrics_test", {})
+            for fs in arm_fits.values() for r in fs) else ENDPOINTS[:1]
+        score = {f"{f}@{e}": [arm_score(arm_fits[(f, a)], e, pooled)
+                              for a in ARMS]
+                 for e in endpoints for f in FORCINGS}
+        pairs = [(f"teacher@{e}", f"mixed@{e}") for e in endpoints]
+        if len(endpoints) == 2:
+            pairs += [(f"{f}@k0", f"{f}@multi_anchor") for f in FORCINGS]
+        out[s] = {"arms": [f"{c}/{w}" for c, w in ARMS],
+                  "n_seeds": len(arm_fits[(FORCINGS[0], ARMS[0])]),
+                  "aggregation": "pooled" if pooled else "per_fit",
+                  "median_vpt": score,
+                  "tau_b": {f"{a} vs {b}": kendall_tau_b(score[a], score[b])
+                            for a, b in pairs},
+                  "tau_b_se": kendall_tau_b_se(len(ARMS))}
+    return out
 
 
 def main(argv=None):
@@ -116,24 +130,25 @@ def main(argv=None):
         if "closed_loop_traj" in r:
             records.append(r)
     try:
-        report, decision = gate(records)
+        rep = report(records)
     except ValueError as e:
         sys.exit(str(e))
-    for s, r in report.items():
-        print(f"== {s}")
+    for s, r in rep.items():
+        cols = list(r["median_vpt"])
+        print(f"== {s} (arm = median over {r['n_seeds']} per-fit VPTs)")
+        print("  " + " " * 16 + "".join(f"{c:>22s}" for c in cols))
         for i, arm in enumerate(r["arms"]):
-            print(f"  {arm:16s} median VPT teacher {r['median_vpt']['teacher'][i]:7.1f}"
-                  f"  mixed {r['median_vpt']['mixed'][i]:7.1f}")
-        tau = "n/a (needs #29)" if r["tau_b"] is None else f"{r['tau_b']:.3f}"
-        print(f"  tau_b {tau} (switch if < {TAU_MIN})")
-        print(f"  {PAIR[0][0]}-{PAIR[1][0]} on dense3, paired median VPT diff: "
-              f"teacher {r['pair_median_diff']['teacher']:+g}, mixed "
-              f"{r['pair_median_diff']['mixed']:+g} -> sign flip "
-              f"{r['sign_flip']}")
-    print(f"DECISION: primary protocol = {decision}")
+            print(f"  {arm:16s}" + "".join(f"{r['median_vpt'][c][i]:22.1f}"
+                                           for c in cols))
+        for pair, tau in r["tau_b"].items():
+            print(f"  tau_b {pair}: {tau:+.3f} (SE {r['tau_b_se']:.2f}, "
+                  f"n={len(r['arms'])})")
+        if len(cols) == 2:
+            print("  multi_anchor: n/a (no rollout_metrics_test.vpt_multi_median;"
+                  " re-evaluate with run_lotka_volterra_benchmark.py --eval-only)")
     if args.out:
         with open(args.out, "w") as f:
-            json.dump({"report": report, "decision": decision}, f, indent=1)
+            json.dump(rep, f, indent=1)
 
 
 if __name__ == "__main__":

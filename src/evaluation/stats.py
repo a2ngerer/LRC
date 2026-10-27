@@ -5,6 +5,7 @@
                        rule; the decision stays the Bonferroni-adjusted Wilcoxon)
   - clopper_pearson:   exact binomial interval
   - kendall_tau_b:     rank agreement (protocol pilot, budget-sensitivity tables)
+  - kendall_tau_b_se:  its standard error under no association for n items
   - bootstrap_mean_ci: percentile bootstrap of an arm mean over seeds, optionally
                        also over test recordings (crossed seeds x recordings)
 """
@@ -44,6 +45,15 @@ def p_a_gt_b(x, y, diverged_x=False, diverged_y=False, alpha=0.05):
 def kendall_tau_b(rank_a, rank_b):
     """Kendall tau-b between two rankings (or scores) of the same items."""
     return float(kendalltau(rank_a, rank_b, variant='b').statistic)
+
+
+def kendall_tau_b_se(n):
+    """Standard error of Kendall tau over n untied items under no association,
+    sqrt(2 (2n + 5) / (9 n (n - 1))); 0.355 at n = 6 (protocol freeze
+    F1-2026-10-26, section 6: the gate tau_b is descriptive at this noise)."""
+    # ponytail: no-ties formula; ties shrink the SE slightly, irrelevant for
+    # a descriptive yardstick.
+    return float(np.sqrt(2 * (2 * n + 5) / (9 * n * (n - 1))))
 
 
 def bootstrap_mean_ci(values, resample_cols=False, n_boot=10_000, alpha=0.05,

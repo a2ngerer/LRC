@@ -1,13 +1,14 @@
 # tests/experiments/test_lv_forcing.py
-# Issue #25: --forcing / --alpha-min of the LV runner and the pilot gate
-# (experiments/forcing_gate.py).
+# Issue #25: --forcing / --alpha-min of the LV runner; issue #69: the per-fit
+# rank report of the forcing pilot (experiments/forcing_gate.py).
 import json
+import os
+import subprocess
 import sys
-import types
+from glob import glob
 
 import numpy as np
 import pytest
-from scipy.stats import kendalltau
 
 from experiments import forcing_gate as gate_mod
 from experiments import run_lotka_volterra_benchmark as runner
@@ -73,82 +74,119 @@ def test_invalid_forcing_args(extra, tmp_path, monkeypatch):
         runner.main()
 
 
-# --- pilot gate --------------------------------------------------------------
+# --- pilot rank report (#69) ------------------------------------------------
 T = 8
 STATS = {'mean': [0.0, 0.0], 'std': [1.0, 1.0], 'train_abs_max': 1.0}
+SYS = 'periodic_predator_prey'
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
 
 
-def _rec(system, forcing, cell, wiring, seed, vpts, diverged=False):
+def _rec(system, forcing, cell, wiring, seed, vpts, diverged=False,
+         multi=None):
     """Result JSON whose test rollouts have exactly the given VPTs (1..T)."""
     gt = np.zeros((len(vpts), T + 1, 2))
     cl = gt.copy()
     for i, v in enumerate(vpts):
         cl[i, v:] = 1.0                              # e_t = 1 > 0.5 from step v
-    return {'system': system, 'forcing': forcing, 'cell': cell,
-            'wiring': wiring, 'seed': seed, 'norm_stats': STATS,
-            'ground_truth_traj': gt.tolist(), 'closed_loop_traj': cl.tolist(),
-            'training_diverged': diverged}
+    r = {'system': system, 'forcing': forcing, 'cell': cell,
+         'wiring': wiring, 'seed': seed, 'norm_stats': STATS,
+         'ground_truth_traj': gt.tolist(), 'closed_loop_traj': cl.tolist(),
+         'training_diverged': diverged}
+    if multi is not None:
+        r['rollout_metrics_test'] = {'vpt_multi_median': multi}
+    return r
 
 
-def _pilot(score, systems=('periodic_predator_prey',)):
-    """score(forcing, cell, wiring) -> VPT of every trajectory (2 seeds x 3)."""
-    return [_rec(s, f, c, w, k, [score(f, c, w)] * 3)
-            for s in systems for f in gate_mod.FORCINGS
-            for c, w in gate_mod.ARMS for k in (0, 1)]
-
-
-@pytest.fixture
-def with_tau(monkeypatch):
-    stats = types.ModuleType('src.evaluation.stats')
-    stats.kendall_tau_b = lambda a, b: float(kendalltau(a, b,
-                                                        variant='b').statistic)
-    monkeypatch.setitem(sys.modules, 'src.evaluation.stats', stats)
+def _pilot(vpts, multi=None):
+    """vpts(forcing, cell, wiring, seed) -> VPT of the fit's 3 trajectories."""
+    return [_rec(SYS, f, c, w, k, vpts(f, c, w, k),
+                 multi=None if multi is None else multi(f, c, w, k))
+            for f in gate_mod.FORCINGS for c, w in gate_mod.ARMS
+            for k in (0, 1, 2)]
 
 
 def _rank(f, c, w):
     return 1 + gate_mod.ARMS.index((c, w))           # distinct, same order
 
 
-def test_gate_same_ranking_keeps_teacher(with_tau):
-    report, decision = gate_mod.gate(_pilot(_rank))
-    r = report['periodic_predator_prey']
-    assert r['tau_b'] == pytest.approx(1.0)
-    assert r['median_vpt']['teacher'] == [1, 2, 3, 4, 5, 6]
-    assert r['pair_sign'] == {'teacher': -1, 'mixed': -1}
-    assert not r['sign_flip'] and decision == 'teacher'
+def test_per_fit_and_pooled_aggregation_differ():
+    # per-fit medians 8, 8, 2 -> 8; pooled 1, 1, 2, 2, 2, 8, 8, 8, 8 -> 2
+    fit = {0: [1, 8, 8], 1: [1, 8, 8], 2: [2, 2, 2]}
+    recs = [_rec(SYS, 'teacher', 'gru', 'dense3', k, v)
+            for k, v in fit.items()]
+    assert gate_mod.arm_score(recs) == 8.0
+    assert gate_mod.arm_score(recs, pooled=True) == 2.0
 
 
-def test_gate_low_tau_switches_to_mixed(with_tau):
-    # mixed reverses the order of the four ncp/cfc arms, keeps the dense3 pair
-    order = {('gru', 'ncp'): 6, ('cfc', 'dense3'): 5, ('cfc', 'ncp'): 4,
-             ('cfc_lrc', 'ncp'): 3}
-    score = lambda f, c, w: (_rank(f, c, w) if f == 'teacher'
-                             else order.get((c, w), _rank(f, c, w)))
-    report, decision = gate_mod.gate(_pilot(score))
-    tau = report['periodic_predator_prey']['tau_b']
-    assert tau < gate_mod.TAU_MIN and decision == 'mixed'
+def test_report_is_descriptive_with_tau_se():
+    rep = gate_mod.report(_pilot(lambda f, c, w, k: [_rank(f, c, w)] * 3))
+    r = rep[SYS]
+    assert r['median_vpt'] == {'teacher@k0': [1, 2, 3, 4, 5, 6],
+                               'mixed@k0': [1, 2, 3, 4, 5, 6]}
+    assert r['tau_b'] == {'teacher@k0 vs mixed@k0': pytest.approx(1.0)}
+    assert r['tau_b_se'] == pytest.approx(np.sqrt(34 / 270))   # n = 6
+    assert r['aggregation'] == 'per_fit' and r['n_seeds'] == 3
+    assert not {'decision', 'sign_flip'} & set(r)
 
 
-def test_gate_sign_flip_decides_without_tau(monkeypatch):
-    monkeypatch.setitem(sys.modules, 'src.evaluation.stats', None)  # no #29
-    flip = lambda f, c, w: (7 - _rank(f, c, w)) if (f == 'mixed'
-                                                     and w == 'dense3') \
-        else _rank(f, c, w)
-    report, decision = gate_mod.gate(_pilot(flip))
-    r = report['periodic_predator_prey']
-    assert r['tau_b'] is None and r['sign_flip'] and decision == 'mixed'
-    _, decision = gate_mod.gate(_pilot(_rank))
-    assert decision.startswith('undecided')
+def test_report_compares_k0_and_multi_anchor_rankings():
+    # multi-anchor reverses the mixed ranking, keeps the teacher one
+    multi = lambda f, c, w, k: (_rank(f, c, w) if f == 'teacher'
+                                else 7 - _rank(f, c, w)) + 0.1 * k
+    rep = gate_mod.report(_pilot(lambda f, c, w, k: [_rank(f, c, w)] * 3,
+                                 multi))
+    tau = rep[SYS]['tau_b']
+    assert tau == pytest.approx({
+        'teacher@k0 vs mixed@k0': 1.0,
+        'teacher@multi_anchor vs mixed@multi_anchor': -1.0,
+        'teacher@k0 vs teacher@multi_anchor': 1.0,
+        'mixed@k0 vs mixed@multi_anchor': -1.0})
+    assert rep[SYS]['median_vpt']['teacher@multi_anchor'][0] \
+        == pytest.approx(1.1)                           # median over seeds
 
 
-def test_gate_failed_fit_ranks_worst_and_missing_fit_errors(with_tau):
-    recs = _pilot(_rank)
+def test_failed_fit_ranks_worst_and_missing_fit_errors():
+    recs = _pilot(lambda f, c, w, k: [_rank(f, c, w)] * 3)
     for r in recs:
         if (r['forcing'], r['cell'], r['wiring']) == ('mixed', 'cfc_lrc',
                                                       'ncp'):
             r['training_diverged'] = True
-    report, _ = gate_mod.gate(recs)
-    assert report['periodic_predator_prey']['median_vpt']['mixed'][-1] \
-        == -np.inf
+    rep = gate_mod.report(recs)
+    assert rep[SYS]['median_vpt']['mixed@k0'][-1] == -np.inf
     with pytest.raises(ValueError, match='1 pilot fits missing'):
-        gate_mod.gate(recs[1:])
+        gate_mod.report(recs[1:])
+
+
+def test_stats_importable_from_a_plain_runner_script(tmp_path):
+    # feat-25 printed tau_b "n/a" because src.evaluation.stats was missing;
+    # the script now imports it at module level, from any working directory.
+    out = subprocess.run(
+        [sys.executable, os.path.join(ROOT, 'experiments', 'forcing_gate.py'),
+         '--help'], cwd=tmp_path, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+
+
+# Forcing-gate pilot (#25, 200 epochs, 3 seeds): tau_b teacher vs mixed on the
+# k0 endpoint. Pooled = the #25 gate (Duffing -0.645; quoted as -0.65 and as
+# -0.64 elsewhere, both inside the tolerance), per-fit = this report.
+PILOT_DIRS = [os.path.join(ROOT, 'results', d, '2026-10-25_forcing25-pilot',
+                           'results')
+              for d in ('01_lotka_volterra', '02_duffing')]
+PILOT_TAU = {'pooled': {'periodic_predator_prey': 0.07, 'duffing': -0.65},
+             'per_fit': {'periodic_predator_prey': -0.07, 'duffing': -0.47}}
+
+
+@pytest.mark.skipif(not all(os.path.isdir(d) for d in PILOT_DIRS),
+                    reason='forcing pilot JSONs not under results/')
+def test_reproduces_pilot_tau_b():
+    recs = []
+    for d in PILOT_DIRS:
+        for p in sorted(glob(os.path.join(d, '*.json'))):
+            with open(p) as f:
+                recs.append(json.load(f))
+    assert len(recs) == 72
+    for agg, expected in PILOT_TAU.items():
+        rep = gate_mod.report(recs, pooled=agg == 'pooled')
+        got = {s: r['tau_b']['teacher@k0 vs mixed@k0'] for s, r in rep.items()}
+        assert got == pytest.approx(expected, abs=0.01), agg
