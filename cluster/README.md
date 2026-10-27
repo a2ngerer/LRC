@@ -452,3 +452,64 @@ K-specific). Every row is PASS, FAIL (with the consequence, which names its
 source) or DECISION; exit 0 only when no row fails, a DECISION does not fail
 the gate. The readings of G0-E, G1 and GK follow protocol freeze
 F1-2026-10-26, section 10.5 (#77).
+
+### S3 consensus GK reading and eval-only rescoring (#81)
+
+At K = 3 the split, `val_seed` (100) and `test_seeds` (0-4) are runner
+defaults, so a fixed difference between the test and the validation
+evaluation (an offset of the campaign, shared by every arm) recurs in S3 and
+does not average out over seeds. The S3 consensus GK reading therefore reads
+the K = 3 monotonicity against the reference arms of the same campaign; the
+S1 reading stays the pre-registered paired-se rule (the default). The offset
+rule is to be pre-registered in the protocol addendum by the author before
+any S3 consensus result is read.
+
+`suite_gate.py --stage s1 ... --gk-rule offset` (default `paired-se`): per
+GK arm the same fit as the paired-se row (best `val_macro_f1_mean`). For
+every arm outside the reference arms aug_mono and fault_mean and every
+adjacent step m -> m' of its fault grid, with T = `test_macro_f1_by_fault`
+and V = `val_macro_f1_grid_curve[best_val_epoch - 1]`:
+
+- offset off_a = [T(m') - T(m)] - [V(m') - V(m)];
+- reference offset off_ref = the median of the same offset over every fit
+  (all learning rates and seeds) of aug_mono and fault_mean in the campaign
+  with finite T and V on its whole grid, taken between the reference fit's
+  grid entries nearest the fault fractions m/K and m'/K (fault_mean, K = 3:
+  the same counts; aug_mono, K = 1: the window failure probabilities nearest
+  m/3 and m'/3, i.e. 0, 0.3 and 0.67 on the default rho grid);
+- a step violates when T(m') - T(m) > 0 and off_a - off_ref > SE, the
+  paired bootstrap SE of the test step over the test recordings (as the
+  paired-se rule); MF1(m_max) < MF1(0) stays required.
+
+The reference arms themselves keep the paired-se rule. Without a usable
+reference fit the paired-se rule applies to every arm, said so in the
+summary and the detail lines. The summary names the rule and the reference
+fits per arm; each detail line prints per step the test step, the offset,
+the reference offset and the SE. A violation's consequence is the protocol
+check (fault mask, noise scale) of the offset rule (#81).
+
+`run_committee_benchmark.py --eval-only --weights <stem>.weights.h5`
+re-scores a stored committee fit without training: the model is rebuilt
+from the record's `config.effective` (`rebuild_from_result`) and its weights
+loaded; the record is `<stem>.json` next to the weights (or `--record`).
+It refuses (exit 1) a `config.effective` that does not hash to its
+`config_hash` and a weights file that is not the record's `weights_path`.
+`--test-seeds` (default: the record's `test_seeds`) draws `_rng(seed, m)` as
+the runner; `--val-draws N` (default 1) draws validation k from
+`_rng(val_seed + 1000 k, m)`, so draw 0 is the stored validation draw. The
+output `<out>/<stem>.evalonly.json` (`--out`, default the record's folder;
+pass a scratch folder for a fetched results tree) holds
+`test_confusion_by_recording_by_fault_by_seed` (`{seed: [{recording:
+confusion} per fault count]}`, one seed's entry in the layout of
+`test_confusion_by_recording_by_fault`), `val_confusion_by_fault_by_draw`
+(`[[confusion per fault count] per draw]`) and its macro-F1, the summed keys
+`test_confusion_by_recording_by_fault`, `test_macro_f1_by_fault` and
+`test_macro_f1_per_recording_by_fault` (comparable with the source record),
+`source_record`, `source_config_hash`, `fault_counts`, `eval_test_seeds`,
+`eval_val_draws` and `eval_val_draw_seeds`.
+
+```bash
+uv run python experiments/run_committee_benchmark.py --eval-only \
+    --weights results/04_column_voting/<run>/results/hpo/ncp_cons/<point>/<stem>.weights.h5 \
+    --test-seeds 0,1,2,3,4 --val-draws 5 --out <scratch folder>
+```
