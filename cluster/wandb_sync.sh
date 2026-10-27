@@ -7,8 +7,9 @@
 # Compute nodes have no internet, so --wandb fits run OFFLINE
 # (WANDB_MODE=offline) with WANDB_DIR=<run folder>/wandb (older launchers:
 # outputs/wandb). Fetch the run folder first (cluster/fetch_run.sh); this script
-# uploads every offline-run-* directory below the given folder. Run it LOCALLY,
-# where you are logged in (`uv run wandb login` once).
+# uploads every offline-run-* directory below the given folder (-H: the folder
+# may itself be a symlink, e.g. results/ or outputs/ on the eSSD). Run it
+# LOCALLY, where you are logged in (`uv run wandb login` once).
 set -euo pipefail
 root=""
 if [[ $# -gt 0 ]]; then
@@ -21,7 +22,7 @@ root="${root:-outputs/wandb}"
 runs=()
 while IFS= read -r d; do
     runs+=("$d")
-done < <(find "$root" -type d -name 'offline-run-*' -prune 2>/dev/null | sort)
+done < <(find -H "$root" -type d -name 'offline-run-*' -prune 2>/dev/null | sort)
 if (( ${#runs[@]} == 0 )); then
     echo "no offline-run-* dirs below $root -- nothing to sync" >&2
     exit 1

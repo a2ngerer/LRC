@@ -244,6 +244,11 @@ result JSON stem and tag `protocol:<protocol_version>` (`src/benchmark/tracking.
 `track_fit`). Upload a fetched run folder with
 `./cluster/wandb_sync.sh results/<NN_benchmark>/<run>`.
 
+Every fit stamps `protocol_version` (`PROTOCOL_VERSION` in
+`src/benchmark/checkpoints.py`) and `config_hash` (sha256 of the rest of
+`config.effective`) into `config.effective`. Any change of the frozen protocol
+after the smoke stage S0 is a new `PROTOCOL_VERSION`.
+
 The frozen protocol (F1-2026-10-26, #71) is one hpo and one final YAML per task:
 `configs/suite/{lv,duffing,mt,pa}_{hpo,final}.yaml` and the consensus study
 `co_k3_hpo.yaml`, `co_k3_final.yaml`, `co_k30_final.yaml` (K = 30 after the

@@ -123,6 +123,10 @@ check wandb_sync "$out" "syncing 2 offline run(s)" "uv run wandb sync" \
 if grep -q "offline-run-c\|offline-run-a/files" <<<"$out"; then
     echo "FAIL [wandb_sync]: synced a directory that is no offline run of the folder"; fail=1
 fi
+# a symlinked folder (results/ and outputs/ point to the eSSD)
+ln -s "$tmp/run" "$tmp/link"
+out="$(PATH="$tmp/bin:$PATH" ./cluster/wandb_sync.sh "$tmp/link" 2>&1)"
+check wandb_sync_symlink "$out" "syncing 2 offline run(s)" "link/wandb/wandb/offline-run-a"
 if out="$(PATH="$tmp/bin:$PATH" ./cluster/wandb_sync.sh "$tmp/bin" 2>&1)"; then
     echo "FAIL [wandb_sync]: accepted a folder without offline runs"; fail=1
 fi
