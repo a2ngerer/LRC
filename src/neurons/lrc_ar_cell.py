@@ -97,6 +97,12 @@ class LRC_AR_Cell(BaseCell):
             input_dim = input_shape[-1]
 
         self.input_dim = input_dim
+        if self.is_masked and input_dim != self.units:
+            raise ValueError(
+                'LRC_AR_Cell is autoregressive (the input is the state) and '
+                f'needs input_dim == units under a sparse wiring; got input_dim={input_dim}, '
+                f'units={self.units}.'
+            )
         self._build_masks(input_dim)
 
         self._params = {}

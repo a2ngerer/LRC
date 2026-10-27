@@ -125,6 +125,13 @@ def test_elapsed_time_changes_the_output():
 def test_registry_cell_builds_under_ncp(cell_key):
     cell_cls = _CELL_REGISTRY[cell_key]
     kwargs = cell_kwargs(cell_key)
+    if cell_key == 'lrc_ar':
+        # lrc_ar is autoregressive (the input is the state): a sparse wiring
+        # whose input width differs from the unit count cannot carry it.
+        with pytest.raises(ValueError, match='input_dim == units'):
+            NCPWiring(cell_cls, INTER, COMMAND, MOTOR,
+                      **kwargs).build_model()(tf.zeros([1, 2, INPUT_DIM]))
+        return
     if cell_key == 'cfc_pm':
         # cfc_pm's whole point is a wider backbone; under a sparse wiring the
         # first backbone layer carries the mask and must be units wide.
