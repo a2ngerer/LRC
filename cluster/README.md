@@ -285,6 +285,13 @@ on/off and the |Delta| of the validation selection metrics of the two "on" fits
 tasks: put `--deterministic` into the suite YAML's `extra_args`; every result
 records the setting as `config.effective.deterministic`.
 
+The first S0 run measured a ratio on/off of 0.997 (Lotka-Volterra) and 1.03
+(Person Activity) with |Delta| 0 on the "on" pair, so the suite campaigns run
+with op-determinism on (#76): every `configs/suite/*.yaml` except the S0 smokes
+carries `--deterministic` in `extra_args`, the committee runner included
+(`run_grid_hpo.py` forwards the flag to the task runner). The smoke YAMLs
+(`smoke_*.yaml`) stay unchanged as the record of the S0 run.
+
 ### S0 smoke (#72)
 
 Stage S0 of the frozen protocol smokes every arm-task once before any HPO fit
@@ -398,11 +405,13 @@ uv run python experiments/suite_gate.py --stage s1 \
 
 `suite_gate.py --stage s1` reads every fit JSON below the run folders (a
 rollout fit at `dt_scale` 1 is the control), checks that all 61 fits and a
-floor line per rollout data seed are present, and evaluates the S1 go
-criteria with the frozen thresholds (test split for the rollouts):
+floor line per rollout data seed are present and that every fit ran with
+op-determinism (`config.effective.deterministic` true), and evaluates the S1
+go criteria with the frozen thresholds (test split for the rollouts):
 
 | Gate | Criterion | On FAIL (pre-registered) |
 |------|-----------|--------------------------|
+| config | `config.effective.deterministic` true on every pilot fit (#76); the offending fits are listed | rerun them with `--deterministic` (the pilot YAML's `extra_args`) and rerun the gate |
 | G1 lv, duffing | `vpt_multi_median` of cfc_lrc/ncp > max(persistence, AR(1)) of its data seed + 2 steps in >= 2 of 3 seeds | floor-bound: H-b/H-c contrasts on this task are floor-bound, the H-c conjunction runs over the tasks that pass |
 | G1 multitimescale_lib | cfc/ncp >= 2 x persistence in >= 2 of 3 seeds, `rate_unbounded` 0 on every cfc/ncp fit | spread 0.25 or 256 steps, repeat once |
 | G0-E per task | an (arm, seed) qualifies when the mean of the last tenth of `val_loss_curve` (lower is better) or `val_macro_f1_curve` (Person Activity, higher is better) beats its value at 2/3 of the epochs by > 5 % relative; >= 2 pilot arms with >= 2 qualifying seeds give the DECISION "epochs x1.5 (300 to 450)" or "epochs x2 (50 to 100)", else "epochs unchanged" | a fit without the curve fails the row |
