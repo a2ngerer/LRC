@@ -117,12 +117,12 @@ def test_committee_round_trip(tmp_path, monkeypatch):
         '--drop-seeds', '0', '--outdir', str(tmp_path)])
     co_runner.main()
     stub = _pa_stub()
-    views, _ = co_runner.make_views(stub.test_x, 2)
+    views, _ = co_runner.make_views(stub.test_x, 2, mode='identical')
     (path,) = tmp_path.glob('*.json')
     record, _ = _assert_round_trip(path, built, (views, stub.test_t))
     eff = record['config']['effective']
     assert eff['task'] == 'committee' and eff['build']['n_columns'] == 2
-    assert eff['views']['mode'] == 'partition'
+    assert eff['views']['mode'] == 'identical'
 
 
 def test_diverged_fit_still_writes_weights(tmp_path, monkeypatch):

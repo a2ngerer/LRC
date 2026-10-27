@@ -106,7 +106,8 @@ def build_committee_model(wiring, n_columns, cell="cfc_lrc", size=64, seed=42,
                           feature_size=7, seq_len=32, task="classification",
                           num_classes=7, lr=1e-3, vote_init=0.0, vote_lambda=None,
                           consensus="mean", dense_vote_units=None, train_drop=0.0,
-                          train_noise=0.0, column_loop=False, **cell_kwargs):
+                          train_noise=0.0, column_loop=False, clipnorm=None,
+                          **cell_kwargs):
     """Build + compile a partial-view voting committee.
 
     Args:
@@ -132,6 +133,8 @@ def build_committee_model(wiring, n_columns, cell="cfc_lrc", size=64, seed=42,
         column_loop:  cncp/ncp/dense only -- step the K weight-shared columns
                       in the per-column loop instead of one folded-batch call
                       (same function; the equivalence canary of #32).
+        lr, clipnorm: RMSprop learning rate (as the Person Activity builder)
+                      and global gradient-norm clip (None = off).
 
     Inputs [features (B, seq_len, K, F), time (B, seq_len, 1)]; output per step
     either (B, T, num_classes) logits or (B, T, F) predictions.
@@ -217,6 +220,7 @@ def build_committee_model(wiring, n_columns, cell="cfc_lrc", size=64, seed=42,
         metrics = [tf.keras.metrics.MeanSquaredError(name="mse")]
 
     model = tf.keras.Model(inputs=[features, time], outputs=out)
-    model.compile(optimizer=tf.keras.optimizers.Adam(lr), loss=loss,
+    model.compile(optimizer=tf.keras.optimizers.RMSprop(
+                      lr, global_clipnorm=clipnorm), loss=loss,
                   metrics=metrics)
     return model

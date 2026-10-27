@@ -46,6 +46,8 @@ def load(indir):
                                   "clean": [], "params": []})
     for f in sorted(glob.glob(os.path.join(indir, "*.json"))):
         d = json.load(open(f))
+        if "drop_fracs" not in d:       # suite protocol run, no July sweep
+            continue
         key = (d["wiring"], int(d["n_columns"]))
         g = groups[key]
         g["fracs"] = d["drop_fracs"]
