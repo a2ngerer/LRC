@@ -106,7 +106,8 @@ def test_runner_forced_diagnostics_and_posthoc_rq4(tmp_path, monkeypatch):
         "run_lotka_volterra_benchmark.py", "--wiring", "dense", "--cell",
         "mlp", "--param-budget", "4000", "--epochs", "2", "--forcing",
         "mixed", "--diagnostics", "--n-trajectories", "10", "--seq-len",
-        "20", "--batch-size", "4", "--outdir", str(tmp_path)])
+        "20", "--anchors", "4,8", "--horizon", "12", "--batch-size", "4",
+        "--outdir", str(tmp_path)])
     lv_runner.main()
     rec = json.loads((tmp_path / "mlp_dense_seed0_mixed.json").read_text())
     assert rec["cell"] == "mlp" and rec["size"] == 60

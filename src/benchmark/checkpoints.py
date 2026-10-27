@@ -17,6 +17,7 @@ build.self_recurrent: their NCP had none (self_recurrent=False), and as the
 closed-form backbone default changed in between, their CfC depth is taken
 from config.effective.backbone_layers (the depth the fit actually had).
 """
+import hashlib
 import json
 import os
 
@@ -64,3 +65,11 @@ def rebuild_from_result(json_path) -> tf.keras.Model:
     _layers_only(model).load_weights(
         os.path.join(os.path.dirname(json_path), record["weights_path"]))
     return model
+
+
+def config_hash(effective) -> str:
+    """sha256 of ``config.effective`` as canonical JSON (sorted keys, no
+    whitespace): post-hoc outputs store it to name the exact config they were
+    computed from."""
+    return hashlib.sha256(json.dumps(effective, sort_keys=True,
+                                     separators=(",", ":")).encode()).hexdigest()
