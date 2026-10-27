@@ -225,3 +225,16 @@ BENCH=00_canary ./cluster/submit_suite.sh -n configs/suite/canary_lv_hpo.yaml su
 ```
 
 `--wandb` adds `--wandb` to every call; the offline runs land under `<run>/wandb/`.
+
+### S0 op-determinism probe (#70)
+
+`./cluster/submit_determinism_probe.sh [-n] <label>` runs
+`experiments/determinism_probe.py` on one GPU into `00_canary`: cfc_lrc/ncp on
+Lotka-Volterra (300 epochs, 4k) and Person Activity (50 epochs, 30k), three fits
+each (`--deterministic` on, on, off), one at a time. It prints the runtime ratio
+on/off and the |Delta| of the validation selection metrics of the two "on" fits
+(must stay within 1e-3; exit 1 otherwise) and writes
+`results/determinism_probe.json`. Extra runner flags via `DP_LV_ARGS` /
+`DP_PA_ARGS` (e.g. `DP_LV_ARGS="--forcing mixed"`). Ratio at most 1.3 on both
+tasks: put `--deterministic` into the suite YAML's `extra_args`; every result
+records the setting as `config.effective.deterministic`.

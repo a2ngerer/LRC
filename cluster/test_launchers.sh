@@ -62,6 +62,10 @@ out="$(GH_TASK=pa GH_CELL=gru GH_WIRING=ncp ./cluster/submit_grid_hpo.sh -n smok
 check grid_hpo_pa "$out" "03_person_activity/runs/${today}_smoke" \
     "test -f wk/code/data/person/ConfLongDemo_JSI.txt"
 
+out="$(DP_LV_ARGS="--epochs 3" ./cluster/submit_determinism_probe.sh -n smoke 2>&1)"
+check determinism "$out" "00_canary/runs/${today}_smoke" "DP_LV_ARGS='--epochs 3'" \
+    "cluster/determinism_probe.sbatch" "test -f wk/code/data/person/ConfLongDemo_JSI.txt"
+
 # sync_to_cluster.sh has no dry run: check the filter statically.
 grep -qF -- "--filter='P data/'" cluster/sync_to_cluster.sh \
     || { echo "FAIL [sync_to_cluster]: data/ not protected from --delete"; fail=1; }
@@ -87,7 +91,7 @@ if out="$(./cluster/submit_committee.sh -n 2>&1)"; then
 fi
 
 for f in cluster/lotka_volterra.sbatch cluster/person_activity.sbatch cluster/committee.sbatch \
-         cluster/grid_hpo.sbatch cluster/suite_array.sbatch; do
+         cluster/grid_hpo.sbatch cluster/suite_array.sbatch cluster/determinism_probe.sbatch; do
     if grep -q 'outputs/slurm\|results/\(person_activity\|lotka_volterra\|committee\)' "$f"; then
         echo "FAIL [$f]: still writes under the code tree"; fail=1
     fi
