@@ -56,6 +56,7 @@ def test_runner_records_the_t_span(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", [
         "run_lotka_volterra_benchmark.py", "--wiring", "dense", "--cell",
         "cfc_static", "--system", "multitimescale", "--t-span", "0", "10",
+        "--anchors", "2,4", "--horizon", "4",
         "--epochs", "1", "--n-trajectories", "5", "--seq-len", "8",
         "--size", "4", "--no-save-weights", "--outdir", str(tmp_path)])
     lv_runner.main()

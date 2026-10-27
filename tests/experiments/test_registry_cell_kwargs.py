@@ -35,6 +35,7 @@ def _run(runner, cell, tmp_path, monkeypatch, *extra):
         built = _capture_builds(monkeypatch, lv_runner,
                                 "build_lotka_volterra_model")
         argv = ["--wiring", "dense", "--size", "4", "--n-trajectories", "4",
+                "--anchors", "2,4", "--horizon", "4",
                 "--seq-len", "8", "--batch-size", "4"]
         main = lv_runner.main
     elif runner == "pa":

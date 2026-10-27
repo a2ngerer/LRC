@@ -9,9 +9,10 @@ repeated once. No pruning, no early stopping: every fit trains the runner's
 fixed epoch count. Unknown flags (e.g. --epochs 2) go to the runner unchanged.
 
 Selection key from the runner JSON (higher wins): LV/Duffing
-rollout_metrics_val.vpt_median, ties broken by the lower
-rollout_metrics_val.nrmse_32_median; PA val_macro_f1. --select-on KEY
-[--minimize] overrides it for diagnostics only. NaN ranks last.
+rollout_metrics_val.vpt_multi_median (multi-anchor VPT, #62), ties broken by
+the lower rollout_metrics_val.nrmse_32_anchor_8, then grid order; PA
+val_macro_f1 (grid order on ties). --select-on KEY [--minimize] overrides the
+primary key for diagnostics only; the task's tie-break stays. NaN ranks last.
 
 Every fit is one subprocess call of the task runner (uv run python
 experiments/run_*_benchmark.py) into its own folder
@@ -50,8 +51,8 @@ FINAL_SEEDS = range(10)                 # the final replicates; tuning stays out
 RUNNERS = {"lv": "experiments/run_lotka_volterra_benchmark.py",
            "pa": "experiments/run_person_activity_benchmark.py"}
 # task -> (primary key, higher wins), tie-break key (lower wins)
-SELECT = {"lv": ("rollout_metrics_val.vpt_median",
-                 "rollout_metrics_val.nrmse_32_median"),
+SELECT = {"lv": ("rollout_metrics_val.vpt_multi_median",
+                 "rollout_metrics_val.nrmse_32_anchor_8"),
           "pa": ("val_macro_f1", None)}
 
 
@@ -71,7 +72,7 @@ class GridHPO:
         self.a, self.runner_args = args, runner_args
         self.select_on, self.tie_break = SELECT[args.task]
         if args.select_on:
-            self.select_on, self.tie_break = args.select_on, None
+            self.select_on = args.select_on
         self.fits = {}                          # (lr, clip, seed) -> fit
 
     def fit(self, lr, clip, seed):

@@ -21,6 +21,7 @@ def test_probe_stability_block(wiring, tmp_path, monkeypatch):
     monkeypatch.setattr(sys, 'argv', [
         'run_lotka_volterra_benchmark.py', '--wiring', wiring,
         '--cell', 'cfc_lrc', '--seed', '0', '--epochs', '2', '--size', '8',
+        '--anchors', '4,8', '--horizon', '8',
         '--n-trajectories', '10', '--seq-len', '16', '--batch-size', '4',
         '--outdir', str(tmp_path), '--probe-stability'])
     runner.main()
@@ -42,6 +43,7 @@ def test_no_stability_block_without_flag(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, 'argv', [
         'run_lotka_volterra_benchmark.py', '--wiring', 'dense', '--cell', 'gru',
         '--epochs', '1', '--size', '4', '--n-trajectories', '10',
+        '--anchors', '2,4', '--horizon', '4',
         '--seq-len', '8', '--outdir', str(tmp_path)])
     runner.main()
     record = json.loads((tmp_path / 'gru_dense_seed0.json').read_text())

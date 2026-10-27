@@ -23,6 +23,7 @@ def _lv(outdir, monkeypatch, cell, wiring, size, *extra):
     monkeypatch.setattr(sys, 'argv', [
         'run_lotka_volterra_benchmark.py', '--wiring', wiring, '--cell', cell,
         '--size', str(size), '--epochs', '2', '--n-trajectories', '10',
+        '--anchors', '4,8', '--horizon', '12',
         '--seq-len', '20', '--batch-size', '4', '--outdir', str(outdir),
         *extra])
     lv_runner.main()

@@ -44,6 +44,7 @@ def test_lv_runner_one_epoch_writes_multi_fields(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, 'argv', [
         'run_lotka_volterra_benchmark.py', '--wiring', 'cncp2_multi',
         '--columns', '2', '--cell', 'cfc_lrc', '--epochs', '1', '--size', '4',
+        '--anchors', '2,4', '--horizon', '4',
         '--n-trajectories', '10', '--seq-len', '8', '--batch-size', '4',
         '--outdir', str(tmp_path), '--probe-stability'])
     lv_runner.main()

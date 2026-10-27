@@ -9,6 +9,7 @@ import pytest
 from scipy.integrate import solve_ivp
 
 from src.evaluation.rollout_metrics import (INVARIANTS, SENSITIVITY_KEY,
+                                            anchor_metrics,
                                             invariant_drift, make_norm_stats,
                                             rollout_metrics)
 from src.tasks.lotka_volterra.datasets import load_lotka_volterra
@@ -164,7 +165,8 @@ def test_runner_stores_rollout_metrics(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", [
         "run_lotka_volterra_benchmark.py", "--wiring", "dense", "--cell", "gru",
         "--size", "4", "--epochs", "1", "--n-trajectories", "10",
-        "--seq-len", "16", "--batch-size", "4", "--no-save-weights",
+        "--seq-len", "16", "--anchors", "4,8", "--horizon", "8",
+        "--batch-size", "4", "--no-save-weights",
         "--outdir", str(tmp_path)])
     lv_runner.main()
     rec = json.loads((tmp_path / "gru_dense_seed0.json").read_text())
@@ -183,14 +185,69 @@ def test_runner_stores_rollout_metrics(tmp_path, monkeypatch):
         assert "rate_drift" not in m and "rate_collapse" not in m
     again = rollout_metrics(rec["ground_truth_traj"], rec["closed_loop_traj"],
                             rec["norm_stats"], rec["system"])
-    for k, v in rec["rollout_metrics_test"].items():
+    for k, v in again.items():
         if k == SENSITIVITY_KEY:
-            assert again[k] == pytest.approx(v, abs=1e-9), k
+            assert rec["rollout_metrics_test"][k] == pytest.approx(
+                v, abs=1e-9), k
         else:
-            assert again[k] == pytest.approx(v, rel=1e-3, abs=1e-4, nan_ok=True), k
+            assert rec["rollout_metrics_test"][k] == pytest.approx(
+                v, rel=1e-3, abs=1e-4, nan_ok=True), k
+    # multi-anchor endpoint (#62) on the runner's --anchors 4,8 --horizon 8
+    for split in ("val", "test"):
+        m = rec[f"rollout_metrics_{split}"]
+        assert (m["anchors"], m["anchor_horizon"], m["anchor_theta"]) == (
+            [4, 8], 8, 0.5)
+        for key in ("vpt_multi_median", "vpt_anchor_4", "vpt_anchor_8",
+                    "nrmse_32_anchor_4", "nrmse_32_anchor_8"):
+            assert np.isfinite(m[key]), key
+        assert 1 <= m["vpt_multi_median"] <= 8
+        assert set(m["theta_sensitivity"]) == {"0.3", "1.0"}
 
 
 def test_module_imports_without_tensorflow():
     code = ("import sys, src.evaluation.rollout_metrics; "
             "assert 'tensorflow' not in sys.modules")
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+# --- multi-anchor endpoint (#62) ---------------------------------------------
+
+def _free_runs(pred, anchors, H):
+    """{a: pred columns a+1..a+H}: `pred` as the rollout from every anchor."""
+    return {a: pred[:, a + 1:a + 1 + H] for a in anchors}
+
+
+def test_anchor_metrics_of_perfect_prediction():
+    m = anchor_metrics(TRUTH, _free_runs(TRUTH, (8, 16, 24, 32), 96), STATS)
+    assert m["vpt_multi_median"] == 96
+    assert all(m[f"vpt_anchor_{a}"] == 96 and m[f"nrmse_32_anchor_{a}"] == 0
+               for a in (8, 16, 24, 32))
+    assert m["theta_sensitivity"] == {"0.3": 96, "1.0": 96}
+    assert (m["anchors"], m["anchor_horizon"], m["anchor_theta"]) == (
+        [8, 16, 24, 32], 96, 0.5)
+
+
+def test_anchor_vpt_counts_free_run_steps_and_pools_trajectories_x_anchors():
+    # e_t = 0.8 (z units) from free-run step v on: VPT(0.5) = VPT(0.3) = v,
+    # VPT(1.0) = H = 10; three anchors x three trajectories, v = 1..9
+    stats = {"mean": [0.0, 0.0], "std": [1.0, 1.0], "train_abs_max": 1.0}
+    truth = np.zeros((3, 21, 2))
+    vpt = {2: [1, 2, 3], 4: [4, 5, 6], 6: [7, 8, 9]}
+    preds = {}
+    for a, vs in vpt.items():
+        p = np.zeros((3, 10, 2))
+        for i, v in enumerate(vs):
+            p[i, v - 1:] = 0.8          # e_t = 0.8 > 0.5 from step v
+        preds[a] = p
+    m = anchor_metrics(truth, preds, stats)
+    assert [m[f"vpt_anchor_{a}"] for a in vpt] == [2, 5, 8]
+    assert m["vpt_multi_median"] == 5                    # median of 1..9
+    assert m["theta_sensitivity"] == {"0.3": 5, "1.0": 10}
+    assert m["nrmse_32_anchor_2"] == pytest.approx(0.8 * np.sqrt(9 / 10))
+    nonfinite = {a: np.full((3, 10, 2), np.nan) for a in vpt}
+    assert anchor_metrics(truth, nonfinite, stats)["vpt_multi_median"] == 1
+    with pytest.raises(ValueError, match="exceeds"):
+        anchor_metrics(truth, {11: np.zeros((3, 10, 2))}, stats)
+    with pytest.raises(ValueError, match="one free-run horizon"):
+        anchor_metrics(truth, {2: np.zeros((3, 10, 2)),
+                               4: np.zeros((3, 8, 2))}, stats)

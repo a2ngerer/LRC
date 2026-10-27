@@ -13,6 +13,7 @@ from experiments import forcing_gate as gate_mod
 from experiments import run_lotka_volterra_benchmark as runner
 
 TINY = ['--seed', '0', '--epochs', '2', '--size', '8', '--n-trajectories', '10',
+        '--anchors', '4,8', '--horizon', '8',
         '--seq-len', '16', '--batch-size', '4', '--no-save-weights']
 
 # Pre-change runner (base commit 3657ac5, CPU), same TINY arguments: per-epoch
