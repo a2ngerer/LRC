@@ -165,3 +165,40 @@ def test_ncp_make_cell_passes_slices_only_with_slice_scale():
     assert w.make_cell()._init_slices == {
         'motor': (0, 2), 'command': (2, 5), 'inter': (5, 9)}
     assert 'init_slices' not in w.cell_kwargs
+
+
+# --- (i-b) default path locked to the pre-change cell -----------------------
+
+# sum(|w|) per weight and of the first-step output of _cell(masked) as built
+# before issue #82 (int/finalsuite-2026-10-26 @ bbd65cd, same seed and
+# construction). (i) compares two cells of the same code; this locks the
+# default path to the old cell's values, with a tolerance for BLAS drift.
+PRE_CHANGE_FINGERPRINT = {
+    False: {'gleak:0': 6.194533824920654, 'vleak:0': 1.092078685760498,
+            'sigma:0': 806.0675048828125, 'mu:0': 73.58831024169922,
+            'w:0': 68.66522216796875, 'sensory_w:0': 36.17940139770508,
+            'h:0': 34.62226867675781, 'sensory_sigma:0': 324.6983947753906,
+            'sensory_mu:0': 34.35722732543945, 'sensory_h:0': 14.246881484985352,
+            'input_w:0': 5.0, 'input_b:0': 0.0, 'output_w:0': 12.0,
+            'output_b:0': 0.0, 'kernel:0': 46.30244445800781, 'bias:0': 0.0,
+            '__out__': 1.2706618309020996},
+    True: {'gleak:0': 32.20558166503906, 'vleak:0': 5.835495471954346,
+           'sigma:0': 17293.14453125, 'mu:0': 1705.657470703125,
+           'w:0': 1555.290283203125, 'sensory_w:0': 146.32376098632812,
+           'h:0': 337.2244873046875, 'sensory_sigma:0': 1514.10595703125,
+           'sensory_mu:0': 153.68374633789062, 'sensory_h:0': 30.270198822021484,
+           'input_w:0': 5.0, 'input_b:0': 0.0, 'output_w:0': 56.0,
+           'output_b:0': 0.0, 'kernel:0': 390.8216552734375, 'bias:0': 0.0,
+           '__out__': 6.338131904602051},
+}
+
+
+@pytest.mark.parametrize('masked', [False, True])
+def test_default_path_matches_pre_change_cell(masked):
+    cell = _cell(masked)
+    got = {k: float(np.abs(w).sum()) for k, w in _weights(cell).items()}
+    got['__out__'] = float(np.abs(cell.out).sum())
+    exp = PRE_CHANGE_FINGERPRINT[masked]
+    assert got.keys() == exp.keys()
+    for k, e in exp.items():
+        np.testing.assert_allclose(got[k], e, rtol=1e-5, atol=1e-6, err_msg=k)
