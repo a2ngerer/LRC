@@ -17,6 +17,7 @@
 
 import tensorflow as tf
 
+from src.benchmark.optimizers import make_optimizer
 from src.wirings import (CorticalColumnCell, CorticalColumnV2Cell, NCPWiring,
                          multi_column_head)
 from src.wirings.tbt_cncp import TbtCorticalColumnCell
@@ -50,6 +51,7 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
                                partition=MULTI_COLUMN_DEFAULTS["partition"],
                                coupling=MULTI_COLUMN_DEFAULTS["coupling"],
                                readout=None, self_recurrent=True, dt_scale=1.0,
+                               optimizer='rmsprop', opt_epsilon=None,
                                **cell_kwargs):
     """Build and compile a next-step trajectory model for one (wiring, cell).
 
@@ -74,7 +76,11 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
         feature_size: state dimension (2 for the 2D systems).
         loc_dim:      reference-frame code width (datasets.RF_DIM == 12); only
                       used by the tbt_cncp* wirings.
-        lr:           RMSprop learning rate.
+        lr:           learning rate of the optimizer.
+        optimizer, opt_epsilon: src.benchmark.optimizers.make_optimizer
+                      ('rmsprop' default = tf.keras.optimizers.RMSprop(lr);
+                      'rmsprop_legacy', 'adam'; epsilon None = class
+                      default; issue #82).
         columns, partition, coupling, readout: cncp2_multi only (spec B.7);
                       the 2-D state has no sensor structure, so
                       partition='region' splits the state axis (warning).
@@ -163,7 +169,7 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
 
     model = tf.keras.Model(inputs=inputs, outputs=next_state)
     model.compile(
-        optimizer=tf.keras.optimizers.RMSprop(lr),
+        optimizer=make_optimizer(optimizer, lr, opt_epsilon),
         loss=tf.keras.losses.MeanSquaredError(),
         metrics=[tf.keras.metrics.MeanAbsoluteError()],
     )

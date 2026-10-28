@@ -28,6 +28,12 @@ numerical ODE cells (ltc, lrc, lrc_pm, ctrnn, mm_ltc, mm_lrc) take
 --ode-unfolds explicit Euler sub-steps per input step (default 6). Both are
 recorded in the result JSON (issues #28, #56).
 
+Init diagnostic (issue #82): --init-ranges JSON sets the cell's
+initialization_ranges (replaces a registry value of that kwarg);
+--optimizer {rmsprop, rmsprop_legacy, adam} and --opt-epsilon choose the
+optimizer (src/benchmark/optimizers.py). At the defaults neither adds a key to
+config.effective, so the config_hash of a default run is unchanged.
+
 Mirrors the run + JSON-result-file structure of run_mujoco_benchmark.py /
 run_campaign.py: one JSON per run under --outdir, containing the config,
 the parameter counts, val/test macro-F1 and accuracy at the best-val epoch,
@@ -53,6 +59,8 @@ import numpy as np
 # Allow running as a plain script (``src`` is the installed package).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.benchmark.optimizers import (add_optimizer_args,  # noqa: E402
+                                      optimizer_build_kwargs)
 from src.benchmark.registry import cell_kwargs as registry_cell_kwargs  # noqa: E402
 from src.evaluation.metrics import confusion_matrix, macro_f1  # noqa: E402
 from src.tasks.person_activity.datasets import SPLITS  # noqa: E402
@@ -61,7 +69,8 @@ from src.tasks.person_activity.model import (  # noqa: E402
     dt_feature_applies,
     effective_backbone_layers, effective_self_recurrent, add_multi_column_args,
     multi_column_config, multi_column_suffix, ode_unfolds_override,
-    effective_ode_unfolds, DEFAULT_ODE_UNFOLDS, dt_scale_arg, resolve_dt_scale)
+    effective_ode_unfolds, DEFAULT_ODE_UNFOLDS, dt_scale_arg, resolve_dt_scale,
+    ncp_layer_sizes)
 
 DEFAULT_SIZE = 64
 BUDGET_TOLERANCE = 0.05
@@ -120,7 +129,10 @@ def run(args):
     if args.head_activation != "none":     # non-CfC cells reject the kwarg
         cell_kwargs["head_activation"] = args.head_activation
     cell_kwargs.update(ode_unfolds_override(args.cell, args.ode_unfolds))
+    if args.init_ranges is not None:       # CLI replaces the registry value
+        cell_kwargs["initialization_ranges"] = args.init_ranges
     ode_unfolds = cell_kwargs.get("ode_unfolds")   # None: closed-form/discrete
+    opt_kwargs = optimizer_build_kwargs(args)      # {} at the defaults
     bb_effective = effective_backbone_layers(args.wiring, args.cell, cell_kwargs)
     self_rec = effective_self_recurrent(args.wiring, args.cell,
                                         args.self_recurrent)
@@ -133,7 +145,7 @@ def run(args):
             num_classes=data.num_classes, feature_size=data.feature_size,
             seq_len=data.seq_len, lr=args.lr, dt_feature=dt_feature,
             dt_scale=args.dt_scale, self_recurrent=args.self_recurrent,
-            **multi, **cell_kwargs)
+            **opt_kwargs, **multi, **cell_kwargs)
 
     # Capacity: either a fixed width knob or the knob that lands closest to the
     # effective parameter budget for THIS arm.
@@ -175,7 +187,8 @@ def run(args):
                       feature_size=data.feature_size,
                       seq_len=data.seq_len, lr=args.lr,
                       dt_feature=dt_feature, dt_scale=args.dt_scale,
-                      self_recurrent=args.self_recurrent, **multi),
+                      self_recurrent=args.self_recurrent, **opt_kwargs,
+                      **multi),
         "elastance_type": cell_kwargs.get("elastance_type"),
         "cell_kwargs": cell_kwargs})
     wandb_config = {
@@ -221,10 +234,13 @@ def run(args):
 
     diag = None
     if args.diagnostics:
-        from src.evaluation.gradient_flow import RQ4Diagnostics
+        from src.evaluation.gradient_flow import (RQ4Diagnostics,
+                                                  ncp_state_slices)
         b = args.batch_size
+        slices = (ncp_state_slices(*ncp_layer_sizes(args.size))
+                  if args.wiring == "ncp" else None)
         diag = RQ4Diagnostics(model, (data.train_x[:b], data.train_t[:b]),
-                              data.train_y[:b])
+                              data.train_y[:b], slices=slices)
 
     t0 = time.time()
     with track_fit(args.wandb, task="person_activity", name=tag,
@@ -402,6 +418,11 @@ def main():
                    action="store_false",
                    help="do not write <stem>.weights.h5 (the best-val epoch) "
                         "next to the result JSON")
+    p.add_argument("--init-ranges", type=json.loads, default=None,
+                   help="JSON dict parameter -> [lo, hi] passed to the cell as "
+                        "initialization_ranges (LRC/LTC family); replaces a "
+                        "registry value of that kwarg (issue #82)")
+    add_optimizer_args(p)
     add_multi_column_args(p)
     args = p.parse_args()
     if args.size is None and args.param_budget is None:
