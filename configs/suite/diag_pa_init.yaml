@@ -19,6 +19,8 @@ dt_scale: auto
 extra_args: [--deterministic, --diagnostics]
 fixed: {lr: 0.001, clipnorm: null}
 cluster: {runs_per_gpu: 1, walltime: "06:00:00"}
+# heavy mirrors pa_final's lrc_ncp handling (own array for the ncp arms);
+# same resources as the default group here.
 heavy:
   arms: [lrc_init_ncp, lrc_cal_ncp]
   cluster: {runs_per_gpu: 1}
