@@ -233,6 +233,18 @@ CELL_KWARGS = {
     'lrc_pmctrl_c': dict(elastance_type='interp', pm_pad=True, pm_pad_extra=16),  # E_C
     'lrc_asym_hybrid': dict(elastance_type='asymmetric', ode_solver='hybrid'),    # F
     'lrc_interp_hybrid': dict(elastance_type='interp', ode_solver='hybrid'),      # G
+    # init diagnostic arms (issue #82), mirror of src/benchmark/registry.py.
+    # lrc_init: the sensory reference ('units' vs 'input_dim') is set by the
+    # protocol addendum; both are implemented.
+    'lrc_init': dict(elastance_type='asymmetric',
+                     initialization_ranges={
+                         'vleak': (-1.0, 1.0), 'mu': (-0.2, 0.2),
+                         'sensory_mu': (-0.2, 0.2), 'w': (0.001, 0.05),
+                         'sensory_w': (0.001, 0.5), 'gleak': (0.001, 0.1)},
+                     init_fanin_scale='units'),
+    'lrc_cal': dict(elastance_type='asymmetric',
+                    init_slice_scale={'inter': 7.2, 'command': 6.6,
+                                      'motor': 6.6}),
 }
 
 # Benchmark eps: liquid-elastance over-parameterization ablation (see

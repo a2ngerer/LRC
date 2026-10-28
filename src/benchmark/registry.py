@@ -16,6 +16,11 @@ structured source can never silently drift from ``experiments/run_benchmark.py``
 The actual training run path still imports ``build_model`` / ``run_one`` from the
 legacy module (minimal-invasion rule) -- this registry feeds config validation
 and documents the cell configs in one place for the engine.
+
+Init diagnostic keys (issue #82), plain LRC_Cell with elastance 'asymmetric':
+``lrc_init`` (narrowed init ranges + fan-in scaling of h / sensory_h) and
+``lrc_cal`` (per-layer scaling of vleak / h / sensory_h, NCP slices from the
+wiring); both have the parameter count of ``lrc``.
 """
 from __future__ import annotations
 
@@ -77,6 +82,10 @@ class CellConfig:
 #   CELL_UNITS   (run_benchmark.py:186)  -> only lrc_pm overrides
 #   CELL_NCP     (run_benchmark.py:187)  -> only lrc_pm overrides
 _ASYM = {'elastance_type': 'asymmetric'}
+# Narrowed init ranges of the init diagnostic arm lrc_init (issue #82).
+_LRC_INIT_RANGES = {'vleak': (-1.0, 1.0), 'mu': (-0.2, 0.2),
+                    'sensory_mu': (-0.2, 0.2), 'w': (0.001, 0.05),
+                    'sensory_w': (0.001, 0.5), 'gleak': (0.001, 0.1)}
 
 CELL_REGISTRY: dict[str, CellConfig] = {
     # --- v1 thesis cells + classical baselines (empty kwargs) ---------------
@@ -123,6 +132,19 @@ CELL_REGISTRY: dict[str, CellConfig] = {
         kwargs={'elastance_type': 'asymmetric', 'ode_solver': 'hybrid'}),
     'lrc_interp_hybrid': CellConfig(
         kwargs={'elastance_type': 'interp', 'ode_solver': 'hybrid'}),
+    # --- init diagnostic arms (issue #82), plain LRC_Cell -------------------
+    # lrc_init: narrowed init ranges + fan-in scaling of h / sensory_h. The
+    # sensory reference ('units' vs 'input_dim') is set by the protocol
+    # addendum; both are implemented.
+    'lrc_init': CellConfig(kwargs={'elastance_type': 'asymmetric',
+                                   'initialization_ranges': _LRC_INIT_RANGES,
+                                   'init_fanin_scale': 'units'}),
+    # lrc_cal: per-layer scaling of vleak / h / sensory_h (NCP slices from
+    # the wiring; the dense cell uses the 'inter' factor).
+    'lrc_cal': CellConfig(kwargs={'elastance_type': 'asymmetric',
+                                  'init_slice_scale': {'inter': 7.2,
+                                                       'command': 6.6,
+                                                       'motor': 6.6}}),
 }
 
 KNOWN_CELLS = tuple(CELL_REGISTRY)

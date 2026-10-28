@@ -1,5 +1,6 @@
 # Follows the LTC implementation by Mathias Lechner and Ramin Hasani (2022) https://github.com/mlech26l/ncps/blob/master/ncps/tf/ltc_cell.py
 
+import numpy as np
 import tensorflow as tf
 from .base_cell import BaseCell
 
@@ -20,6 +21,9 @@ class LRC_Cell(BaseCell):
         pm_pad=False,
         pm_pad_extra=0,
         initialization_ranges=None,
+        init_fanin_scale=None,
+        init_slice_scale=None,
+        init_slices=None,
         **kwargs
     ):
         """
@@ -31,6 +35,31 @@ class LRC_Cell(BaseCell):
 
              >>> cell = LRC_Cell(units)
              >>> rnn = tf.keras.layers.RNN(cell)
+
+            Init-scaling options (issue #82). Both exist for the
+            pre-registered init diagnostic; with the defaults (None) the cell
+            is byte-identical to a cell built without them. They rescale the
+            initial values once, at the end of build(); shapes, constraints,
+            masks and parameter counts are unchanged.
+
+            init_fanin_scale: None | "units" | "input_dim". Multiplies column
+                i of h by sqrt(N / fan_in_i) (N = state_size, fan_in_i = number
+                of unmasked recurrent synapses onto unit i) and column i of
+                sensory_h by sqrt(ref / sfan_in_i) with ref = state_size
+                ("units") or input_dim ("input_dim"). Columns with zero fan-in
+                keep factor 1. On an unmasked cell "input_dim" is the identity
+                and "units" scales sensory_h by sqrt(units / input_dim). The
+                reference rule for sensory_h is a protocol decision; both
+                references are implemented.
+            init_slice_scale: dict slice name -> factor (e.g. "inter",
+                "command", "motor", "all"). Multiplies vleak[a:b], h[:, a:b]
+                and sensory_h[:, a:b] of every slice by its factor (missing
+                names fall back to "all"; the unmasked "all" slice falls back
+                to "inter").
+            init_slices: dict slice name -> (start, stop) in state order,
+                supplied by the wiring. Unmasked cells default to
+                {"all": (0, state_size)}; a masked cell requires it whenever
+                init_slice_scale is set.
 
         """
 
@@ -66,6 +95,15 @@ class LRC_Cell(BaseCell):
                         )
                     )
                 self._init_ranges[k] = v
+
+        if init_fanin_scale not in (None, "units", "input_dim"):
+            raise ValueError(
+                "init_fanin_scale must be None, 'units' or 'input_dim', "
+                f"got {init_fanin_scale!r}")
+        self._init_fanin_scale = init_fanin_scale
+        self._init_slice_scale = init_slice_scale
+        self._init_slices = init_slices
+        self._init_scale_report = {}
 
         self._input_mapping = input_mapping
         self._output_mapping = output_mapping
@@ -289,8 +327,67 @@ class LRC_Cell(BaseCell):
                 initializer=tf.keras.initializers.Constant(0),
             )
 
+        self._apply_init_scaling()
 
         self.built = True
+
+    def _apply_init_scaling(self):
+        """Fan-in, then slice scaling of the initial values (issue #82).
+
+        No-op with both options unset. Records the applied factors in
+        ``self._init_scale_report``.
+        """
+        n = self.state_size
+        h, sh, vleak = (self._params["h"], self._params["sensory_h"],
+                        self._params["vleak"])
+
+        def scale_cols(weight, factors):
+            weight.assign(weight * tf.constant(factors[None, :], tf.float32))
+
+        if self._init_fanin_scale is not None:
+            if self.is_masked:
+                fan_in = self.sparsity_mask.numpy().sum(axis=0)
+                sfan_in = self.sensory_mask.numpy().sum(axis=0)
+            else:
+                fan_in = np.full(n, n, np.float32)
+                sfan_in = np.full(n, self.input_dim, np.float32)
+            ref = n if self._init_fanin_scale == "units" else self.input_dim
+
+            def factors(r, fan):
+                out = np.ones(n, np.float32)
+                nz = fan > 0
+                out[nz] = np.sqrt(np.float32(r) / fan[nz])
+                return out
+
+            f_h, f_sh = factors(n, fan_in), factors(ref, sfan_in)
+            scale_cols(h, f_h)
+            scale_cols(sh, f_sh)
+            self._init_scale_report["fanin"] = {
+                "ref": self._init_fanin_scale, "h": f_h, "sensory_h": f_sh}
+
+        if self._init_slice_scale is not None:
+            scale = self._init_slice_scale
+            slices = self._init_slices
+            if slices is None:
+                if self.is_masked:
+                    raise ValueError(
+                        "init_slice_scale on a masked cell needs init_slices "
+                        "(passed by the wiring)")
+                slices = {"all": (0, n)}
+            col = np.ones(n, np.float32)
+            applied = {}
+            for name, (a, b) in slices.items():
+                f = scale.get(name, scale.get("all"))
+                if f is None and name == "all":
+                    f = scale.get("inter")
+                if f is None:
+                    continue
+                col[a:b] = f
+                applied[name] = ((a, b), float(f))
+            scale_cols(h, col)
+            scale_cols(sh, col)
+            vleak.assign(vleak * tf.constant(col, tf.float32))
+            self._init_scale_report["slices"] = applied
 
     def _sigmoid(self, v_pre, mu, sigma):
         v_pre = tf.expand_dims(v_pre, axis=-1)  # For broadcasting

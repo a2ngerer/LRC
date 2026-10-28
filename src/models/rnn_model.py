@@ -53,6 +53,10 @@ _CELL_REGISTRY = {
     "lrc_pmctrl_c": LRC_Cell,      # E_C: same-budget control for C
     "lrc_asym_hybrid": LRC_Cell,   # F: asymmetric + semi-implicit solver
     "lrc_interp_hybrid": LRC_Cell, # G: tau + semi-implicit solver
+    # init diagnostic arms (issue #82): plain LRC_Cell, init options set via
+    # the cell kwargs in src/benchmark/registry.py.
+    "lrc_init": LRC_Cell,
+    "lrc_cal": LRC_Cell,
 }
 
 
