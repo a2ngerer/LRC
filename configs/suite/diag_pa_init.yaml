@@ -1,0 +1,24 @@
+# Init diagnostic (issue #82, pre-registered, descriptive): the lrc family on
+# Person Activity with the two init options of LRC_Cell, lrc_init (narrowed
+# init ranges + fan-in scaling) and lrc_cal (per-layer scaling of vleak / h /
+# sensory_h), on ncp and dense (the dense controls take their size from the
+# budget like every arm). Seed 0, 50 epochs, lr 1e-3, clip off (fixed), no
+# HPO, with --diagnostics (RQ4 diagnostics incl. the LRC working point). Its
+# own run folder under 00_canary; never part of an HPO or final count.
+#   BENCH=00_canary ./cluster/submit_suite.sh --wandb configs/suite/diag_pa_init.yaml s3-diag-pa-init
+task: pa
+stage: final
+cells:
+  lrc_init: [ncp, dense]
+  lrc_cal: [ncp, dense]
+param_budget: 30000
+seeds: [0]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic, --diagnostics]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 1, walltime: "06:00:00"}
+heavy:
+  arms: [lrc_init_ncp, lrc_cal_ncp]
+  cluster: {runs_per_gpu: 1}

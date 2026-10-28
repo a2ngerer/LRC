@@ -12,6 +12,8 @@
 # grid from run_grid_hpo.py, the six S1 pilot YAMLs (61 fits). Issue #76: every
 # campaign but the S0 smokes runs with --deterministic. Issue #79: the width
 # and control YAMLs train the epochs of their task's final YAML.
+# Issue #82: the init diagnostic diag_pa_init.yaml (four fits, outside the
+# frozen counts).
 import fnmatch
 import json
 from argparse import Namespace
@@ -748,3 +750,26 @@ def test_suite_runs_with_op_determinism(name, tmp_path, capsys):
     assert all(row.split().count(DET) == 1 for row in listed)
     assert [{**line, 'argv': [a for a in line['argv'] if a != DET]}
             for line in expand(cfg)] == lines
+
+
+# --- init diagnostic on Person Activity (#82) --------------------------------
+
+DIAG_ARMS = {'lrc_init_ncp', 'lrc_init_dense', 'lrc_cal_ncp', 'lrc_cal_dense'}
+
+
+def test_diag_pa_init_four_fits_outside_the_frozen_counts():
+    """diag_pa_init.yaml: the four init-diagnostic arms, seed 0, every line
+    with --diagnostics and --deterministic; the ncp arms alone on their GPU;
+    outside the per-task globs (pa_*.yaml) of the frozen counts."""
+    cfg = _frozen('diag_pa_init')
+    lines = expand(cfg)
+    assert count(cfg) == len(lines) == 4
+    assert {line['id'] for line in lines} == {f'{a}_seed0' for a in DIAG_ARMS}
+    for line in lines:
+        argv = line['argv']
+        assert DET in argv and '--diagnostics' in argv
+        assert (f"{_flag_value(argv, '--cell')}_{_flag_value(argv, '--wiring')}"
+                in DIAG_ARMS)
+    assert {line['id'] for line in lines if line['group'] == 'heavy'} == {
+        'lrc_init_ncp_seed0', 'lrc_cal_ncp_seed0'}
+    assert SUITE / 'diag_pa_init.yaml' not in _yamls('pa')
