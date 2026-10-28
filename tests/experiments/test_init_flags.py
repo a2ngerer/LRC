@@ -181,3 +181,97 @@ def test_init_arms_through_the_runners(runner, wiring, cell, tmp_path,
     (rc,) = _lrc_cells(rebuild_from_result(str(path)))
     np.testing.assert_array_equal(rc._params["vleak"].numpy(),
                                   c._params["vleak"].numpy())
+
+
+# --- formula checks without a fit ------------------------------------------
+
+def _diag(opt, kind):
+    """The optimizer-facing state of RQ4Diagnostics, without a model."""
+    from types import SimpleNamespace
+    return SimpleNamespace(_net=SimpleNamespace(optimizer=opt), _kind=kind)
+
+
+@pytest.mark.parametrize("opt_name,kind", [
+    ("rmsprop", "RMSprop"), ("rmsprop_legacy", "legacy.RMSprop"),
+    ("adam", "Adam")])
+def test_eff_lr_reproduces_the_keras_step(opt_name, kind):
+    """eff_lr * (gradient, or Adam's first moment) is the step Keras took."""
+    from src.benchmark.optimizers import make_optimizer
+    from src.evaluation.gradient_flow import RQ4Diagnostics
+    lr = 1e-2
+    # a large epsilon separates sqrt(v + eps) from sqrt(v) + eps
+    opt = make_optimizer(opt_name, lr, epsilon=0.1)
+    # float64: before - after carries no float32 rounding of the variable
+    var = tf.Variable(np.linspace(-1, 1, 6))
+    rng = np.random.default_rng(0)
+    for _ in range(3):                              # t = 3: bias terms != 1
+        g = rng.normal(size=6)
+        before = var.numpy()
+        opt.apply_gradients([(tf.constant(g), var)])
+    step = before - var.numpy()
+    d = _diag(opt, kind)
+    eff = RQ4Diagnostics._eff_lr(d, RQ4Diagnostics._slots(d, [var]), lr)
+    num = (opt._momentums[opt._index_dict[opt._var_key(var)]].numpy()
+           if kind == "Adam" else g)
+    np.testing.assert_allclose(step, eff * num, rtol=1e-5)
+
+
+def test_legacy_rmsprop_applies_global_clipnorm():
+    """The runner sets global_clipnorm after construction; the legacy
+    optimizer must clip with it (rms slot sees the clipped gradient)."""
+    from src.benchmark.optimizers import make_optimizer
+    opt = make_optimizer("rmsprop_legacy", 1e-3)
+    opt.global_clipnorm = 1.0
+    var = tf.Variable(np.zeros(4, np.float32))
+    g = np.full(4, 1000.0, np.float32)
+    opt.apply_gradients([(tf.constant(g), var)])
+    clipped = g / np.linalg.norm(g)
+    np.testing.assert_allclose(opt.get_slot(var, "rms").numpy(),
+                               (1 - opt.rho) * clipped ** 2, rtol=1e-5)
+
+
+def test_opt_epsilon_must_be_positive():
+    import argparse
+    from src.benchmark.optimizers import add_optimizer_args, make_optimizer
+    with pytest.raises(ValueError):
+        make_optimizer("rmsprop_legacy", 1e-3, epsilon=0.0)
+    p = argparse.ArgumentParser()
+    add_optimizer_args(p)
+    with pytest.raises(SystemExit):
+        p.parse_args(["--opt-epsilon", "0"])
+    assert p.parse_args(["--opt-epsilon", "1e-4"]).opt_epsilon == 1e-4
+
+
+def test_working_point_matches_the_cell_solver():
+    """With elastance 'interp', one unfold, dt 1 and vleak 1 the explicit and
+    hybrid solver steps from the same state determine sigmoid(f) and tanh(g)
+    per neuron: s = (ve - vh) / (vh - v), t = vh (1 + s) - v."""
+    from src.evaluation.gradient_flow import RQ4Diagnostics
+    from src.wirings import NCPWiring
+    tf.keras.utils.set_random_seed(0)
+    inter, command, motor, n_in = 4, 3, 2, 3
+    n = inter + command + motor
+    w = NCPWiring(LRC_Cell, inter, command, motor)
+    cell = LRC_Cell(units=n, elastance_type="interp", ode_unfolds=1, dt=1,
+                    sparsity_mask=w.adjacency_mask, sensory_mask=w.sensory_mask)
+    cell.build((None, n_in))
+    rng = np.random.default_rng(0)
+    cell._params["vleak"].assign(np.ones(n, np.float32))
+    for k in ("input_w", "input_b"):
+        cell._params[k].assign(rng.normal(size=n_in).astype(np.float32))
+    x = rng.normal(size=(64, n_in)).astype(np.float32)
+    v = rng.uniform(-1, 1, size=(64, n)).astype(np.float32)
+    out = {}
+    for solver in ("explicit", "hybrid"):
+        cell._ode_solver_type = solver
+        out[solver] = cell(tf.constant(x), [tf.constant(v)])[1][0].numpy()
+    ve, vh = (out[k].astype(np.float64) for k in ("explicit", "hybrid"))
+    s = (ve - vh) / (vh - v)
+    t = vh * (1 + s) - v
+    slices = {"motor": (0, motor), "command": (motor, motor + command),
+              "inter": (motor + command, n)}
+    point = RQ4Diagnostics._working_point(cell, x, v, slices)
+    for name, (a, b) in slices.items():
+        assert point[name]["sig_f"] == pytest.approx(s[:, a:b].mean(), abs=1e-4)
+        assert point[name]["tanh_g"] == pytest.approx(
+            np.abs(t[:, a:b]).mean(), abs=1e-4)

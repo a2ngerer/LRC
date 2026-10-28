@@ -45,8 +45,12 @@ def _out(cell):
 # --- (i) options off == no options ------------------------------------------
 
 @pytest.mark.parametrize('masked', [False, True])
-def test_defaults_are_byte_identical(masked):
-    base = _cell(masked)
+def test_defaults_are_byte_identical(masked, monkeypatch):
+    # base: the init-scaling step removed, i.e. the cell as it was before the
+    # options existed; off: the shipped cell with every option at its default
+    with monkeypatch.context() as m:
+        m.setattr(LRC_Cell, '_apply_init_scaling', lambda self: None)
+        base = _cell(masked)
     off = _cell(masked, init_fanin_scale=None, init_slice_scale=None,
                 init_slices=None)
     wb, wo = _weights(base), _weights(off)
