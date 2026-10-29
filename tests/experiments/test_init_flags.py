@@ -136,7 +136,11 @@ def test_opt_epsilon_reaches_the_optimizer(tmp_path, monkeypatch):
     assert record["diagnostics"]["optimizer"]["epsilon"] == pytest.approx(1e-4)
 
 
-@pytest.mark.parametrize("cell", ["lrc_init", "lrc_cal"])
+SLICE_SCALE = {"lrc_cal": {"inter": 7.2, "command": 6.6, "motor": 6.6},
+               "lrc_cal_lv": {"inter": 5.3, "command": 4.3, "motor": 3.8}}
+
+
+@pytest.mark.parametrize("cell", ["lrc_init", "lrc_cal", "lrc_cal_lv"])
 @pytest.mark.parametrize("wiring", ["dense", "ncp"])
 @pytest.mark.parametrize("runner", ["pa", "lv"])
 def test_init_arms_through_the_runners(runner, wiring, cell, tmp_path,
@@ -151,8 +155,7 @@ def test_init_arms_through_the_runners(runner, wiring, cell, tmp_path,
         assert kw["initialization_ranges"] == {
             k: list(v) for k, v in _LRC_INIT_RANGES.items()}
     else:
-        assert kw["init_slice_scale"] == {"inter": 7.2, "command": 6.6,
-                                          "motor": 6.6}
+        assert kw["init_slice_scale"] == SLICE_SCALE[cell]
     # same parameter count as lrc at the same size and wiring
     # (the run's cell kwargs without the init options: lrc's plus ode_unfolds)
     lrc = BUILDERS[eff["task"]](**{**eff["build"], "cell": "lrc"},
@@ -168,7 +171,7 @@ def test_init_arms_through_the_runners(runner, wiring, cell, tmp_path,
     (slices,) = wp.values()
     if wiring == "ncp":
         assert set(slices) == {"motor", "command", "inter"}
-        if cell == "lrc_cal":
+        if cell in SLICE_SCALE:
             assert c._init_slices == {"motor": (0, 4), "command": (4, 8),
                                       "inter": (8, 16)}
             for a, b in c._init_slices.values():

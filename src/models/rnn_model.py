@@ -57,6 +57,7 @@ _CELL_REGISTRY = {
     # the cell kwargs in src/benchmark/registry.py.
     "lrc_init": LRC_Cell,
     "lrc_cal": LRC_Cell,
+    "lrc_cal_lv": LRC_Cell,
 }
 
 

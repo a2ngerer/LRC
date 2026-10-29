@@ -773,3 +773,26 @@ def test_diag_pa_init_four_fits_outside_the_frozen_counts():
     assert {line['id'] for line in lines if line['group'] == 'heavy'} == {
         'lrc_init_ncp_seed0', 'lrc_cal_ncp_seed0'}
     assert SUITE / 'diag_pa_init.yaml' not in _yamls('pa')
+
+
+# --- init diagnostic, LV stage (#82) -----------------------------------------
+
+def test_diag_lv_init_two_fits_outside_the_frozen_counts():
+    """diag_lv_init.yaml: lrc_init/ncp and lrc_cal_lv/ncp, seed 0, the lrc/ncp
+    configuration of lv_final.yaml at lr 3e-3 without clipping, every line
+    with --diagnostics, --deterministic and mixed forcing; outside the
+    per-task globs (lv_*.yaml) of the frozen counts."""
+    cfg = _frozen('diag_lv_init')
+    lines = expand(cfg)
+    assert count(cfg) == len(lines) == 2
+    assert {line['id'] for line in lines} == {'lrc_init_ncp_seed0',
+                                              'lrc_cal_lv_ncp_seed0'}
+    for line in lines:
+        argv = line['argv']
+        assert DET in argv and '--diagnostics' in argv
+        assert _flag_value(argv, '--forcing') == 'mixed'
+        assert _flag_value(argv, '--lr') == '0.003'
+        assert '--clipnorm' not in argv
+        assert _flag_value(argv, '--param-budget') == '4000'
+        assert _flag_value(argv, '--epochs') == '300'
+    assert SUITE / 'diag_lv_init.yaml' not in _yamls('lv')

@@ -20,7 +20,8 @@ and documents the cell configs in one place for the engine.
 Init diagnostic keys (issue #82), plain LRC_Cell with elastance 'asymmetric':
 ``lrc_init`` (re-centred init ranges + fan-in scaling of h / sensory_h) and
 ``lrc_cal`` (per-layer scaling of vleak / h / sensory_h, NCP slices from the
-wiring); both have the parameter count of ``lrc``.
+wiring), ``lrc_cal_lv`` (the same with the factors of the LV graph); all have
+the parameter count of ``lrc``.
 """
 from __future__ import annotations
 
@@ -147,6 +148,14 @@ CELL_REGISTRY: dict[str, CellConfig] = {
                                   'init_slice_scale': {'inter': 7.2,
                                                        'command': 6.6,
                                                        'motor': 6.6}}),
+    # lrc_cal_lv: lrc_cal with the factors of the LV graph (square roots of
+    # its layer-wise unit-variance calibration, inter 28.0 / command 18.4 /
+    # motor 14.4); the PA factors overshoot there. LV stage of the init
+    # diagnostic only.
+    'lrc_cal_lv': CellConfig(kwargs={'elastance_type': 'asymmetric',
+                                     'init_slice_scale': {'inter': 5.3,
+                                                          'command': 4.3,
+                                                          'motor': 3.8}}),
 }
 
 KNOWN_CELLS = tuple(CELL_REGISTRY)
