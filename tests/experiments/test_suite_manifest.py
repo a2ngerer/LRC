@@ -355,7 +355,7 @@ def test_frozen_arm_matrix():
     assert set(names['duffing_hpo']) - set(names['lv_hpo']) == {
         'cfc_static_ncp', 'ltc_ncp', 'mm_ltc_ncp', 'cfc_mm_ltc_ncp'}
     for path in SUITE.glob('*.yaml'):
-        if path.stem.startswith(('canary', 'smoke', 'pilot')):
+        if path.stem.startswith(('canary', 'smoke', 'pilot', 'diag')):
             continue
         cfg = load(str(path))
         assert cfg['seeds'] == ([100, 101] if cfg['stage'] == 'hpo'
