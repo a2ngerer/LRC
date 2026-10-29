@@ -1,0 +1,24 @@
+# Suite addendum (issue #82): final fits of lrc_init/ncp and lrc_cal/ncp on
+# PA, seeds 0-9 (as the ten-seed arms of pa_final.yaml, for the paired
+# contrasts with lrc/ncp and cfc_lrc/ncp). Set hpo_dir to the fetched run of
+# addendum_pa_dinit_hpo.yaml first. Not part of the frozen pa_* counts.
+#   ./cluster/submit_suite.sh configs/suite/addendum_pa_dinit_final.yaml pa-final-dinit
+task: pa
+stage: final
+cells:
+  lrc_init: [ncp]
+  lrc_cal: [ncp]
+param_budget: 30000
+seeds: [0, 1, 2, 3, 4]
+extra_seeds:
+  seeds: [5, 6, 7, 8, 9]
+  arms: [lrc_init_ncp, lrc_cal_ncp]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+hpo_dir: results/03_person_activity/<pa-hpo-dinit run>/results/hpo
+cluster: {runs_per_gpu: 1, walltime: "06:00:00"}
+heavy:
+  arms: [lrc_init_ncp, lrc_cal_ncp]
+  cluster: {runs_per_gpu: 1}

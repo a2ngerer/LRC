@@ -1,0 +1,22 @@
+# Suite addendum (issue #82, after the init diagnostic diag_pa_init*): grid
+# HPO of the two init-scaled LRC arms on the NCP wiring, lrc_init/ncp and
+# lrc_cal/ncp, with the PA protocol of pa_hpo.yaml (two tuning seeds,
+# 4 lr x 2 clip, top 2, edge rule). Not part of the frozen pa_* counts; its
+# own run folder. lrc_ncp's selection is not reused (config_from): it comes
+# from a one-class plateau (every grid point at chance).
+#   ./cluster/submit_suite.sh configs/suite/addendum_pa_dinit_hpo.yaml pa-hpo-dinit
+task: pa
+stage: hpo
+cells:
+  lrc_init: [ncp]
+  lrc_cal: [ncp]
+param_budget: 30000
+seeds: [100, 101]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+cluster: {runs_per_gpu: 1, walltime: "12:00:00"}
+heavy:
+  arms: [lrc_init_ncp, lrc_cal_ncp]
+  cluster: {runs_per_gpu: 1}
