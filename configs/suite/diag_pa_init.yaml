@@ -1,5 +1,5 @@
 # Init diagnostic (issue #82, pre-registered, descriptive): the lrc family on
-# Person Activity with the two init options of LRC_Cell, lrc_init (narrowed
+# Person Activity with the two init options of LRC_Cell, lrc_init (re-centred
 # init ranges + fan-in scaling) and lrc_cal (per-layer scaling of vleak / h /
 # sensory_h), on ncp and dense (the dense controls take their size from the
 # budget like every arm). Seed 0, 50 epochs, lr 1e-3, clip off (fixed), no
