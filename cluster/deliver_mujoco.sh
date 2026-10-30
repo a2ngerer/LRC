@@ -39,7 +39,8 @@ dest=os.environ["DEST"]
 ev=defaultdict(list); fi=defaultdict(list)
 for f in glob.glob("results/mujoco_cluster/runs/*.json"):
     d=json.load(open(f))
-    if d.get("eval_return") is not None: ev[d["model"]].append(d["eval_return"])
+    er = d.get("eval_return_mean", d.get("eval_return"))
+    if er is not None: ev[d["model"]].append(er)
     if d.get("final_return") is not None: fi[d["model"]].append(d["final_return"])
 fam={"mlp":"feedforward","lstm":"gated","gru":"gated","ctrnn":"continuous-time",
      "ltc":"liquid (LTC)","lrc":"liquid LRC (Thesis)","cfc":"closed-form liquid (CfC)"}
