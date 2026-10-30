@@ -120,9 +120,13 @@ class NCPWiring(BaseWiring):
                           degree-preserving, pass-order-respecting random
                           rewiring (``rewire_degree_preserving``), with
                           ``SWAPS_PER_EDGE`` x edges swap proposals. Sensory
-                          inputs may then reach any layer and any layer may
-                          read all earlier ones; the effective parameter count
-                          equals the plain NCP of the same seed.
+                          inputs may then reach any layer, any layer may read
+                          all earlier ones, and inter and motor neurons may
+                          get intra-layer edges (the statements about the
+                          plain NCP above and below do not hold for the
+                          rewired graph). The effective parameter count equals
+                          the plain NCP of the same seed. Raises when no swap
+                          is admissible (tiny sizes).
         **cell_kwargs:    forwarded to the cell constructor
     """
 
@@ -168,12 +172,19 @@ class NCPWiring(BaseWiring):
                 layer_of[n + np.asarray(idx)] = k
             new, overlap = rewire_degree_preserving(
                 full, layer_of, self.seed, SWAPS_PER_EDGE * int(full.sum()))
+            if overlap == 1.0:
+                raise ValueError(
+                    "ncp_random: no edge swap is admissible for sizes "
+                    f"({self.inter_neurons}, {self.command_neurons}, "
+                    f"{self.motor_neurons}) and input_dim {input_dim}; the "
+                    "rewired graph would equal the NCP graph.")
             self._rewired[input_dim] = (new[:n, n:], new[n:, n:], overlap)
         return self._rewired[input_dim]
 
     def rewire_overlap(self, input_dim):
-        """Fraction of the original NCP edges still present after rewiring
-        (reported in the result JSON); None for the plain NCP."""
+        """Fraction of the original neuron-level edges (sensory and state edges,
+        fixed self-loops included) still present after rewiring; reported in the
+        result JSON as ``rewire_overlap``. None for the plain NCP."""
         return self._rewired_masks(input_dim)[2] if self.rewire else None
 
     def adjacency_mask(self, input_dim):
@@ -229,7 +240,8 @@ class NCPLayeredCell(BaseCell):
     its input mask is the NCP adjacency from the previous layer (the sensory
     adjacency for inter), its recurrent mask the intra-layer adjacency, which
     is empty for inter and motor and the command <-> command synapses for
-    command. Every layer receives the same ``elapsed_time``. Unlike ncps
+    command (for the plain NCP graph; see the read set below for the rewired
+    one). Every layer receives the same ``elapsed_time``. Unlike ncps
     (``fully_recurrent=True`` default) the intra-layer recurrence is masked.
     CfC-family sub-cells default to ``backbone_layers=1`` (see CFC_NCP_CELLS).
 

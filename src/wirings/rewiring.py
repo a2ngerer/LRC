@@ -22,20 +22,13 @@ _MAX_ROUNDS = 1000
 def _propose(edges, present, ok, i, j):
     """New endpoints of edge slots i and j if trading targets is admissible.
 
-    ``ok(i, j)`` is the caller's rule on the current edges: False to reject,
-    'dst' to give slot i the target of slot j and vice versa, 'src' to give the
-    slots the sources instead. Both modes yield the edge set {(a, d), (c, b)};
-    they differ in which slot (and therefore which weight mask) lands where.
+    Slot i keeps its source and takes the target of slot j and vice versa;
+    ``ok(i, j)`` is the caller's rule on the current edges.
     """
     (a, b), (c, d) = edges[i], edges[j]
-    if a == d or c == b or (a, d) in present or (c, b) in present:
+    if a == d or c == b or (a, d) in present or (c, b) in present or not ok(i, j):
         return None
-    mode = ok(i, j)
-    if mode == 'dst':
-        return (a, d), (c, b)
-    if mode == 'src':
-        return (c, b), (a, d)
-    return None
+    return (a, d), (c, b)
 
 
 def _swap_chain(edges, ok, rng, n_swaps):
@@ -81,8 +74,8 @@ def rewire_degree_preserving(adjacency, layer_of, seed, n_swaps):
     edges = list(zip(src[~loop].tolist(), dst[~loop].tolist()))
 
     def ok(i, j):
-        return ('dst' if layer[edges[i][0]] <= layer[edges[j][1]]
-                and layer[edges[j][0]] <= layer[edges[i][1]] else False)
+        return (layer[edges[i][0]] <= layer[edges[j][1]]
+                and layer[edges[j][0]] <= layer[edges[i][1]])
 
     _swap_chain(edges, ok, np.random.default_rng(seed), n_swaps)
     out = np.zeros_like(adj)
@@ -96,13 +89,8 @@ def _group_rule(edges, kinds, width, rank):
     """The swap rule of ``rewire_group_edges`` as an ``ok(i, j)`` for _propose."""
     def ok(i, j):
         (a, b), (c, d) = edges[i], edges[j]
-        if kinds[i] != kinds[j]:
-            return False
-        if kinds[i][0] == 'S' and not (rank[a] < rank[d] and rank[c] < rank[b]):
-            return False
-        if width[b] == width[d]:
-            return 'dst'
-        return 'src' if width[a] == width[c] else False
+        return (kinds[i] == kinds[j] and width[b] == width[d]
+                and (kinds[i][0] != 'S' or (rank[a] < rank[d] and rank[c] < rank[b])))
     return ok
 
 
@@ -123,9 +111,10 @@ def rewire_group_edges(edges, kinds, width, rank, seed, n_swaps):
         kinds:  per slot a hashable kind (delay type, role, sign). Only slots
                 of the same kind trade targets, so the kind of every slot is
                 kept.
-        width:  group -> unit count. A swap needs equal target widths or equal
-                source widths, so every slot keeps its mask shape and the
-                effective parameter count is unchanged.
+        width:  group -> unit count. A swap needs equal target widths, so every
+                slot keeps its source group and its mask (shape and entries)
+                and only the target changes: the weights and the effective
+                parameter count are unchanged.
         rank:   group -> position in the pass. A slot of delay type 'S'
                 (kind[0], reads the current step) stays forward in rank; 'D'
                 slots read the previous state and are unconstrained.

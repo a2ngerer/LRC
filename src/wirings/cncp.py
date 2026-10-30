@@ -316,15 +316,19 @@ class CorticalColumnCell(BaseCell):
                              default graph after a degree-preserving swap of
                              edge targets on the node-group level
                              (``rewire_group_edges``). Edges keep their delay
-                             type, role and sign, and every edge keeps its
-                             mask, so the weights, their initial values and the
-                             effective parameter count equal the plain cNCP of
-                             the same seed. Same-step edges stay forward in
-                             pass order. Only the delayed basal edges can move
-                             (DELAYED_BASAL): in the default graph the one
-                             admissible swap exchanges the targets of
-                             M_L6CC_L23 and M_Thal_L4. Defined for the default
-                             graph only; raises when no swap is admissible.
+                             type, role, sign, source group and mask, so the
+                             weights, their initial values and the effective
+                             parameter count equal the plain cNCP of the same
+                             seed. Two edges trade targets only if the target
+                             groups have the same width. Same-step edges stay
+                             forward in pass order. Only the delayed basal
+                             edges can move (DELAYED_BASAL): for lamina sizes
+                             above 5 the one admissible swap exchanges the
+                             targets of M_L6CC_L23 and M_Thal_L4 (L6CC -> L4,
+                             Thal -> L23), which needs width(L4) == width(L23).
+                             Defined for the default graph only; raises when
+                             no swap is admissible. ``rewire_overlap`` is the
+                             share of the 19 group edges kept.
         **cell_kwargs:       forwarded to every sub-cell constructor (after
                              ncp_cell_kwargs applied the family defaults).
     """

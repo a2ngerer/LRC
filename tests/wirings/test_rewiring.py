@@ -12,11 +12,12 @@ import tensorflow as tf
 from src.benchmark.registry import cell_kwargs
 from src.models.rnn_model import _CELL_REGISTRY
 from src.neurons import GRU_Cell
+from src.tasks.person_activity.model import lamina_sizes, scaled_lamina_units
 from src.wirings import (CorticalColumnCell, NCPLayeredCell, NCPWiring,
-                         effective_param_count, rewire_degree_preserving,
-                         rewire_group_edges)
-from src.wirings.cncp import (DELAYED_BASAL, NODE_ORDER, _PASS_ORDER,
-                              group_edges)
+                         SignedSparseLinear, effective_param_count,
+                         rewire_degree_preserving, rewire_group_edges)
+from src.wirings.cncp import (DELAYED_BASAL, NODE_ORDER, _GROUP_EDGES,
+                              _PASS_ORDER, group_edges)
 from src.wirings.rewiring import admissible_group_swaps
 
 INTER, COMMAND, MOTOR, INPUT_DIM = 8, 6, 4, 3
@@ -158,6 +159,31 @@ def test_ncp_random_effective_params_equal_ncp(cell, seed):
         model(tf.zeros([1, 2, INPUT_DIM]))
         return effective_param_count(model)
     assert count(True) == count(False)
+
+
+@pytest.mark.parametrize('cell', ODE_CELLS)
+def test_ncp_random_ode_cells_run_on_the_rewired_masks(cell):
+    """The synchronous single cell of the ODE cells gets the rewired masks, not
+    the plain NCP ones."""
+    kw = cell_kwargs(cell)
+    rand = NCPWiring(_CELL_REGISTRY[cell], INTER, COMMAND, MOTOR, seed=1,
+                     rewire=True, **kw)
+    plain = NCPWiring(_CELL_REGISTRY[cell], INTER, COMMAND, MOTOR, seed=1, **kw)
+    model = rand.build_model()
+    model(tf.zeros([1, 2, INPUT_DIM]))
+    sub = model.layers[0].cell
+    np.testing.assert_array_equal(sub.sparsity_mask.numpy(),
+                                  rand.adjacency_mask(INPUT_DIM))
+    np.testing.assert_array_equal(sub.sensory_mask.numpy(),
+                                  rand.sensory_mask(INPUT_DIM))
+    assert not np.array_equal(sub.sparsity_mask.numpy(),
+                              plain.adjacency_mask(INPUT_DIM))
+    assert rand.sensory_mask(INPUT_DIM)[:, :COMMAND + MOTOR].sum() > 0  # beyond inter
+
+
+def test_ncp_random_raises_when_no_swap_is_admissible():
+    with pytest.raises(ValueError, match="no edge swap"):
+        NCPWiring(GRU_Cell, 2, 1, 1, seed=2, rewire=True).adjacency_mask(1)
 
 
 # --- generalised read set of NCPLayeredCell ----------------------------------
@@ -325,7 +351,7 @@ def test_cncp_random_swaps_the_targets_of_the_two_delayed_feedbacks():
     assert dict((n, (s, d)) for n, s, d in plain._delayed) == DELAYED_BASAL
 
 
-def test_cncp_random_keeps_degrees_signs_delay_types_and_shapes():
+def test_cncp_random_keeps_degrees_signs_delay_types_and_masks():
     blocks, kinds, edges, width, rank = _group_graph()
     new, overlap = rewire_group_edges(edges, kinds, width, rank, 0, 190)
     assert overlap < 1.0
@@ -333,23 +359,58 @@ def test_cncp_random_keeps_degrees_signs_delay_types_and_shapes():
         for g in set(width):
             assert (sum(e[deg] == g for e in new)
                     == sum(e[deg] == g for e in edges)), (deg, g)
-    for (old_s, old_d), (s, d), kind in zip(edges, new, kinds):
-        assert (width[s], width[d]) == (width[old_s], width[old_d])  # mask shape
-        if kind[0] == 'S':                       # same-step edges stay forward
-            assert (old_s, old_d) == (s, d)
+    for (old_s, old_d), (s, d) in zip(edges, new):
+        assert s == old_s and width[d] == width[old_d]   # source and mask shape
     assert len(set(new)) == len(new)                   # no parallel edge
     assert all(s != d for s, d in new)                 # no self-loop
-    # the sign-locked edge and every same-step / apical edge stay where they are
     moved = {blocks[i][0] for i, (a, b) in enumerate(zip(edges, new)) if a != b}
     assert moved == {'M_L6CC_L23', 'M_Thal_L4'}
 
 
+def test_cncp_random_leaves_signs_and_same_step_edges_alone():
+    cell = CorticalColumnCell('gru', seed=2, rewire=True)
+    cell.build((None, 2))
+    assert isinstance(cell.edges['M_TRN_Thal'], SignedSparseLinear)
+    moved = {n for n, s, d in cell._delayed if (s, d) != DELAYED_BASAL[n]}
+    assert moved == {'M_L6CC_L23', 'M_Thal_L4'}
+    blocks, kinds = group_edges()
+    assert [b[0] for b, k in zip(blocks, kinds) if k[2] == '-'] == ['M_TRN_Thal']
+
+
+def test_group_inventory_delay_labels_match_what_the_cell_reads():
+    """The S / D label of every edge class in the inventory is the one the cell
+    implements: a delayed edge is fed from the previous-state tensors only, a
+    same-step edge from values computed in this step (or the input)."""
+    cell = CorticalColumnCell('gru')
+    cell.build((None, 2))
+    seen = {}
+
+    class Tap:
+        def __init__(self, name, layer):
+            self.name, self.layer = name, layer
+
+        def __call__(self, x):
+            seen[self.name] = np.unique(np.round(x.numpy(), 5))
+            return self.layer(x)
+
+    cell.edges = {n: Tap(n, l) for n, l in cell.edges.items()}
+    fills = [10.0 + k for k in range(len(NODE_ORDER))]
+    states = [tf.fill([1, u], f) for u, f in zip(cell.state_size, fills)]
+    cell(tf.ones([1, 2]), states)
+    for name, (srcs, dst, delay, role) in _GROUP_EDGES.items():
+        from_previous = bool(np.all(np.isin(seen[name], fills)))
+        assert from_previous == (delay == 'D'), name
+
+
+@pytest.mark.parametrize('size', [None, 9.5])
 @pytest.mark.parametrize('cell_key', ['gru', 'cfc_lrc'])
-def test_cncp_random_equals_cncp_in_weights_and_effective_params(cell_key):
+def test_cncp_random_equals_cncp_in_weights_and_effective_params(cell_key, size):
+    units = None if size is None else scaled_lamina_units(size)
+
     def build(rewire):
         tf.keras.utils.set_random_seed(0)
         cell = CorticalColumnCell(cell_key, seed=3, rewire=rewire,
-                                  **cell_kwargs(cell_key))
+                                  lamina_units=units, **cell_kwargs(cell_key))
         model = tf.keras.Sequential([tf.keras.layers.RNN(
             cell, return_sequences=True)])
         out = model(tf.random.stateless_normal([2, 5, 4], seed=(1, 2)))
@@ -359,6 +420,24 @@ def test_cncp_random_equals_cncp_in_weights_and_effective_params(cell_key):
     for a, b in zip(plain.get_weights(), rand.get_weights()):
         np.testing.assert_array_equal(a, b)
     assert not np.allclose(out_p.numpy(), out_r.numpy())
+
+
+def test_cncp_random_is_buildable_where_the_two_target_widths_agree():
+    """Over the whole lamina budget scan: cncp_random exists exactly where L4
+    and L23 are equally wide (the other sizes raise), with one admissible swap
+    above lamina size 5 (sizes 2, 4 and 5 have a second pair)."""
+    blocks, kinds, edges, _, rank = _group_graph()
+    for size in lamina_sizes():
+        units = scaled_lamina_units(size)
+        pairs = admissible_group_swaps(edges, kinds, {**units, 'in': None}, rank)
+        assert (len(pairs) >= 1) == (units['L4'] == units['L23']), size
+        assert len(pairs) <= 1 or size <= 5, size
+        if units['L4'] == units['L23']:
+            assert CorticalColumnCell(
+                'gru', rewire=True, lamina_units=units).rewire_overlap > 0.8
+        else:
+            with pytest.raises(ValueError, match="no degree-"):
+                CorticalColumnCell('gru', rewire=True, lamina_units=units)
 
 
 def _l4_l23_after_one_step(cell, node):
