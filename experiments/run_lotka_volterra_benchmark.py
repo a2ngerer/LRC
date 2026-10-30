@@ -59,6 +59,12 @@ Data: 48/16/16 whole trajectories at the default 80, drawn with data seed
 DATA_SEED_BASE + --seed (+ --data-seed-offset for tuning runs), so all arms of
 one replicate share a draw and every replicate gets a fresh one.
 
+Init diagnostic (issue #82): --init-ranges JSON sets the cell's
+initialization_ranges (replaces a registry value of that kwarg);
+--optimizer {rmsprop, rmsprop_legacy, adam} and --opt-epsilon choose the
+optimizer (src/benchmark/optimizers.py). At the defaults neither adds a key to
+config.effective, so the config_hash of a default run is unchanged.
+
 De-normalised ground-truth / teacher-forced / closed-loop trajectories for the
 test split are written into the JSON so plot_lotka_volterra.py needs no retrain.
 
@@ -103,8 +109,10 @@ from src.tasks.person_activity.model import (
     backbone_override, backbone_suffix, budget_sizes, effective_backbone_layers,
     effective_self_recurrent, add_multi_column_args, multi_column_config,
     multi_column_suffix, ode_unfolds_override, effective_ode_unfolds,
-    DEFAULT_ODE_UNFOLDS, dt_scale_arg, resolve_dt_scale)
+    DEFAULT_ODE_UNFOLDS, dt_scale_arg, resolve_dt_scale, ncp_layer_sizes)
 from src.tasks.active_sensing.model import TBT_MODES
+from src.benchmark.optimizers import (add_optimizer_args,
+                                      optimizer_build_kwargs)
 from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
 from src.benchmark.tracking import keras_callbacks, log_summary, track_fit
 from src.benchmark.checkpoints import (config_hash, rebuild_from_result,
@@ -113,7 +121,7 @@ from src.evaluation.rollout_metrics import (ANCHOR_HORIZON, ANCHORS, TAU_ORB,
                                             THETA, anchor_metrics,
                                             make_norm_stats,
                                             rollout_metrics)
-from src.evaluation.gradient_flow import RQ4Diagnostics
+from src.evaluation.gradient_flow import RQ4Diagnostics, ncp_state_slices
 from src.evaluation.lyapunov import largest_lyapunov
 
 SOLVER_KS = (1, 2, 6, 12)
@@ -658,6 +666,11 @@ def main():
     ap.add_argument("--no-save-weights", dest="save_weights",
                     action="store_false",
                     help="do not write <stem>.weights.h5 next to the result JSON")
+    ap.add_argument("--init-ranges", type=json.loads, default=None,
+                    help="JSON dict parameter -> [lo, hi] passed to the cell as "
+                         "initialization_ranges (LRC/LTC family); replaces a "
+                         "registry value of that kwarg (issue #82)")
+    add_optimizer_args(ap)
     add_multi_column_args(ap)
     ap.add_argument("--wandb", action="store_true",
                     help="log this run to Weights & Biases (needs the "
@@ -693,6 +706,9 @@ def main():
     if args.head_activation != "none":     # non-CfC cells reject the kwarg
         cell_kwargs["head_activation"] = args.head_activation
     cell_kwargs.update(ode_unfolds_override(args.cell, args.ode_unfolds))
+    if args.init_ranges is not None:       # CLI replaces the registry value
+        cell_kwargs["initialization_ranges"] = args.init_ranges
+    opt_kwargs = optimizer_build_kwargs(args)      # {} at the defaults
     bb_effective = effective_backbone_layers(args.wiring, args.cell, cell_kwargs)
     self_rec = effective_self_recurrent(args.wiring, args.cell,
                                         args.self_recurrent)
@@ -717,7 +733,7 @@ def main():
             args.wiring, args.cell, size=size, seed=args.seed,
             feature_size=data.feature_size, loc_dim=data.loc_dim, lr=args.lr,
             self_recurrent=args.self_recurrent, dt_scale=args.dt_scale,
-            **multi, **cell_kwargs)
+            **opt_kwargs, **multi, **cell_kwargs)
 
     # Capacity: a fixed width knob, or the knob closest to the effective
     # parameter budget for THIS arm.
@@ -762,7 +778,7 @@ def main():
                       seed=args.seed, feature_size=data.feature_size,
                       loc_dim=data.loc_dim, lr=args.lr,
                       self_recurrent=args.self_recurrent,
-                      dt_scale=args.dt_scale, **multi),
+                      dt_scale=args.dt_scale, **opt_kwargs, **multi),
         "elastance_type": cell_kwargs.get("elastance_type"),
         "cell_kwargs": cell_kwargs})
     wandb_config = {
@@ -787,8 +803,10 @@ def main():
         tr_b, val_b, te_b = (tuple(a[:args.batch_size] for a in inputs)
                              for inputs in (train_in, val_in, test_in))
         probe = StabilityProbe(model, tr_b, {"val": val_b, "test": te_b})
+    slices = (ncp_state_slices(*ncp_layer_sizes(args.size))
+              if args.wiring == "ncp" else None)
     diag = (RQ4Diagnostics(model, tuple(a[:args.batch_size] for a in train_in),
-                           data.train_y[:args.batch_size])
+                           data.train_y[:args.batch_size], slices=slices)
             if args.diagnostics else None)
     # Test teacher-forced loss per epoch, read only at the best-val epoch.
     test_curve = []

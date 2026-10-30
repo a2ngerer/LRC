@@ -1,0 +1,21 @@
+# Init diagnostic, stage 2 (issue #82, pre-registered, descriptive): the four
+# arms of diag_pa_init.yaml on seeds 1 and 2, same fixed configuration and
+# reading. Run only after stage 1 confirmed the init reading for the ncp arms.
+# Own run folder under 00_canary; never part of an HPO or final count.
+#   BENCH=00_canary ./cluster/submit_suite.sh --wandb configs/suite/diag_pa_init_s2.yaml s3-diag-pa-init-s2
+task: pa
+stage: final
+cells:
+  lrc_init: [ncp, dense]
+  lrc_cal: [ncp, dense]
+param_budget: 30000
+seeds: [1, 2]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic, --diagnostics]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 1, walltime: "06:00:00"}
+heavy:
+  arms: [lrc_init_ncp, lrc_cal_ncp]
+  cluster: {runs_per_gpu: 1}

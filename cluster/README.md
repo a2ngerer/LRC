@@ -295,6 +295,15 @@ fits without any `hpo_selection.json` (an hpo line counts 11 fits, co 6):
 uv run python experiments/suite_manifest.py --count configs/suite/duffing_*.yaml   # 519
 ```
 
+`diag_pa_init.yaml` is the pre-registered init diagnostic of issue #82: the
+init arms `lrc_init` and `lrc_cal` on Person Activity (ncp and dense, seed 0,
+fixed lr/clip, `--diagnostics`), descriptive, in its own run folder under
+`00_canary` and outside the frozen fit counts:
+
+```bash
+BENCH=00_canary ./cluster/submit_suite.sh --wandb configs/suite/diag_pa_init.yaml s3-diag-pa-init
+```
+
 ### S0 op-determinism probe (#70)
 
 `./cluster/submit_determinism_probe.sh [-n] <label>` runs

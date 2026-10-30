@@ -153,10 +153,18 @@ class NCPWiring(BaseWiring):
         cells, see SEQUENTIAL_NCP_CELLS)."""
         if issubclass(self.cell_cls, SEQUENTIAL_NCP_CELLS):
             return NCPLayeredCell(self, self_recurrent=self.self_recurrent)
+        kw = self.cell_kwargs
+        if 'init_slice_scale' in kw:
+            # Per-layer init scaling (LRC_Cell, issue #82) needs the layer
+            # slices in ncps state order [motor | command | inter].
+            m, c = self.motor_neurons, self.command_neurons
+            kw = dict(kw, init_slices={'motor': (0, m),
+                                       'command': (m, m + c),
+                                       'inter': (m + c, self.units)})
         return self.cell_cls(units=self.units,
                              sparsity_mask=self.adjacency_mask,
                              sensory_mask=self.sensory_mask,
-                             **self.cell_kwargs)
+                             **kw)
 
     def motor_slice(self):
         """Layer selecting the motor neurons from the hidden state."""

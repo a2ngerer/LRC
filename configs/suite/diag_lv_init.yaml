@@ -1,0 +1,23 @@
+# Init diagnostic, stage 4 (issue #82, pre-registered, exploratory):
+# the two init arms confirmed on Person Activity, on Lotka-Volterra with the
+# configuration of lrc/ncp in lv_final.yaml (budget 4000, 300 epochs, mixed
+# forcing, k 6, dt auto) at the lr of its HPO selection (3e-3, clip off).
+# lrc_cal_lv carries the factors of the LV graph (the PA factors of lrc_cal
+# overshoot there); lrc_init needs no LV constant. Seed 0, --diagnostics.
+# Reading: best_val_epoch < 200 and VPT8 (vpt_anchor_8, test) > 17, the
+# lrc/ncp median of the LV final. Own run folder under 00_canary; never part
+# of an HPO or final count.
+#   BENCH=00_canary ./cluster/submit_suite.sh --wandb configs/suite/diag_lv_init.yaml s3-diag-lv-init
+task: lv
+stage: final
+cells:
+  lrc_init: [ncp]
+  lrc_cal_lv: [ncp]
+param_budget: 4000
+seeds: [0]
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic, --diagnostics]
+fixed: {lr: 0.003, clipnorm: null}
+cluster: {runs_per_gpu: 2, walltime: "04:00:00"}

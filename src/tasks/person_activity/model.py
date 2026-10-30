@@ -26,6 +26,7 @@ import warnings
 
 import tensorflow as tf
 
+from src.benchmark.optimizers import make_optimizer
 from src.neurons import (CTRNN_Cell, LRC_Cell, LTC_Cell, MLP_Cell,
                          MM_LRC_Cell, MM_LTC_Cell)
 from src.neurons.base_cell import BaseCell
@@ -359,6 +360,7 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
                                 coupling=MULTI_COLUMN_DEFAULTS["coupling"],
                                 readout=None, self_recurrent=True,
                                 dt_feature=True, dt_scale=1.0,
+                                optimizer='rmsprop', opt_epsilon=None,
                                 **cell_kwargs):
     """Build and compile a person-activity model for one (wiring, cell).
 
@@ -378,7 +380,11 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
         num_classes:  output classes (logits head width).
         feature_size: input feature dimension.
         seq_len:      timesteps per sequence.
-        lr:           RMSprop learning rate.
+        lr:           learning rate of the optimizer.
+        optimizer, opt_epsilon: src.benchmark.optimizers.make_optimizer
+                      ('rmsprop' default = tf.keras.optimizers.RMSprop(lr);
+                      'rmsprop_legacy', 'adam'; epsilon None = class
+                      default; issue #82).
         timescale_prior: optional per-lamina timescale prior (cncp only).
         columns, partition, coupling, readout: cncp2_multi only (spec B.7);
                       partition='region' uses the four sensor tags.
@@ -469,7 +475,7 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
 
     model = tf.keras.Model(inputs=[features, time_in], outputs=logits)
     model.compile(
-        optimizer=tf.keras.optimizers.RMSprop(lr),
+        optimizer=make_optimizer(optimizer, lr, opt_epsilon),
         loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
         metrics=[tf.keras.metrics.SparseCategoricalAccuracy()],
     )
