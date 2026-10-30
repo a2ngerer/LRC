@@ -16,10 +16,14 @@ log-std (the standard MuJoCo-PPO parameterization). Actions are sampled
 unsquashed and clipped to the action bounds at env-step time; log-probs are
 computed on the unclipped sample (CleanRL convention).
 """
+import json
+
 import numpy as np
 import tensorflow as tf
 
+from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
 from src.models.rnn_model import _CELL_REGISTRY
+from src.wirings import size_for_budget
 
 LOG_STD_INIT = -0.5
 # Clamp the learnable log-std before every use: prevents a drifting log_std from
@@ -30,7 +34,7 @@ _LOG_2PI = float(np.log(2.0 * np.pi))
 _LOG_2PIE = float(np.log(2.0 * np.pi * np.e))
 
 # Cell types that are valid recurrent torsos here (single-cell, dense-wired).
-RECURRENT_CELLS = ("lstm", "gru", "ctrnn", "ltc", "lrc", "cfc")
+RECURRENT_CELLS = ("lstm", "gru", "ctrnn", "ltc", "lrc", "cfc", "cfc_lrc")
 MODEL_TYPES = ("mlp",) + RECURRENT_CELLS
 
 
@@ -38,10 +42,10 @@ def _ortho(scale):
     return tf.keras.initializers.Orthogonal(gain=scale)
 
 
-def _mlp_torso(seed):
+def _mlp_torso(units):
     return tf.keras.Sequential([
-        tf.keras.layers.Dense(64, activation="tanh", kernel_initializer=_ortho(np.sqrt(2))),
-        tf.keras.layers.Dense(64, activation="tanh", kernel_initializer=_ortho(np.sqrt(2))),
+        tf.keras.layers.Dense(units, activation="tanh", kernel_initializer=_ortho(np.sqrt(2))),
+        tf.keras.layers.Dense(units, activation="tanh", kernel_initializer=_ortho(np.sqrt(2))),
     ])
 
 
@@ -52,8 +56,10 @@ class GaussianPolicy(tf.keras.Model):
         model_type: one of MODEL_TYPES.
         obs_dim:    observation dimension.
         act_dim:    action dimension.
-        units:      hidden size of each recurrent torso (ignored for mlp).
-        cell_kwargs: extra kwargs forwarded to the cell constructor.
+        units:      hidden size of each torso (width of both mlp layers).
+        cell_kwargs: kwargs forwarded to the cell constructor. ``None`` takes the
+                    registry's (``src.benchmark.registry.cell_kwargs``), the same
+                    per-cell config the supervised tasks use; ``{}`` passes none.
         seed:       initialization seed.
     """
 
@@ -66,7 +72,11 @@ class GaussianPolicy(tf.keras.Model):
         self.obs_dim = int(obs_dim)
         self.act_dim = int(act_dim)
         self.units = int(units)
-        cell_kwargs = dict(cell_kwargs or {})
+        cell_kwargs = (registry_cell_kwargs(model_type) if cell_kwargs is None
+                       else dict(cell_kwargs))
+        # A string, not a dict: Keras would wrap a dict attribute in a tracked,
+        # non-JSON-serialisable container (checkpoints store it as JSON).
+        self._cell_kwargs_json = json.dumps(cell_kwargs, sort_keys=True)
 
         tf.random.set_seed(seed)
         self.log_std = tf.Variable(
@@ -79,12 +89,17 @@ class GaussianPolicy(tf.keras.Model):
             self.actor_head = tf.keras.layers.Dense(act_dim, kernel_initializer=_ortho(0.01))
             self.critic_head = tf.keras.layers.Dense(1, kernel_initializer=_ortho(1.0))
         else:
-            self.actor_torso = _mlp_torso(seed)
+            self.actor_torso = _mlp_torso(self.units)
             self.actor_head = tf.keras.layers.Dense(act_dim, kernel_initializer=_ortho(0.01))
-            self.critic_torso = _mlp_torso(seed)
+            self.critic_torso = _mlp_torso(self.units)
             self.critic_head = tf.keras.layers.Dense(1, kernel_initializer=_ortho(1.0))
 
         self._build_once(obs_dim)
+
+    @property
+    def cell_kwargs(self):
+        """The kwargs the cells were built with (a copy)."""
+        return json.loads(self._cell_kwargs_json)
 
     # ------------------------------------------------------------------ build
     def _build_once(self, obs_dim):
@@ -155,3 +170,17 @@ class GaussianPolicy(tf.keras.Model):
     def sample_action(self, mean):
         std = tf.exp(self._log_std())
         return mean + std * tf.random.normal(tf.shape(mean))
+
+
+def size_for_param_budget(model_type, obs_dim, act_dim, budget, cell_kwargs=None, seed=0):
+    """``(units, params_effective)`` whose policy is closest to ``budget`` parameters.
+
+    The count covers the whole policy: actor torso + critic torso + both heads +
+    log-std (``effective_param_count``, no masks in these dense torsos). The
+    probes are discarded and the Keras session cleared (``size_for_budget``), so
+    build the real policy afterwards.
+    """
+    def build(units):
+        return GaussianPolicy(model_type, obs_dim, act_dim, units=units,
+                              cell_kwargs=cell_kwargs, seed=seed)
+    return size_for_budget(build, budget)
