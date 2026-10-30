@@ -70,7 +70,7 @@ from src.tasks.person_activity.model import (  # noqa: E402
     effective_backbone_layers, effective_self_recurrent, add_multi_column_args,
     multi_column_config, multi_column_suffix, ode_unfolds_override,
     effective_ode_unfolds, DEFAULT_ODE_UNFOLDS, dt_scale_arg, resolve_dt_scale,
-    ncp_layer_sizes)
+    ncp_layer_sizes, NCP_WIRINGS)
 
 DEFAULT_SIZE = 64
 BUDGET_TOLERANCE = 0.05
@@ -163,6 +163,9 @@ def run(args):
     model.optimizer.global_clipnorm = args.clipnorm   # None = no clipping
     pc = param_counts(model)
     params = pc['params_effective']
+    # share of the original edges the *_random wirings kept (issue #17)
+    rewire = ({} if model.rewire_overlap is None
+              else {"rewire_overlap": model.rewire_overlap})
 
     tag = result_tag(args, multi)
     print(f"=== TRAIN {tag} size={args.size} params={params} "
@@ -216,6 +219,7 @@ def run(args):
         "split_seed": data.split_seed,
         **pc,
         **multi,
+        **rewire,
     }
 
     # After every epoch: val macro-F1 / accuracy (the val curve selects the
@@ -238,7 +242,7 @@ def run(args):
                                                   ncp_state_slices)
         b = args.batch_size
         slices = (ncp_state_slices(*ncp_layer_sizes(args.size))
-                  if args.wiring == "ncp" else None)
+                  if args.wiring in NCP_WIRINGS else None)
         diag = RQ4Diagnostics(model, (data.train_x[:b], data.train_t[:b]),
                               data.train_y[:b], slices=slices)
 
@@ -288,6 +292,7 @@ def run(args):
         "dt_scale": args.dt_scale,
         **pc,
         **multi,
+        **rewire,
         "cell_kwargs": cell_kwargs,
         "split": data.split,
         "split_seed": data.split_seed,

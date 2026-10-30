@@ -57,7 +57,8 @@ from src.benchmark.checkpoints import config_hash, rebuild_from_result  # noqa: 
 from src.neurons.forced_rollout_cell import StackedCell  # noqa: E402
 from src.tasks.lotka_volterra.model import (  # noqa: E402
     FORCEABLE_WIRINGS, forced_rollout_model)
-from src.tasks.person_activity.model import ncp_layer_sizes  # noqa: E402
+from src.tasks.person_activity.model import (  # noqa: E402
+    NCP_WIRINGS, ncp_layer_sizes)
 
 DELTAS = (1, 4, 16)   # powers of two: the products are built by doubling
 N_SEQ = 4
@@ -139,7 +140,7 @@ def state_blocks(record, one):
         bounds = np.cumsum([0] + [sum(sz) for sz in one.sizes])
         return {f"layer{i}": np.arange(a, b)
                 for i, (a, b) in enumerate(zip(bounds[:-1], bounds[1:]))}
-    if record["wiring"] == "ncp":
+    if record["wiring"] in NCP_WIRINGS:
         inter, command, motor = ncp_layer_sizes(record["size"])
         units = inter + command + motor        # ncps order [motor|command|inter]
         spans = {"motor": (0, motor), "command": (motor, motor + command),

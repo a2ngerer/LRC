@@ -109,7 +109,8 @@ from src.tasks.person_activity.model import (
     backbone_override, backbone_suffix, budget_sizes, effective_backbone_layers,
     effective_self_recurrent, add_multi_column_args, multi_column_config,
     multi_column_suffix, ode_unfolds_override, effective_ode_unfolds,
-    DEFAULT_ODE_UNFOLDS, dt_scale_arg, resolve_dt_scale, ncp_layer_sizes)
+    DEFAULT_ODE_UNFOLDS, dt_scale_arg, resolve_dt_scale, ncp_layer_sizes,
+    NCP_WIRINGS)
 from src.tasks.active_sensing.model import TBT_MODES
 from src.benchmark.optimizers import (add_optimizer_args,
                                       optimizer_build_kwargs)
@@ -750,6 +751,9 @@ def main():
     model.optimizer.global_clipnorm = args.clipnorm   # None = no clipping
     pc = param_counts(model)
     params = pc['params_effective']
+    # share of the original edges the *_random wirings kept (issue #17)
+    rewire = ({} if model.rewire_overlap is None
+              else {"rewire_overlap": model.rewire_overlap})
     print(f"{args.wiring}/{args.cell} seed {args.seed}: size {args.size}, "
           f"{params} effective params (raw {pc['params_raw']}, "
           f"needs_loc={needs_loc}, backbone_layers requested "
@@ -792,7 +796,7 @@ def main():
         "batch_size": args.batch_size, "epochs": args.epochs,
         "backbone_layers": args.backbone_layers, "self_recurrent": self_rec,
         "head_activation": args.head_activation, "data_seed": data_seed,
-        "forcing": args.forcing, **pc, **multi,
+        "forcing": args.forcing, **pc, **multi, **rewire,
         "ode_unfolds": cell_kwargs.get("ode_unfolds"), "dt_scale": args.dt_scale,
     }
     tag = result_filename(args, multi)[:-len(".json")]
@@ -804,7 +808,7 @@ def main():
                              for inputs in (train_in, val_in, test_in))
         probe = StabilityProbe(model, tr_b, {"val": val_b, "test": te_b})
     slices = (ncp_state_slices(*ncp_layer_sizes(args.size))
-              if args.wiring == "ncp" else None)
+              if args.wiring in NCP_WIRINGS else None)
     diag = (RQ4Diagnostics(model, tuple(a[:args.batch_size] for a in train_in),
                            data.train_y[:args.batch_size], slices=slices)
             if args.diagnostics else None)
@@ -853,7 +857,7 @@ def main():
         "backbone_layers": args.backbone_layers,
         "backbone_layers_effective": bb_effective, "self_recurrent": self_rec,
         "head_activation": args.head_activation,
-        **pc, **multi, "dt": data.dt, "seq_len": data.seq_len,
+        **pc, **multi, **rewire, "dt": data.dt, "seq_len": data.seq_len,
         "ode_unfolds": cell_kwargs.get("ode_unfolds"), "dt_scale": args.dt_scale,
         "data_seed": data_seed, "split": split, "n_test": split[2],
         **evaluation,

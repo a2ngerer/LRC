@@ -24,7 +24,7 @@ from src.wirings.tbt_cncp import TbtCorticalColumnCell
 from src.neurons.forced_rollout_cell import ForcedRolloutCell, StackedCell
 from src.tasks.person_activity.model import (
     WIRINGS, COMPOSITE_WIRINGS, DENSE3_LAYERS, MULTI_COLUMN_DEFAULTS,
-    default_readout,
+    NCP_WIRINGS, CNCP_WIRINGS, default_readout,
     ncp_layer_sizes,
     scaled_lamina_units, scaled_time, stacked_dense, _resolve_cell_cls,
     _reject_multi_state, _reject_stateless)
@@ -43,7 +43,8 @@ LV_WIRINGS = WIRINGS + tuple(TBT_MODES)
 # head and can therefore be wrapped in a ForcedRolloutCell (issue #25). The
 # tbt_cncp* arms recompute the location code from the state and cncp2_multi has
 # its own multi-column head; both keep closed_loop_rollout.
-FORCEABLE_WIRINGS = ("dense", "dense3", "ncp", "cncp", "cncp2")
+FORCEABLE_WIRINGS = ("dense", "dense3", "ncp", "cncp", "cncp2",
+                     "ncp_random", "cncp_random")
 
 
 def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
@@ -57,7 +58,8 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
 
     Args:
         wiring:       one of LV_WIRINGS: 'dense', 'dense3', 'ncp', 'cncp',
-                      'cncp2', 'cncp2_multi'
+                      'cncp2', 'cncp2_multi', or the random-rewiring controls
+                      'ncp_random' / 'cncp_random' (issue #17)
                       (2-input, no reference frame) or a tbt_cncp* mode
                       (3-input, with the phase-space location signal).
         cell:         _CELL_REGISTRY key (e.g. 'cfc_lrc', 'gru', 'lstm') or
@@ -103,6 +105,8 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
         (B,None,loc_dim)] for the tbt_cncp* wirings; output (B,None,feature_size)
         = predicted next state; loss MSE, metric MAE. Variable time dimension so
         the same graph serves teacher-forced training and closed-loop rollout.
+        ``model.rewire_overlap`` is the share of the original edges the random
+        wirings kept (None otherwise).
     """
     if wiring not in LV_WIRINGS:
         raise ValueError(f"wiring must be one of {LV_WIRINGS}, got {wiring!r}")
@@ -116,6 +120,7 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
     state = tf.keras.Input(shape=(None, feature_size), name="state")
     time_in = tf.keras.Input(shape=(None, 1), name="time")
     time = scaled_time(time_in, dt_scale)
+    rewire_overlap = None
 
     if wiring in TBT_MODES:
         concat_loc, use_gate = TBT_MODES[wiring]
@@ -128,12 +133,13 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
         h = tf.keras.layers.RNN(tbt_cell, return_sequences=True)(
             (feats, time, location))
         inputs = [state, time_in, location]
-    elif wiring == "cncp":
+    elif wiring in CNCP_WIRINGS:
         cncp_cell = CorticalColumnCell(
             cell_cls=cell_cls, lamina_units=scaled_lamina_units(size),
-            seed=seed, **cell_kwargs)
+            seed=seed, rewire=wiring == "cncp_random", **cell_kwargs)
         h = tf.keras.layers.RNN(cncp_cell, return_sequences=True)(
             (state, time))
+        rewire_overlap = cncp_cell.rewire_overlap
         inputs = [state, time_in]
     elif wiring == "cncp2":
         col = CorticalColumnV2Cell(cell_cls=cell_cls, units=size, seed=seed,
@@ -148,13 +154,15 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
             coupling=coupling, readout=readout or default_readout(partition),
             **cell_kwargs)
         inputs = [state, time_in]
-    elif wiring == "ncp":
+    elif wiring in NCP_WIRINGS:
         inter, command, motor = ncp_layer_sizes(size)
         ncp = NCPWiring(cell_cls, inter, command, motor, seed=seed,
-                        self_recurrent=self_recurrent, **cell_kwargs)
+                        self_recurrent=self_recurrent,
+                        rewire=wiring == "ncp_random", **cell_kwargs)
         h = tf.keras.layers.RNN(ncp.make_cell(), return_sequences=True)(
             (state, time))
         h = ncp.motor_slice()(h)
+        rewire_overlap = ncp.rewire_overlap(feature_size)
         inputs = [state, time_in]
     else:  # dense / dense3
         h = stacked_dense(cell_cls, size, state, time,
@@ -173,6 +181,7 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
         loss=tf.keras.losses.MeanSquaredError(),
         metrics=[tf.keras.metrics.MeanAbsoluteError()],
     )
+    model.rewire_overlap = rewire_overlap      # None unless a *_random wiring
     return model
 
 

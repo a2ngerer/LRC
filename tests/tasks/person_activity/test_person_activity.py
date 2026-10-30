@@ -329,3 +329,21 @@ def test_runner_passes_no_self_recurrence_to_the_ncp(stub, tmp_path,
     on, off = run(), run("--no-self-recurrence")
     assert on["self_recurrent"] is True and off["self_recurrent"] is False
     assert on["params_effective"] > off["params_effective"]
+
+
+# --- random-rewiring controls (issue #17) ---
+
+@pytest.mark.parametrize("wiring", ["ncp_random", "cncp_random"])
+def test_runner_records_the_kept_edge_share_of_the_random_wirings(
+        stub, tmp_path, monkeypatch, wiring):
+    def run(w):
+        monkeypatch.setattr(sys, "argv", [
+            "run_person_activity_benchmark.py", "--wiring", w, "--cell",
+            "cfc_lrc", "--epochs", "1", "--size", "8", "--data-path", stub,
+            "--outdir", str(tmp_path), "--diagnostics"])
+        pa_runner.main()
+        return json.loads((tmp_path / f"cfc_lrc_{w}_seed0.json").read_text())
+    rec, plain = run(wiring), run(wiring.replace("_random", ""))
+    assert 0.0 < rec["rewire_overlap"] < 1.0
+    assert "rewire_overlap" not in plain
+    assert rec["params_effective"] == plain["params_effective"]
