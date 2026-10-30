@@ -39,6 +39,7 @@ import tensorflow as tf
 from src.neurons.base_cell import BaseCell
 from .base_wiring import BaseWiring
 from .ncp import SparseLinear, ncp_cell_kwargs
+from .rewiring import SWAPS_PER_EDGE, rewire_group_edges
 
 # Positional order of the composite state list (= spec section 2). The state
 # is indexed positionally everywhere; this tuple is the single source for it.
@@ -84,6 +85,53 @@ DEFAULT_MASK_DENSITIES = {
     # dense, so it consumes no RNG and the sparse masks above are unchanged)
     'M_in_Thal': 1.0,
 }
+
+
+# Pass order of the node groups within one step = the order call() evaluates
+# them in (the relay loop runs TRN before Thal); 'in' is the sensory input.
+_PASS_ORDER = ('in', 'L4', 'L23', 'L5IT', 'L5ET', 'L6CC', 'L6CT', 'TRN', 'Thal')
+
+# The default graph (direct route, multiplicative combiner) on the node-group
+# level: edge class -> (source groups, target group, delay, role). Delay 'S'
+# reads the current step, 'D' the previous state; role 'apical' feeds the gain
+# combiner instead of the basal drive. A class with several source groups is
+# one group edge per source (the masks are blocks of its mask).
+_GROUP_EDGES = {
+    'M_in_L4': (('in',), 'L4', 'S', 'basal'),
+    'M_L4_L23': (('L4',), 'L23', 'S', 'basal'),
+    'M_L23_L5ET': (('L23',), 'L5ET', 'S', 'basal'),
+    'M_L23_L5IT': (('L23',), 'L5IT', 'S', 'basal'),
+    'M_L5IT_L5ET': (('L5IT',), 'L5ET', 'S', 'basal'),
+    'M_L5_L6CC': (('L5IT', 'L5ET'), 'L6CC', 'S', 'basal'),
+    'M_L5_L6CT': (('L5IT', 'L5ET'), 'L6CT', 'S', 'basal'),
+    'M_L5ET_L5IT': (('L5ET',), 'L5IT', 'D', 'basal'),
+    'M_L6CC_L23': (('L6CC',), 'L23', 'D', 'basal'),
+    'M_ap_L23': (('L5ET', 'L6CT'), 'L23', 'D', 'apical'),
+    'M_ap_L5ET': (('L6CT', 'L6CC'), 'L5ET', 'D', 'apical'),
+    'M_L6CT_Thal': (('L6CT',), 'Thal', 'S', 'basal'),
+    'M_L6CT_TRN': (('L6CT',), 'TRN', 'S', 'basal'),
+    'M_TRN_Thal': (('TRN',), 'Thal', 'S', 'basal'),
+    'M_Thal_L4': (('Thal',), 'L4', 'D', 'basal'),
+}
+# The edges whose endpoints CorticalColumnCell can move for cncp_random: the
+# delayed basal edges, each one a plain (source -> target) read of the previous
+# state added to the target's basal drive.
+DELAYED_BASAL = {name: (srcs[0], dst) for name, (srcs, dst, delay, role)
+                 in _GROUP_EDGES.items()
+                 if delay == 'D' and role == 'basal' and len(srcs) == 1}
+
+
+def group_edges(sign_constraint=True):
+    """The group edge slots of the default graph for ``rewire_group_edges``:
+    ``(blocks, kinds)`` with blocks = [(edge class, source group, target
+    group)] and kinds = [(delay, role, sign)], one per source group of a class.
+    The sign-locked TRN -> Thal edge is the only negative one."""
+    blocks, kinds = [], []
+    for name, (srcs, dst, delay, role) in _GROUP_EDGES.items():
+        sign = '-' if name == 'M_TRN_Thal' and sign_constraint else '+'
+        blocks += [(name, src, dst) for src in srcs]
+        kinds += [(delay, role, sign)] * len(srcs)
+    return blocks, kinds
 
 # Edges that exist only in the full (recurrent) wiring. The feedforward
 # reduction (spec 7.1, the cncp_ff control) removes every feedback, apical and
@@ -264,6 +312,19 @@ class CorticalColumnCell(BaseCell):
         dt:                  default elapsed time for regularly sampled mode.
         timescale_prior:     None (default), 'cortical' or a node->factor
                              dict scaling each node's elapsed time.
+        rewire:              the ``cncp_random`` null model (issue #17): the
+                             default graph after a degree-preserving swap of
+                             edge targets on the node-group level
+                             (``rewire_group_edges``). Edges keep their delay
+                             type, role and sign, and every edge keeps its
+                             mask, so the weights, their initial values and the
+                             effective parameter count equal the plain cNCP of
+                             the same seed. Same-step edges stay forward in
+                             pass order. Only the delayed basal edges can move
+                             (DELAYED_BASAL): in the default graph the one
+                             admissible swap exchanges the targets of
+                             M_L6CC_L23 and M_Thal_L4. Defined for the default
+                             graph only; raises when no swap is admissible.
         **cell_kwargs:       forwarded to every sub-cell constructor (after
                              ncp_cell_kwargs applied the family defaults).
     """
@@ -272,7 +333,7 @@ class CorticalColumnCell(BaseCell):
                  seed=42, combiner='multiplicative', divisive_inhibition=False,
                  sign_constraint=True, feedforward_only=False,
                  sensory_route='direct', gain_init=0.01, dt=1.0,
-                 timescale_prior=None, **cell_kwargs):
+                 timescale_prior=None, rewire=False, **cell_kwargs):
         if combiner not in ('multiplicative', 'additive'):
             raise ValueError(
                 "combiner must be 'multiplicative' or 'additive', "
@@ -291,6 +352,12 @@ class CorticalColumnCell(BaseCell):
                 "sensory_route='thalamic' requires the recurrent wiring: the "
                 "feedforward reduction has no relay nodes to route the input "
                 "through. Disable one of the two options.")
+        if rewire and (combiner != 'multiplicative' or feedforward_only
+                       or divisive_inhibition or sensory_route != 'direct'):
+            raise ValueError(
+                "rewire is defined for the default graph (multiplicative "
+                "combiner, direct route, no feedforward reduction, no "
+                "divisive term).")
         if 'units' in cell_kwargs:
             raise ValueError(
                 "Sub-cell units are set per node via lamina_units; "
@@ -345,6 +412,41 @@ class CorticalColumnCell(BaseCell):
         # rescaling with dead parameters, so it is not built there.
         self._use_gain = (combiner == 'multiplicative'
                           and not feedforward_only)
+        # (edge, source group, target group) of the delayed basal edges; the
+        # plain graph, or the rewired one for cncp_random.
+        self._delayed = tuple((name, *ends)
+                              for name, ends in DELAYED_BASAL.items())
+        self.rewire_overlap = None
+        if rewire:
+            self._rewire_delayed_edges()
+
+    def _rewire_delayed_edges(self):
+        """Run the group-level swap chain and apply it to the delayed edges."""
+        blocks, kinds = group_edges(self._sign_constraint)
+        new, overlap = rewire_group_edges(
+            [(src, dst) for _, src, dst in blocks], kinds,
+            {**self._units, 'in': None},
+            {g: i for i, g in enumerate(_PASS_ORDER)}, self._seed,
+            SWAPS_PER_EDGE * len(blocks))
+        if overlap == 1.0:
+            raise ValueError(
+                "cncp_random: no degree-, sign-, delay- and shape-preserving "
+                f"swap is admissible for the node widths {self._units}.")
+        moved = {name: ends for (name, *old), ends in zip(blocks, new)
+                 if tuple(old) != ends}
+        if not set(moved) <= set(DELAYED_BASAL):
+            raise NotImplementedError(
+                f"cncp_random moved {sorted(set(moved) - set(DELAYED_BASAL))}; "
+                "only the delayed basal edges can be retargeted.")
+        self._delayed = tuple((name, *moved.get(name, ends))
+                              for name, ends in DELAYED_BASAL.items())
+        self.rewire_overlap = overlap
+
+    def _delayed_drive(self, node, prev):
+        """Delayed basal edges ending at ``node``, read from the previous
+        states ``prev`` (node -> state)."""
+        return [self.edges[name](prev[src])
+                for name, src, dst in self._delayed if dst == node]
 
     @property
     def state_size(self):
@@ -560,6 +662,7 @@ class CorticalColumnCell(BaseCell):
 
         # Positional unpack of the previous step's state list (NODE_ORDER).
         p_l4, p_l23, p_l5it, p_l5et, p_l6cc, p_l6ct, p_thal, p_trn = states
+        prev = dict(zip(NODE_ORDER, states))
         e = self.edges
         ff = self._feedforward_only
 
@@ -575,7 +678,8 @@ class CorticalColumnCell(BaseCell):
             # reads the previous step's Thal state).
             basal_l4 = e['M_in_L4'](x)
             if not ff:
-                basal_l4 = basal_l4 + e['M_Thal_L4'](p_thal)
+                for drive in self._delayed_drive('L4', prev):
+                    basal_l4 = basal_l4 + drive
         if self._divisive_inhibition:
             basal_l4 = basal_l4 / (
                 1.0 + tf.nn.softplus(e['M_L6CT_div_L4'](p_l6ct)))
@@ -585,7 +689,8 @@ class CorticalColumnCell(BaseCell):
         # 2. integration node, with optional top-down multiplicative gain.
         basal_l23 = e['M_L4_L23'](h_l4)
         if not ff:
-            basal_l23 = basal_l23 + e['M_L6CC_L23'](p_l6cc)
+            for drive in self._delayed_drive('L23', prev):
+                basal_l23 = basal_l23 + drive
         h_l23, _ = self.subcells['L23']((basal_l23, et('L23')), [p_l23])
         if self._use_gain:
             apical_l23 = e['M_ap_L23'](tf.concat([p_l5et, p_l6ct], axis=-1))
@@ -594,7 +699,8 @@ class CorticalColumnCell(BaseCell):
         # 3. intracortical relay node (ET->IT feedback is delayed).
         basal_l5it = e['M_L23_L5IT'](h_l23)
         if not ff:
-            basal_l5it = basal_l5it + e['M_L5ET_L5IT'](p_l5et)
+            for drive in self._delayed_drive('L5IT', prev):
+                basal_l5it = basal_l5it + drive
         h_l5it, _ = self.subcells['L5IT']((basal_l5it, et('L5IT')),
                                           [p_l5it])
 
