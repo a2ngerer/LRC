@@ -1,0 +1,95 @@
+"""Per-fit weight checkpoints of the sequence runners (LV, PA, committee).
+
+Every fit writes ``<stem>.weights.h5`` next to its result ``<stem>.json``; the
+JSON carries ``weights_path`` (relative to the JSON's folder, so a fetched run
+folder stays loadable) and ``config.effective``:
+
+    task         'lotka_volterra' | 'person_activity' | 'committee' (BUILDERS key)
+    build        keyword arguments of that task builder, as the runner called it
+    cell_kwargs  forwarded to the cell constructors
+    ...          context the builder does not take (param budget, effective
+                 backbone depth, LV system and data size, committee views)
+
+so post-hoc analyses rebuild the trained model without a refit. Since #53
+config.effective also carries protocol_version (PROTOCOL_VERSION) and
+config_hash (see stamp_protocol).
+
+Records written before the NCP self-recurrence flag (#23) lack
+build.self_recurrent: their NCP had none (self_recurrent=False), and as the
+closed-form backbone default changed in between, their CfC depth is taken
+from config.effective.backbone_layers (the depth the fit actually had).
+"""
+import hashlib
+import json
+import os
+
+import tensorflow as tf
+
+from src.tasks.committee.model import build_committee_model
+from src.tasks.lotka_volterra.model import build_lotka_volterra_model
+from src.tasks.person_activity.model import (backbone_override,
+                                             build_person_activity_model)
+
+# The frozen final-suite protocol (protocol freeze F1-2026-10-26), stamped into
+# every config.effective and wandb run. Every change of the frozen protocol
+# after the smoke stage (S0) is a new version string here.
+PROTOCOL_VERSION = "F1-2026-10-26"
+
+BUILDERS = {"lotka_volterra": build_lotka_volterra_model,
+            "person_activity": build_person_activity_model,
+            "committee": build_committee_model}
+
+
+def _layers_only(model):
+    # An uncompiled view on the same layers: the file then holds the layer
+    # weights only, no optimizer slots or metric state (issue #18 decision).
+    return tf.keras.Model(model.inputs, model.outputs)
+
+
+def save_weights(model, json_path, enabled=True):
+    """Write ``<stem>.weights.h5`` next to ``json_path``; return its file name
+    (the JSON's ``weights_path``), or None when disabled (--no-save-weights)."""
+    if not enabled:
+        return None
+    path = json_path[:-len(".json")] + ".weights.h5"
+    _layers_only(model).save_weights(path)
+    return os.path.basename(path)
+
+
+def rebuild_from_result(json_path, **cell_overrides) -> tf.keras.Model:
+    """Rebuild the compiled model of a result JSON and load its trained weights.
+
+    ``cell_overrides`` replace cell_kwargs entries that create no weights,
+    e.g. ``ode_unfolds=k`` to re-run trained solver weights at k substeps."""
+    with open(json_path) as f:
+        record = json.load(f)
+    eff = record["config"]["effective"]
+    build, cell_kwargs = dict(eff["build"]), dict(eff["cell_kwargs"])
+    if (eff["task"] in ("lotka_volterra", "person_activity")
+            and "self_recurrent" not in build):                 # pre-#23 fit
+        build["self_recurrent"] = False
+        if "backbone_layers" not in cell_kwargs:
+            cell_kwargs.update(backbone_override(
+                build["cell"], eff.get("backbone_layers")))
+    cell_kwargs.update(cell_overrides)
+    model = BUILDERS[eff["task"]](**build, **cell_kwargs)
+    _layers_only(model).load_weights(
+        os.path.join(os.path.dirname(json_path), record["weights_path"]))
+    return model
+
+
+def config_hash(effective) -> str:
+    """sha256 of ``config.effective`` as canonical JSON (sorted keys, no
+    whitespace), its own ``config_hash`` key left out: post-hoc outputs store
+    it to name the exact config they were computed from. config.effective holds
+    no paths or timestamps (weights_path, timestamp and hostname live outside
+    it), so the hash is the same on every machine and rerun."""
+    rest = {k: v for k, v in effective.items() if k != "config_hash"}
+    return hashlib.sha256(json.dumps(rest, sort_keys=True,
+                                     separators=(",", ":")).encode()).hexdigest()
+
+
+def stamp_protocol(effective) -> dict:
+    """``effective`` plus protocol_version and its config_hash (#53)."""
+    effective = {**effective, "protocol_version": PROTOCOL_VERSION}
+    return {**effective, "config_hash": config_hash(effective)}

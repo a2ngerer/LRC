@@ -1,0 +1,17 @@
+# Control (F1-2026-10-26 h; #71, descriptive): cfc_lrc/ncp on Lotka-Volterra
+# with dt_scale 1 instead of 1/dt, 3 seeds, no HPO: lr/clip from cfc_lrc/ncp's
+# hpo_selection.json of the lv-hpo run. Its own run folder (same result names
+# as the main arm). Not part of the frozen per-task counts.
+#   ./cluster/submit_suite.sh configs/suite/control_lv_dt_scale1.yaml lv-dt1
+task: lv
+stage: final
+cells: [cfc_lrc]
+wirings: [ncp]
+param_budget: 4000
+seeds: [0, 1, 2]
+epochs: 300
+ode_unfolds: 6
+dt_scale: 1
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: results/01_lotka_volterra/<lv-hpo run>/results/hpo
+cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

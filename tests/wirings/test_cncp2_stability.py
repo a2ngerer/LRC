@@ -19,7 +19,10 @@ from src.tasks.lotka_volterra import (build_lotka_volterra_model,
                                       load_lotka_volterra)
 from src.tasks.person_activity import build_person_activity_model
 
-_ASYM = dict(elastance_type='asymmetric')
+# R6 was specified and measured on backbone-free sub-cells (spec B.5); since
+# issue #21 the default is one backbone layer, so the sizes and xfail sets
+# below hold for an explicit backbone_layers=0.
+_ASYM = dict(elastance_type='asymmetric', backbone_layers=0)
 STEPS = 128
 SEEDS = range(5)
 SCALES = (0.1, 1.0, 10.0)

@@ -391,15 +391,16 @@ def test_dense_edges_have_all_ones_masks():
 # --- revision 2026-10-04: sub-cell defaults shared with the NCP layers ---
 
 @pytest.mark.parametrize('neuron_type,kwargs', [('cfc_lrc', _ASYM), ('cfc', {})])
-def test_cfc_subcells_have_no_backbone_by_default(neuron_type, kwargs):
-    """CfC-family sub-cells follow the NCP rule (ncp_cell_kwargs): no backbone,
-    the heads act on [x, h] directly. An explicit backbone_layers wins."""
+def test_cfc_subcells_follow_the_ncp_backbone_rule(neuron_type, kwargs):
+    """CfC-family sub-cells follow the NCP rule (ncp_cell_kwargs): one backbone
+    layer by default (issue #21). An explicit backbone_layers wins; 0 gives
+    the ncps WiredCfCCell form, the heads acting on [x, h] directly."""
     cell = CorticalColumnCell(neuron_type, **kwargs)
     cell.build((None, 3))
-    assert all(sub._backbone == [] for sub in cell.subcells.values())
-    explicit = CorticalColumnCell(neuron_type, backbone_layers=1, **kwargs)
+    assert all(len(sub._backbone) == 1 for sub in cell.subcells.values())
+    explicit = CorticalColumnCell(neuron_type, backbone_layers=0, **kwargs)
     explicit.build((None, 3))
-    assert all(len(sub._backbone) == 1 for sub in explicit.subcells.values())
+    assert all(sub._backbone == [] for sub in explicit.subcells.values())
 
 
 def test_non_cfc_subcells_unaffected_by_the_backbone_rule():

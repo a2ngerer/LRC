@@ -1,0 +1,18 @@
+# Control (F1-2026-10-26 a; #71, descriptive): lrc/ncp on Duffing with
+# ode_unfolds 1 instead of 6, 5 seeds, no HPO: lr/clip from lrc/ncp's (k = 6)
+# hpo_selection.json of the duffing-hpo run. Its own run folder (same result
+# names as the main arm). Not part of the frozen per-task counts.
+#   ./cluster/submit_suite.sh configs/suite/control_duffing_k1.yaml duffing-k1
+task: lv
+system: duffing
+stage: final
+cells: [lrc]
+wirings: [ncp]
+param_budget: 4000
+seeds: [0, 1, 2, 3, 4]
+epochs: 450
+ode_unfolds: 1
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: results/02_duffing/<duffing-hpo run>/results/hpo
+cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

@@ -8,6 +8,10 @@
 # its recurrent part (so continuous-time cells integrate the true elapsed
 # time, in every layer), and ends in the SAME Dense(num_classes) logits head
 # with output (B, T, num_classes). Only the wiring in between differs.
+# Discrete cells (DISCRETE_CELLS) discard the time input, so by default they
+# get the same elapsed-time tensor concatenated to their feature input instead
+# (dt_feature, issue #27). The builders multiply the time input by dt_scale
+# before it reaches any cell or the dt feature (task-level time unit, issue #28).
 #
 # Capacity: the arms are compared at the same EFFECTIVE parameter budget
 # (masked-off weights excluded, src/wirings/ncp.py::effective_param_count).
@@ -16,15 +20,19 @@
 # does NOT give comparable capacity (at size 64 with cfc_lrc the four arms
 # differ by more than a factor of four in effective parameters).
 
+import inspect
+import math
 import warnings
 
 import tensorflow as tf
 
+from src.neurons import (CTRNN_Cell, LRC_Cell, LTC_Cell, MLP_Cell,
+                         MM_LRC_Cell, MM_LTC_Cell)
 from src.neurons.base_cell import BaseCell
 from src.wirings import (CorticalColumnCell, CorticalColumnV2Cell, NCPWiring,
                          PARTITIONS, COUPLINGS, READOUTS, multi_column_head)
 from src.wirings.cncp import DEFAULT_LAMINA_UNITS
-from src.wirings.ncp import CFC_NCP_CELLS, ncp_cell_kwargs
+from src.wirings.ncp import BUDGET_SIZES, CFC_NCP_CELLS, ncp_cell_kwargs
 
 # dense:  one recurrent layer (reference)
 # dense3: three stacked recurrent layers, elapsed time fed to every layer -- the
@@ -53,11 +61,63 @@ MULTI_COLUMN_DEFAULTS = dict(columns=2, partition="same", coupling="lateral")
 _LAMINA_REFERENCE_SIZE = 16
 DENSE3_LAYERS = 3
 
+# Discrete-time cells: they ignore the elapsed time of the (x, dt) input tuple.
+DISCRETE_CELLS = ("lstm", "gru")
 
-def scaled_lamina_units(size):
-    """Per-node cNCP widths scaled by size / 16 (see comment above)."""
+# Numerical ODE cells: explicit Euler sub-steps per input step (ode_unfolds).
+# ltc, lrc (and its LRC_Cell variants such as lrc_pm), ctrnn, mm_ltc, mm_lrc;
+# the cfc_mm_* inner cells are closed-form and take no sub-steps (issue #28).
+# The LV / PA runners pass --ode-unfolds (default DEFAULT_ODE_UNFOLDS) to these
+# cells on every wiring, so ctrnn integrates like lrc (issue #56).
+ODE_UNFOLD_CELLS = (LTC_Cell, LRC_Cell, CTRNN_Cell, MM_LTC_Cell, MM_LRC_Cell)
+DEFAULT_ODE_UNFOLDS = 6
+
+
+def _lamina_units_at(size):
     return {node: max(1, round(units * size / _LAMINA_REFERENCE_SIZE))
             for node, units in DEFAULT_LAMINA_UNITS.items()}
+
+
+def scaled_lamina_units(size):
+    """Per-node cNCP widths scaled by size / 16 (see comment above).
+
+    A fractional size n + f is the finer budget knob (#59): of the k nodes
+    that grow between the integer sizes n and n + 1, the first floor(f * k)
+    in DEFAULT_LAMINA_UNITS order already take their size-(n + 1) width. A
+    uniform scale cannot do this, since the three 8-unit nodes always grow
+    together. Integer sizes are unchanged.
+    """
+    n = math.floor(size)
+    units = _lamina_units_at(n)
+    if size == n:
+        return units
+    nxt = _lamina_units_at(n + 1)
+    grow = [node for node in units if nxt[node] != units[node]]
+    for node in grow[:math.floor((size - n) * len(grow))]:
+        units[node] = nxt[node]
+    return units
+
+
+def lamina_sizes(sizes=BUDGET_SIZES):
+    """Every distinct cNCP width configuration over the integer ``sizes``:
+    each integer n plus one eighth-step size per node that grows between n
+    and n + 1 (at most eight nodes, so floor(f * k) hits every count), for
+    the ``size_for_budget`` scan."""
+    out = []
+    for n in sizes:
+        k = sum(a != b for a, b in zip(_lamina_units_at(n).values(),
+                                       _lamina_units_at(n + 1).values()))
+        out += [n] + [n + math.ceil(i * 8 / k) / 8 for i in range(1, k)]
+    return out
+
+
+def budget_sizes(wiring):
+    """The ``size_for_budget`` scan of one arm: the finer lamina knob for the
+    wirings built from scaled_lamina_units (cncp, tbt_cncp*), else every
+    integer size in BUDGET_SIZES."""
+    if wiring == "cncp" or wiring.startswith("tbt_"):
+        return lamina_sizes()
+    return BUDGET_SIZES
 
 
 def ncp_layer_sizes(size):
@@ -104,13 +164,30 @@ def _reject_multi_state(cell_cls, cell_kwargs):
             "the composite state; run them on dense, dense3 or ncp.")
 
 
+def _reject_stateless(cell_cls, wiring):
+    """Fail fast on the stateless mlp control (issue #60) for any wiring but
+    'dense': the other wirings exist to compare recurrent topologies, which a
+    memoryless cell does not have."""
+    if issubclass(cell_cls, MLP_Cell) and wiring != "dense":
+        raise ValueError(
+            f"cell mlp is the stateless control of the 'dense' wiring; "
+            f"wiring {wiring!r} is not supported.")
+
+
+def dt_feature_applies(cell, dt_feature=True):
+    """True when the builder concatenates dt to the feature input: the flag is
+    on and the cell is discrete (continuous-time cells already integrate dt)."""
+    discrete = tuple(_resolve_cell_cls(c) for c in DISCRETE_CELLS)
+    return bool(dt_feature) and issubclass(_resolve_cell_cls(cell), discrete)
+
+
 def backbone_override(cell, backbone_layers):
     """cell_kwargs entry for the runners' --backbone-layers flag.
 
     ``{}`` when the flag is unset (every default unchanged) or when the cell has
     no backbone (gru, lstm, ltc, lrc, ... would reject the kwarg). Otherwise
     ``{'backbone_layers': N}``: ncp/cncp honour it through ``ncp_cell_kwargs``
-    (explicit value wins over the family default 0), dense/dense3/committee
+    (explicit value wins over the family default 1), dense/dense3/committee
     cells override the CfC constructor default of 1.
     """
     if backbone_layers is None:
@@ -126,7 +203,7 @@ def effective_backbone_layers(wiring, cell, cell_kwargs):
     """Backbone depth each sub-cell of this arm actually gets (None: no backbone).
 
     dense/dense3 take the cell constructor default (1) unless overridden; every
-    other wiring goes through ncp_cell_kwargs (family default 0, explicit wins).
+    other wiring goes through ncp_cell_kwargs (family default 1, explicit wins).
     """
     cell_cls = _resolve_cell_cls(cell)
     if not issubclass(cell_cls, CFC_NCP_CELLS):
@@ -136,9 +213,76 @@ def effective_backbone_layers(wiring, cell, cell_kwargs):
     return ncp_cell_kwargs(cell_cls, cell_kwargs)["backbone_layers"]
 
 
+def effective_self_recurrent(wiring, cell, self_recurrent=True):
+    """Diagonal NCP self-recurrence this arm actually gets (None: not
+    applicable). Only the closed-form sub-cells under 'ncp' have it (issue #23,
+    NCPLayeredCell); the runners' --no-self-recurrence passes False."""
+    if wiring != "ncp" or not issubclass(_resolve_cell_cls(cell), CFC_NCP_CELLS):
+        return None
+    return bool(self_recurrent)
+
+
 def backbone_suffix(backbone_layers):
     """Result-filename suffix: '' when unset, '_bb{N}' otherwise."""
     return "" if backbone_layers is None else f"_bb{backbone_layers}"
+
+
+def ode_unfolds_override(cell, ode_unfolds):
+    """cell_kwargs entry for the runners' --ode-unfolds flag.
+
+    ``{'ode_unfolds': N}`` for the numerical ODE cells (ODE_UNFOLD_CELLS),
+    ``{}`` for closed-form and discrete cells, which would reject the kwarg.
+    """
+    if ode_unfolds < 1:
+        raise ValueError(f"ode_unfolds must be >= 1, got {ode_unfolds}")
+    if not issubclass(_resolve_cell_cls(cell), ODE_UNFOLD_CELLS):
+        return {}
+    return {"ode_unfolds": int(ode_unfolds)}
+
+
+def dt_scale_arg(value):
+    """argparse type of the runners' --dt-scale: a float, or 'auto' for the
+    protocol value 1 / dt of the task (resolve_dt_scale)."""
+    return value if value == "auto" else float(value)
+
+
+def resolve_dt_scale(dt_scale, dt):
+    """Numeric dt_scale of a run: 'auto' -> 1 / dt, with dt the task's own
+    step (protocol freeze F1-2026-10-26): the rollout grid step (128 steps:
+    12.8 Lotka-Volterra on (0, 10), 5.12 Duffing on (0, 25), 12.8
+    multitimescale_lib on (0, 10)) or the median elapsed time of the Person
+    Activity train split. A number passes through."""
+    if dt_scale != "auto":
+        return float(dt_scale)
+    if not dt > 0:
+        raise ValueError(f"dt_scale auto needs a positive dt, got {dt}")
+    return 1.0 / float(dt)
+
+
+def effective_ode_unfolds(cell, cell_kwargs):
+    """Euler sub-steps per input step this arm's cells actually run (None:
+    closed-form or discrete cell). An explicit cell_kwargs value wins, else the
+    cell constructor default (mm_* take their inner cell's)."""
+    cell_cls = _resolve_cell_cls(cell)
+    if not issubclass(cell_cls, ODE_UNFOLD_CELLS):
+        return None
+    if "ode_unfolds" in cell_kwargs:
+        return int(cell_kwargs["ode_unfolds"])
+    cell_cls = {MM_LTC_Cell: LTC_Cell,
+                MM_LRC_Cell: LRC_Cell}.get(cell_cls, cell_cls)
+    return inspect.signature(cell_cls).parameters["ode_unfolds"].default
+
+
+def scaled_time(time, dt_scale=1.0):
+    """The elapsed-time tensor the cells receive: time * dt_scale. At the
+    default 1.0 the input itself, so the graph stays unchanged."""
+    if dt_scale <= 0:
+        raise ValueError(f"dt_scale must be > 0, got {dt_scale}")
+    if dt_scale == 1.0:
+        return time
+    return tf.keras.layers.Rescaling(dt_scale, name="dt_scale")(time)
+
+
 def add_multi_column_args(parser):
     """The cncp2_multi flags of the LV and PA runners (default None = unset)."""
     parser.add_argument("--columns", type=int, default=None,
@@ -190,15 +334,19 @@ def multi_column_suffix(cfg):
             f"{cfg['readout']}")
 
 
-def stacked_dense(cell_cls, size, features, time, n_layers=1, **cell_kwargs):
+def stacked_dense(cell_cls, size, features, time, n_layers=1, dt_feature=False,
+                  **cell_kwargs):
     """n_layers stacked recurrent layers of cell_cls(units=size).
 
     Every layer receives the (sequence, time) tuple, so continuous-time cells
     integrate the true elapsed time in every layer (the single-layer 'dense'
-    arm is n_layers=1, the depth control 'dense3' is n_layers=3).
+    arm is n_layers=1, the depth control 'dense3' is n_layers=3). With
+    dt_feature, time is also concatenated to every layer's sequence input.
     """
     h = features
     for _ in range(n_layers):
+        if dt_feature:
+            h = tf.keras.layers.Concatenate()([h, time])
         h = tf.keras.layers.RNN(cell_cls(units=size, **cell_kwargs),
                                 return_sequences=True)((h, time))
     return h
@@ -209,7 +357,9 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
                                 lr=1e-3, timescale_prior=None, columns=MULTI_COLUMN_DEFAULTS["columns"],
                                 partition=MULTI_COLUMN_DEFAULTS["partition"],
                                 coupling=MULTI_COLUMN_DEFAULTS["coupling"],
-                                readout=None, **cell_kwargs):
+                                readout=None, self_recurrent=True,
+                                dt_feature=True, dt_scale=1.0,
+                                **cell_kwargs):
     """Build and compile a person-activity model for one (wiring, cell).
 
     Args:
@@ -218,7 +368,8 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
                       BaseCell subclass; cncp takes single-state cells only.
         size:         the arm's width knob. dense/dense3: RNN units per layer;
                       ncp: inter=size, command=motor=size//2; cncp: lamina
-                      widths scaled by size/16 (see scaled_lamina_units);
+                      widths scaled by size/16, fractional sizes allowed
+                      (see scaled_lamina_units);
                       cncp2 / cncp2_multi: column width u = size.
                       Derive it per arm from the parameter budget
                       (src.wirings.size_for_budget).
@@ -231,7 +382,25 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
         timescale_prior: optional per-lamina timescale prior (cncp only).
         columns, partition, coupling, readout: cncp2_multi only (spec B.7);
                       partition='region' uses the four sensor tags.
-        **cell_kwargs: forwarded to every cell constructor.
+        self_recurrent: ncp only, see NCPWiring (issue #23).
+        dt_feature:   discrete cells (DISCRETE_CELLS) only: concatenate the
+                      time input (the tensor the continuous-time cells
+                      integrate, after dt_scale) to the features of every
+                      layer that receives them -- each dense3 layer, the
+                      input of every other wiring. No-op for continuous-time
+                      cells.
+        dt_scale:     multiplies the time input before it reaches any cell
+                      and the dt feature (task-level time unit, issue #28);
+                      1.0 adds no layer.
+        **cell_kwargs: forwarded to every cell constructor. ode_unfolds
+                      (solver cells, ODE_UNFOLD_CELLS: ltc, lrc, ctrnn, mm_*)
+                      is the number of Euler sub-steps per input step; the
+                      LV and PA runners pass --ode-unfolds (default
+                      DEFAULT_ODE_UNFOLDS = 6) on every wiring (dense,
+                      dense3, ncp, cncp, ...).
+                      Under 'ncp' fewer than 3 never let the motor slice see
+                      the current input. Unset, the constructor default
+                      applies (ltc 6; lrc, ctrnn 1).
 
     Returns:
         Compiled tf.keras.Model with inputs [features (B, seq_len,
@@ -242,6 +411,7 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
     if wiring not in WIRINGS:
         raise ValueError(f"wiring must be one of {WIRINGS}, got {wiring!r}")
     cell_cls = _resolve_cell_cls(cell)
+    _reject_stateless(cell_cls, wiring)
     if wiring in COMPOSITE_WIRINGS:
         _reject_multi_state(cell_cls, cell_kwargs)
 
@@ -249,12 +419,17 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
     tf.keras.utils.set_random_seed(seed)
 
     features = tf.keras.Input(shape=(seq_len, feature_size), name="features")
-    time = tf.keras.Input(shape=(seq_len, 1), name="time")
+    time_in = tf.keras.Input(shape=(seq_len, 1), name="time")
+    time = scaled_time(time_in, dt_scale)
+    dt_feature = dt_feature_applies(cell_cls, dt_feature)
+    # dense / dense3 concatenate per layer (stacked_dense).
+    x = (tf.keras.layers.Concatenate()([features, time])
+         if dt_feature and wiring not in ("dense", "dense3") else features)
 
     logits = None
     if wiring == "cncp2_multi":
         logits = multi_column_head(
-            (features, time), num_classes, "logits", columns=columns,
+            (x, time), num_classes, "logits", columns=columns,
             cell_cls=cell_cls, units=size, seed=seed, partition=partition,
             coupling=coupling, readout=readout or default_readout(partition),
             region_tags=PA_SENSOR_TAGS,
@@ -266,26 +441,25 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
         cncp_cell = CorticalColumnCell(
             cell_cls=cell_cls, lamina_units=scaled_lamina_units(size),
             seed=seed, timescale_prior=timescale_prior, **cell_kwargs)
-        h = tf.keras.layers.RNN(cncp_cell, return_sequences=True)(
-            (features, time))
+        h = tf.keras.layers.RNN(cncp_cell, return_sequences=True)((x, time))
     elif wiring == "cncp2":
         col = CorticalColumnV2Cell(cell_cls=cell_cls, units=size, seed=seed,
                                    **cell_kwargs)
-        h = tf.keras.layers.RNN(col, return_sequences=True)((features, time))
+        h = tf.keras.layers.RNN(col, return_sequences=True)((x, time))
     elif wiring == "ncp":
         # One NCP cell: the sparse circuit lives inside a single recurrent
         # cell, so it consumes (features, time) directly and every neuron
         # integrates the true elapsed time (docs/ncp-wiring-fix-2026-09-17.md).
         inter, command, motor = ncp_layer_sizes(size)
         ncp = NCPWiring(cell_cls, inter, command, motor, seed=seed,
-                        **cell_kwargs)
+                        self_recurrent=self_recurrent, **cell_kwargs)
         h = tf.keras.layers.RNN(ncp.make_cell(), return_sequences=True)(
-            (features, time))
+            (x, time))
         h = ncp.motor_slice()(h)
     else:  # dense / dense3
         h = stacked_dense(cell_cls, size, features, time,
                           n_layers=DENSE3_LAYERS if wiring == "dense3" else 1,
-                          **cell_kwargs)
+                          dt_feature=dt_feature, **cell_kwargs)
 
     # Shared per-timestep logits head. A plain Dense on a (B, T, units)
     # tensor applies to the last axis, i.e. it is equivalent to
@@ -293,7 +467,7 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
     if logits is None:
         logits = tf.keras.layers.Dense(num_classes, name="logits")(h)
 
-    model = tf.keras.Model(inputs=[features, time], outputs=logits)
+    model = tf.keras.Model(inputs=[features, time_in], outputs=logits)
     model.compile(
         optimizer=tf.keras.optimizers.RMSprop(lr),
         loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),

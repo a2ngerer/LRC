@@ -134,13 +134,16 @@ def _p1_realised(col, u, f_in):
 def test_effective_params_match_P_K(K, partition, coupling, readout, f_in):
     """effective_param_count == sum over columns + lateral mask + head, which
     is P_K (B.7) evaluated with the realised masks and within a few percent of
-    its expected value."""
+    its expected value. P_K counts backbone-free sub-cells, so
+    backbone_layers=0 is explicit (default 1)."""
     u, n_out = 6, 3
-    model, cell = _model(K, partition, coupling, readout, u=u, n_out=n_out)
+    model, cell = _model(K, partition, coupling, readout, u=u, n_out=n_out,
+                         backbone_layers=0)
     model(_inputs())
     n = effective_param_count(model)
 
-    sub = CfC_LRC_Cell(units=u, **ncp_cell_kwargs(CfC_LRC_Cell, _ASYM))
+    sub = CfC_LRC_Cell(units=u, **ncp_cell_kwargs(
+        CfC_LRC_Cell, dict(_ASYM, backbone_layers=0)))
     sub.build((None, u))
     assert sub.count_params() == 10 * u * u + 5 * u
 

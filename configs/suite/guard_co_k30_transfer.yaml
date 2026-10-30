@@ -1,0 +1,15 @@
+# Consensus study transfer guard (F1-2026-10-26 j, R3 S5; #71): seed 0 of
+# ncp_cons and cncp_cons at K = 30 with the K = 3 selection. These two fits are
+# seeds of co_k30_final.yaml (resume into this run folder, see there), so they
+# are not counted again.
+#   ./cluster/submit_suite.sh configs/suite/guard_co_k30_transfer.yaml co-k30
+task: co
+stage: final
+arms:
+  ncp_cons: {cell: cfc_lrc, wiring: ncp}
+  cncp_cons: {cell: cfc_lrc, wiring: cncp}
+param_budget: 30000
+seeds: [0]
+extra_args: [--n-columns, 30, --backbone-layers, 1, --deterministic]
+hpo_dir: results/04_column_voting/<co-k3-hpo run>/results/hpo
+cluster: {runs_per_gpu: 2, walltime: "06:00:00"}

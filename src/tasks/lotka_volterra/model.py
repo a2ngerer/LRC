@@ -20,11 +20,13 @@ import tensorflow as tf
 from src.wirings import (CorticalColumnCell, CorticalColumnV2Cell, NCPWiring,
                          multi_column_head)
 from src.wirings.tbt_cncp import TbtCorticalColumnCell
+from src.neurons.forced_rollout_cell import ForcedRolloutCell, StackedCell
 from src.tasks.person_activity.model import (
     WIRINGS, COMPOSITE_WIRINGS, DENSE3_LAYERS, MULTI_COLUMN_DEFAULTS,
     default_readout,
     ncp_layer_sizes,
-    scaled_lamina_units, stacked_dense, _resolve_cell_cls, _reject_multi_state)
+    scaled_lamina_units, scaled_time, stacked_dense, _resolve_cell_cls,
+    _reject_multi_state, _reject_stateless)
 from src.tasks.active_sensing.model import TBT_MODES
 
 # The Lotka-Volterra / duffing trajectory task compares the thesis-core topology
@@ -36,13 +38,19 @@ from src.tasks.active_sensing.model import TBT_MODES
 #   tbt_cncp        gate-only     tbt_cncp_concat  concat-only (strongest arm)
 #   tbt_cncp_noloc  no location   tbt_cncp_both    gate + concat
 LV_WIRINGS = WIRINGS + tuple(TBT_MODES)
+# Wirings whose model is (state, time) -> RNN layer(s) -> [motor slice] -> Dense
+# head and can therefore be wrapped in a ForcedRolloutCell (issue #25). The
+# tbt_cncp* arms recompute the location code from the state and cncp2_multi has
+# its own multi-column head; both keep closed_loop_rollout.
+FORCEABLE_WIRINGS = ("dense", "dense3", "ncp", "cncp", "cncp2")
 
 
 def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
                                loc_dim=12, lr=1e-3, columns=MULTI_COLUMN_DEFAULTS["columns"],
                                partition=MULTI_COLUMN_DEFAULTS["partition"],
                                coupling=MULTI_COLUMN_DEFAULTS["coupling"],
-                               readout=None, **cell_kwargs):
+                               readout=None, self_recurrent=True, dt_scale=1.0,
+                               **cell_kwargs):
     """Build and compile a next-step trajectory model for one (wiring, cell).
 
     Args:
@@ -52,7 +60,8 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
                       (3-input, with the phase-space location signal).
         cell:         _CELL_REGISTRY key (e.g. 'cfc_lrc', 'gru', 'lstm') or
                       BaseCell subclass; the composite wirings (cncp, tbt_cncp*)
-                      take single-state cells only.
+                      take single-state cells only, the stateless control
+                      'mlp' runs on 'dense' only (issue #60).
         size:         the arm's width knob. dense/dense3: RNN units per layer;
                       ncp: inter=size, command=motor=size//2; cncp/tbt: lamina
                       widths scaled by size/16 (person_activity.
@@ -69,7 +78,18 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
         columns, partition, coupling, readout: cncp2_multi only (spec B.7);
                       the 2-D state has no sensor structure, so
                       partition='region' splits the state axis (warning).
-        **cell_kwargs: forwarded to every cell constructor.
+        self_recurrent: ncp only, see NCPWiring (issue #23).
+        dt_scale:     multiplies the time input before it reaches any cell
+                      (task-level time unit, issue #28); 1.0 adds no layer.
+        **cell_kwargs: forwarded to every cell constructor. ode_unfolds
+                      (solver cells, ODE_UNFOLD_CELLS: ltc, lrc, ctrnn, mm_*)
+                      is the number of Euler sub-steps per input step; the
+                      LV and PA runners pass --ode-unfolds (default
+                      DEFAULT_ODE_UNFOLDS = 6) on every wiring (dense,
+                      dense3, ncp, cncp, ...).
+                      Under 'ncp' fewer than 3 never let the motor slice see
+                      the current input. Unset, the constructor default
+                      applies (ltc 6; lrc, ctrnn 1).
 
     Returns:
         Compiled tf.keras.Model. Inputs are [state (B,None,feature_size),
@@ -81,13 +101,15 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
     if wiring not in LV_WIRINGS:
         raise ValueError(f"wiring must be one of {LV_WIRINGS}, got {wiring!r}")
     cell_cls = _resolve_cell_cls(cell)
+    _reject_stateless(cell_cls, wiring)
     if wiring in COMPOSITE_WIRINGS or wiring in TBT_MODES:
         _reject_multi_state(cell_cls, cell_kwargs)
 
     tf.keras.utils.set_random_seed(seed)
 
     state = tf.keras.Input(shape=(None, feature_size), name="state")
-    time = tf.keras.Input(shape=(None, 1), name="time")
+    time_in = tf.keras.Input(shape=(None, 1), name="time")
+    time = scaled_time(time_in, dt_scale)
 
     if wiring in TBT_MODES:
         concat_loc, use_gate = TBT_MODES[wiring]
@@ -99,19 +121,19 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
             seed=seed, use_location=use_gate, **cell_kwargs)
         h = tf.keras.layers.RNN(tbt_cell, return_sequences=True)(
             (feats, time, location))
-        inputs = [state, time, location]
+        inputs = [state, time_in, location]
     elif wiring == "cncp":
         cncp_cell = CorticalColumnCell(
             cell_cls=cell_cls, lamina_units=scaled_lamina_units(size),
             seed=seed, **cell_kwargs)
         h = tf.keras.layers.RNN(cncp_cell, return_sequences=True)(
             (state, time))
-        inputs = [state, time]
+        inputs = [state, time_in]
     elif wiring == "cncp2":
         col = CorticalColumnV2Cell(cell_cls=cell_cls, units=size, seed=seed,
                                    **cell_kwargs)
         h = tf.keras.layers.RNN(col, return_sequences=True)((state, time))
-        inputs = [state, time]
+        inputs = [state, time_in]
     elif wiring == "cncp2_multi":
         h = None                                    # head built below
         next_state = multi_column_head(
@@ -119,20 +141,20 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
             cell_cls=cell_cls, units=size, seed=seed, partition=partition,
             coupling=coupling, readout=readout or default_readout(partition),
             **cell_kwargs)
-        inputs = [state, time]
+        inputs = [state, time_in]
     elif wiring == "ncp":
         inter, command, motor = ncp_layer_sizes(size)
         ncp = NCPWiring(cell_cls, inter, command, motor, seed=seed,
-                        **cell_kwargs)
+                        self_recurrent=self_recurrent, **cell_kwargs)
         h = tf.keras.layers.RNN(ncp.make_cell(), return_sequences=True)(
             (state, time))
         h = ncp.motor_slice()(h)
-        inputs = [state, time]
+        inputs = [state, time_in]
     else:  # dense / dense3
         h = stacked_dense(cell_cls, size, state, time,
                           n_layers=DENSE3_LAYERS if wiring == "dense3" else 1,
                           **cell_kwargs)
-        inputs = [state, time]
+        inputs = [state, time_in]
 
     # Linear regression head: predict the next (prey, predator) state. A plain
     # Dense on (B, T, units) applies to the last axis == TimeDistributed here.
@@ -146,3 +168,44 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
         metrics=[tf.keras.metrics.MeanAbsoluteError()],
     )
     return model
+
+
+def forced_rollout_model(model, alpha=None):
+    """Mixed-forcing view of a plain model from build_lotka_volterra_model.
+
+    The view runs the model's own recurrent core (dense3: its three RNN
+    layers as one StackedCell) and readout (ncp: motor slice + head) inside a
+    ForcedRolloutCell, so it shares every weight with ``model`` and adds none.
+    Same inputs [state, time] and output as the plain model; ``alpha`` (a
+    non-trainable tf.Variable) = 1 reproduces its teacher-forced predictions,
+    0 the closed-loop rollout. Compiled with the plain model's optimizer, loss
+    and metric, so ``--forcing mixed`` trains the view directly.
+
+    ``alpha=None`` gives the anchored view instead: a third input (B, T, 1)
+    holds the per-step forcing weight (ForcedRolloutCell), 1 for the
+    teacher-forced warm-up up to the anchor and 0 for the free run (#62).
+    """
+    rnns = [l for l in model.layers if isinstance(l, tf.keras.layers.RNN)]
+    readout = [l for l in model.layers
+               if l.name in ("motor_neurons", "next_state")]
+    scale = [l for l in model.layers if l.name == "dt_scale"]  # dt_scale != 1
+    if (len(model.inputs) != 2 or not rnns
+            or len(model.layers) != 2 + len(scale) + len(rnns) + len(readout)):
+        raise ValueError("forced_rollout_model needs a (state, time) -> RNN "
+                         f"-> head model, i.e. one of {FORCEABLE_WIRINGS}")
+    core = rnns[0].cell if len(rnns) == 1 else StackedCell(
+        [l.cell for l in rnns])
+    inputs = [tf.keras.Input(shape=t.shape[1:]) for t in model.inputs]
+    state, time = inputs
+    if scale:                       # the plain model's own time rescaling
+        time = scale[0](time)
+    rnn_in = (state, time)
+    if alpha is None:
+        inputs.append(tf.keras.Input(shape=(None, 1), name="force"))
+        rnn_in += (inputs[-1],)
+    out = tf.keras.layers.RNN(ForcedRolloutCell(core, readout, alpha),
+                              return_sequences=True)(rnn_in)
+    view = tf.keras.Model(inputs=inputs, outputs=out)
+    view.compile(optimizer=model.optimizer, loss=model.loss,
+                 metrics=[tf.keras.metrics.MeanAbsoluteError()])
+    return view

@@ -87,6 +87,13 @@ hour on an A40; one timing run locally first is recommended
 With the %8 throttle the full 240-run matrix completes in a few hours of
 wall-clock time without ever exceeding the GPU quota.
 
+The solver cells (`ltc`, `lrc` and its variants, `ctrnn`, `mm_ltc`, `mm_lrc`)
+run `--ode-unfolds` explicit Euler sub-steps per input step (default 6 in the
+Lotka-Volterra and Person Activity runners, on every wiring), so their wall
+time scales with the sub-step count. Since `ctrnn` follows this rule (issue
+#56) instead of its former single step, a `ctrnn` arm under `ncp` takes about
+3x the wall time it used to; size the walltime accordingly.
+
 ## Benchmark v2 (fixed cells)
 
 `./cluster/submit_benchmark_v2.sh` submits the 480-run v2 matrix
@@ -128,6 +135,50 @@ rsync -a datalab:thesis-benchmark/papers/.extracted/ papers/.extracted/
 `sync_to_cluster.sh` currently rsyncs the code tree; extend it to include
 `papers/`, or push them once with `rsync -a papers/ datalab:thesis-benchmark/papers/`.
 
+## Fixed-grid HPO (Chapter 5 protocol)
+
+`./cluster/submit_grid_hpo.sh <label>` submits `experiments/run_grid_hpo.py` for
+ONE (task, cell, wiring) as one job (`cluster/grid_hpo.sbatch`): grid lr
+{1e-4, 1e-3, 3e-3, 1e-2} x clipnorm {off, 1.0} on tuning seed s1, the top 2 on
+s2, the better mean wins; a winner at 1e-4 / 1e-2 extends the grid once by
+3e-5 / 3e-2. The fits run sequentially on one GPU, each into its own folder
+under `results/`, next to `results/hpo_selection.json`; a requeued job reuses
+the finished fits.
+
+Person Activity chance guard (#80): every PA candidate in
+`hpo_selection.json` carries `one_class_macro_f1` (the macro-F1 of always
+predicting the majority class of the validation split, from the loader's
+class counts, so the driver reads the PA data file like the runner) and
+`at_chance` (`val_macro_f1` <= that value + 0.01). When every stage-1
+candidate is at chance, the selection sets `not_learned: true` and names the
+one-class plateau in `reason`; it runs no edge extension and no stage 2 (8
+fits) and keeps the first stage-1 grid point (exact ties in grid order).
+`aggregate_results.py --contrasts` marks a PA contrast `floor_bound` when an
+arm's test macro-F1 lies at most 0.01 above the one-class value of the test
+split (or below it) in more than one of five seeds (decision f's seed rule).
+
+```bash
+GH_TASK=lv GH_CELL=cfc_lrc GH_WIRING=ncp GH_SYSTEM=duffing ./cluster/submit_grid_hpo.sh <label>
+GH_TASK=pa GH_CELL=gru GH_WIRING=ncp ./cluster/submit_grid_hpo.sh --dry-run <label>
+GH_TASK=co GH_CELL=cfc_lrc GH_WIRING=ncp GH_EXTRA="--grid-clip off --n-columns 3 --backbone-layers 1" \
+    ./cluster/submit_grid_hpo.sh <label>
+```
+
+`GH_TASK=co` is the consensus study (committee runner, `04_column_voting`):
+learning rate only with one fixed `--grid-clip`, selection on
+`val_macro_f1_mean`, epoch guard in `hpo_selection.json`
+(`epochs_guard_triggered`, `final_epochs`) and the K=3 -> K=30 transfer check
+`run_grid_hpo.py --transfer-guard <K3 hpo_selection.json> <K30 result JSON>`
+(see the driver docstring).
+
+`GH_TUNING_SEEDS` (default `100 101`, disjoint from the final seeds 0..9;
+`run_grid_hpo.py` refuses seeds in 0..9 without `--allow-seed-overlap`),
+`GH_PARAM_BUDGET` (default 4000 lv / 30000 pa, co) and `GH_EXTRA` (driver flags
+such as `--grid-lr`, `--grid-clip`, and runner flags such as `--epochs`,
+forwarded) are optional. Clipping is on the global gradient norm
+(`optimizer.global_clipnorm`). `run_lotka_volterra_hpo.py`
+(Optuna) is exploratory and not part of the final suite.
+
 ## Run folders (task launchers, since 2026-10-21)
 
 The cluster workspace is one code tree (`CLUSTER_REPO_DIR`, rsync'd with
@@ -154,3 +205,341 @@ by hand afterwards) and the `Outcome` line once the run is evaluated. Fetch with
 `./cluster/fetch_run.sh <NN_benchmark> <run>` (mirrors to
 `results/<NN_benchmark>/<run>/`); the old `fetch_*.sh` are thin wrappers.
 `cluster/test_launchers.sh` checks the dry-run paths offline.
+
+## Dataset (Person Activity)
+
+The Person Activity CSV is not tracked in git. On the cluster it lives inside
+the code tree at `<CLUSTER_REPO_DIR>/data/person/ConfLongDemo_JSI.txt` and is
+not part of the rsync'd tree: `run_rsync` (`cluster/_run.sh`) and
+`sync_to_cluster.sh` pass `--filter='P data/'`, which protects `data/` on the
+cluster from `--delete`. A launch from a checkout without `data/` (a fresh
+worktree) leaves the cluster copy untouched; a checkout that has `data/`
+(e.g. the `data` symlink to the main checkout, followed by `--copy-links`)
+still updates it. `submit_person_activity.sh`, `submit_committee.sh` and
+`submit_grid_hpo.sh` with `GH_TASK=pa|co` check the file with `ssh test -f`
+after the rsync and abort before `sbatch` when it is missing. Copy it once:
+
+```bash
+rsync -a data/person/ datalab:masterarbeit/code/data/person/
+```
+
+## Final suite (manifest-driven arrays)
+
+`./cluster/submit_suite.sh [-n] [--wandb] <config> <label>` submits one campaign
+YAML (`configs/suite/*.yaml`, schema in `experiments/suite_manifest.py`) as SLURM
+arrays into one run folder. `experiments/suite_manifest.py` expands it into one
+manifest line per task: stage `hpo` one `run_grid_hpo.py` call per arm into
+`results/hpo/<cell>_<wiring>/`, stage `final` one fit per (arm, seed) into
+`results/` with the lr and clipnorm of the arm's `hpo_selection.json` under
+`hpo_dir` (the HPO run fetched with `fetch_run.sh`). Each group (`default`, and
+`heavy` for the arms the YAML lists under `heavy:`) is its own array
+`--array=0-(T-1)%8` with its own `runs_per_gpu`, `mem`, `walltime` and `cpus`;
+`cluster/suite_array.sbatch` runs `RUNS_PER_GPU` lines per GPU (`cc_launch_bundle`)
+and writes per-fit logs to `<run>/logs/run-<job>_idx<line>.log`.
+Every campaign sets `ode_unfolds` (6) and `dt_scale` (`auto` = 1 / the task's
+dt: 12.8 Lotka-Volterra, 5.12 Duffing, 1 / the median train dt for Person
+Activity) explicitly; the manifest passes both to every runner call, and the
+runners record the numeric value in `config.effective.dt_scale`.
+
+```bash
+uv run python experiments/suite_manifest.py configs/suite/canary_lv_hpo.yaml --list
+BENCH=00_canary ./cluster/submit_suite.sh -n configs/suite/canary_lv_hpo.yaml suite-canary
+# after a walltime kill: same config into the existing run folder; lines whose
+# result JSON / hpo_selection.json exists are skipped
+./cluster/submit_suite.sh --resume <config> <YYYY-MM-DD_label>
+```
+
+`--wandb` adds `--wandb` to every call; the offline runs land under `<run>/wandb/`
+in project `thesis-benchmarks` with group = the campaign (the YAML stem,
+`SUITE_CAMPAIGN`), job_type = `<task>/<stage>` (`SUITE_STAGE`), run name = the
+result JSON stem and tag `protocol:<protocol_version>` (`src/benchmark/tracking.py`
+`track_fit`). Upload a fetched run folder with
+`./cluster/wandb_sync.sh results/<NN_benchmark>/<run>`. The LV and PA result
+stems carry neither lr nor clip, so in stage hpo the grid points of one arm and
+tuning seed share a run name: split them by `config.lr` / `config.clipnorm` or
+`config.config_hash`.
+
+Every fit stamps `protocol_version` (`PROTOCOL_VERSION` in
+`src/benchmark/checkpoints.py`) and `config_hash` (sha256 of the rest of
+`config.effective`) into `config.effective`. Besides the builder arguments,
+`config.effective` holds the training knobs (epochs, batch size, clipnorm), the
+data draw and, per task, the evaluation knobs (LV: anchors, horizon, theta) and
+the corruption protocol (committee), so two fits that differ in any of them
+differ in `config_hash`. Any change of the frozen protocol after the smoke
+stage S0, including what `config_hash` covers, is a new `PROTOCOL_VERSION`.
+Exceptions that do not bump the version: a key that records a decision
+pre-registered in F1 and taken at S0 (op-determinism, F1 decision l, #76), and
+a change pre-registered in F1 and decided at S1 (the epochs of the S1 epoch
+gate, F1 decision m, #78, #79); both change `config_hash`.
+
+The frozen protocol (F1-2026-10-26, #71) is one hpo and one final YAML per task:
+`configs/suite/{lv,duffing,mt,pa}_{hpo,final}.yaml` and the consensus study
+`co_k3_hpo.yaml`, `co_k3_final.yaml`, `co_k30_final.yaml` (K = 30 after the
+transfer guard `guard_co_k30_transfer.yaml`, resumed into its run folder), plus
+`mt_final_static_w.yaml` and the descriptive controls `control_*.yaml` (own run
+folders: their result names equal those of the main arm). Rollout arms train
+300 epochs and Person Activity 50. The epochs belong to the task: after the S1
+epoch gate (G0-E, F1 decision m) every Duffing and multitimescale_lib campaign
+of S2 and S3 trains 450, the width-matched `mt_final_static_w.yaml` and the
+k = 1 control `control_duffing_k1.yaml` included (#78, #79; a test pins each
+width and control YAML to the epochs of its task's final YAML), so their
+mixed-forcing ramp (`AlphaSchedule`, `epochs // 2`) spans 225 epochs. The S0
+smokes, S1 pilots and canaries keep their epochs. Before a final stage,
+set `hpo_dir` to the fetched HPO run. For lv the manifest adds the multi-anchor
+endpoint (`--anchors 8,16,24,32 --horizon 96`) and the system's `--ic-spread`;
+arms without HPO name their reference under `config_from`; Person Activity runs
+the solver arms on ncp one per GPU (`heavy.arms`). `--count` gives the planned
+fits without any `hpo_selection.json` (an hpo line counts 11 fits, co 6):
+
+```bash
+uv run python experiments/suite_manifest.py --count configs/suite/duffing_*.yaml   # 519
+```
+
+### S0 op-determinism probe (#70)
+
+`./cluster/submit_determinism_probe.sh [-n] <label>` runs
+`experiments/determinism_probe.py` on one GPU into `00_canary`: cfc_lrc/ncp on
+Lotka-Volterra (300 epochs, 4k) and Person Activity (50 epochs, 30k), three fits
+each (`--deterministic` on, on, off), one at a time. It prints the runtime ratio
+on/off and the |Delta| of the validation selection metrics of the two "on" fits
+(must stay within 1e-3; exit 1 otherwise) and writes
+`results/determinism_probe.json`. Extra runner flags via `DP_LV_ARGS` /
+`DP_PA_ARGS` (e.g. `DP_LV_ARGS="--forcing mixed"`). Ratio at most 1.3 on both
+tasks: put `--deterministic` into the suite YAML's `extra_args`; every result
+records the setting as `config.effective.deterministic`.
+
+The first S0 run measured a ratio on/off of 0.997 (Lotka-Volterra) and 1.03
+(Person Activity) with |Delta| 0 on the "on" pair, so the suite campaigns run
+with op-determinism on (#76): every `configs/suite/*.yaml` except the S0 smokes
+carries `--deterministic` in `extra_args`, the committee runner included
+(`run_grid_hpo.py` forwards the flag to the task runner). The smoke YAMLs
+(`smoke_*.yaml`) stay unchanged as the record of the S0 run.
+
+### S0 smoke (#72)
+
+Stage S0 of the frozen protocol smokes every arm-task once before any HPO fit
+is spent: `configs/suite/smoke_{lv,duffing,mt,pa}.yaml` (93 arm-tasks) and the
+consensus smoke `smoke_co.yaml` (the nine K = 3 arms) run each arm of the
+frozen `*_hpo.yaml` (same budget, `ode_unfolds`, `dt_scale`, forcing) for 3
+epochs as one `run_grid_hpo.py` fit: tuning seed 100 only (stage 1), one lr
+(1e-3), clip off. Submit order, all into `00_canary`:
+
+```bash
+uv run python experiments/suite_manifest.py --count configs/suite/smoke_{lv,duffing,mt,pa}.yaml   # 93
+BENCH=00_canary ./cluster/submit_suite.sh configs/suite/smoke_lv.yaml s0-smoke-lv
+BENCH=00_canary ./cluster/submit_suite.sh configs/suite/smoke_duffing.yaml s0-smoke-duffing
+BENCH=00_canary ./cluster/submit_suite.sh configs/suite/smoke_mt.yaml s0-smoke-mt
+BENCH=00_canary ./cluster/submit_suite.sh configs/suite/smoke_pa.yaml s0-smoke-pa
+BENCH=00_canary ./cluster/submit_suite.sh configs/suite/smoke_co.yaml s0-smoke-co
+DP_LV_ARGS="--forcing mixed" ./cluster/submit_determinism_probe.sh s0-determinism
+```
+
+Then fetch the six run folders, write the floor lines of each rollout smoke
+(`--floors` takes the tuning-seed draws for the floor lines, the arm marking
+stays on the final seeds) and run the gate:
+
+```bash
+D=<YYYY-MM-DD>
+for t in lv duffing mt pa co; do ./cluster/fetch_run.sh 00_canary ${D}_s0-smoke-$t; done
+./cluster/fetch_run.sh 00_canary ${D}_s0-determinism
+for t in lv duffing mt; do
+    uv run python experiments/aggregate_results.py --runs none \
+        --out results/00_canary/s0-gate/$t \
+        --rollout-runs results/00_canary/${D}_s0-smoke-$t --floors
+done
+uv run python experiments/suite_gate.py --stage s0 \
+    --runs results/00_canary/${D}_s0-smoke-{lv,duffing,mt,pa,co} \
+    --determinism results/00_canary/${D}_s0-determinism/results/determinism_probe.json \
+    --floors results/00_canary/s0-gate/{lv,duffing,mt}/floors.json \
+    --out results/00_canary/s0-gate/REPORT.md
+```
+
+`suite_gate.py` reads every `results/hpo/<arm>/lr*_clip*_seed*/*.json` below
+the run folders and checks the S0 go criteria: every arm-task of the four
+smoke YAMLs present with one fit; `config.effective` with `ode_unfolds`,
+`dt_scale`, `forcing` and `anchors` (rollouts) and one `protocol_version`, and
+a `weights_path` (a top-level field of the result JSON, not a
+`config.effective` key);
+the rollout keys (`vpt_multi_median`, `vpt_anchor_{8,16,24,32}`,
+`nrmse_32_anchor_8`, outcome rates, `non_finite` false) or the finite primary
+metric (Person Activity, committee); no NaN/Inf (the `inv_drift_*` fields of
+`multitimescale_lib`, and a NaN `rollout_metrics_{val,test}.inv_drift_*` of a
+block with `n_inv_drift_undefined > 0`, i.e. every trajectory undefined, are
+listed, not failed); `budget_above_tolerance` only on
+gru/dense3 and lstm/dense3; `elastance_type` asymmetric on the cells with an
+elastance in the registry (lrc, mm_lrc, cfc_lrc, cfc_lrc_outer, cfc_mm_lrc;
+mm_ltc and cfc_mm_ltc have none);
+`ode_unfolds` 6 on the solver cells; the determinism probe (|Delta| of the "on"
+pair at most 1e-3 on lv and pa; a runtime ratio on/off above 1.3 is reported
+as DECISION "op-determinism off for the suite", a missing or unreadable probe
+file fails as "not measured") and a floor line per system and data seed. The
+report lists every check as PASS, FAIL or DECISION with the offending arms;
+exit 0 only when no check fails. A failed S0 is fixed and repeated.
+
+### S1 pilot (#75)
+
+Stage S1 of the frozen protocol pilots the floors, the epoch counts and the
+consensus protocol with a fixed learning rate before any HPO fit: six campaign
+YAMLs, 61 fits. The finals use `fixed: {lr: 0.001, clipnorm: null}` instead of
+`hpo_dir` (lr 1e-3, clip off, no `hpo_selection.json`) with the budget,
+`ode_unfolds`, `dt_scale` and forcing of the frozen `*_hpo.yaml`:
+`pilot_lv.yaml` and `pilot_duffing.yaml` (cfc_lrc/ncp, gru/ncp, gru/dense3,
+cfc/ncp, lrc/ncp; seeds 0-2, 300 epochs, 15 each), `pilot_mt.yaml` (cfc/ncp,
+cfc_static/ncp, 6), `pilot_pa.yaml` (cfc_lrc/ncp, lrc/ncp, 50 epochs, 6;
+lrc/ncp alone on its GPU, so its `wallclock_s` is the single-fit wall time)
+and the dt_scale control `pilot_lv_dt1.yaml` (cfc_lrc/ncp at `dt_scale: 1`, 3,
+its own run folder). `pilot_co.yaml` is stage 1 of the K = 3 consensus HPO for
+ncp_cons, ncp_lam0, avg_in and aug_mono (tuning seed 100, the default lr grid,
+clip off, 16). Submit order (the longest chains first):
+
+```bash
+uv run python experiments/suite_manifest.py --count configs/suite/pilot_{lv,duffing,mt,pa,lv_dt1,co}.yaml   # 61
+./cluster/submit_suite.sh --wandb configs/suite/pilot_pa.yaml s1-pilot-pa              # 03_person_activity
+./cluster/submit_suite.sh --wandb configs/suite/pilot_co.yaml s1-pilot-co              # 04_column_voting
+./cluster/submit_suite.sh --wandb configs/suite/pilot_lv.yaml s1-pilot-lv              # 01_lotka_volterra
+./cluster/submit_suite.sh --wandb configs/suite/pilot_duffing.yaml s1-pilot-duffing    # 02_duffing
+./cluster/submit_suite.sh --wandb configs/suite/pilot_mt.yaml s1-pilot-mt              # 01_lotka_volterra
+./cluster/submit_suite.sh --wandb configs/suite/pilot_lv_dt1.yaml s1-pilot-lv_dt1      # 01_lotka_volterra
+```
+
+Then fetch the six run folders, write the floor lines of the three rollout
+pilots and run the gate:
+
+```bash
+D=<YYYY-MM-DD>
+./cluster/fetch_run.sh 03_person_activity ${D}_s1-pilot-pa
+./cluster/fetch_run.sh 04_column_voting ${D}_s1-pilot-co
+./cluster/fetch_run.sh 02_duffing ${D}_s1-pilot-duffing
+for t in lv mt lv_dt1; do ./cluster/fetch_run.sh 01_lotka_volterra ${D}_s1-pilot-$t; done
+for t in lv mt; do
+    uv run python experiments/aggregate_results.py --runs none --out results/s1-gate/$t \
+        --rollout-runs results/01_lotka_volterra/${D}_s1-pilot-$t --floors
+done
+uv run python experiments/aggregate_results.py --runs none --out results/s1-gate/duffing \
+    --rollout-runs results/02_duffing/${D}_s1-pilot-duffing --floors
+uv run python experiments/suite_gate.py --stage s1 \
+    --runs results/01_lotka_volterra/${D}_s1-pilot-{lv,mt,lv_dt1} \
+           results/02_duffing/${D}_s1-pilot-duffing \
+           results/03_person_activity/${D}_s1-pilot-pa \
+           results/04_column_voting/${D}_s1-pilot-co \
+    --floors results/s1-gate/{lv,duffing,mt}/floors.json \
+    --out results/s1-gate/REPORT.md
+```
+
+`suite_gate.py --stage s1` reads every fit JSON below the run folders (a
+rollout fit at `dt_scale` 1 is the control), checks that all 61 fits and a
+floor line per rollout data seed are present and that every fit ran with
+op-determinism (`config.effective.deterministic` true), and evaluates the S1
+go criteria with the frozen thresholds (test split for the rollouts):
+
+| Gate | Criterion | On FAIL (source) |
+|------|-----------|------------------|
+| config | `config.effective.deterministic` true on every pilot fit (#76); the offending fits are listed | operational rule (#76): rerun them with `--deterministic` (the pilot YAML's `extra_args`) and rerun the gate |
+| G1 lv | `vpt_multi_median` of cfc_lrc/ncp > max(persistence, AR(1)) of its data seed + 2 steps in >= 2 of 3 seeds | FAIL: stop, find the cause (endpoint, floors, dt_scale) before S2; H-c and RQ1 are affected (operational rule, F1 section 10.5) |
+| G1 duffing | as G1 lv | DECISION (exit 0): Duffing stays in the plan, H-b/H-c Duffing contrasts floor-bound, H-c conjunction over LV and PA (F1 section 7); FAIL only when a cfc_lrc/ncp seed is missing, has a non-finite VPT or no floor line (operational rule, #77) |
+| G1 multitimescale_lib | cfc/ncp >= 2 x persistence in >= 2 of 3 seeds, `rate_unbounded` 0 on every cfc/ncp fit | spread 0.25 or 256 steps, repeat once (F1 section 7) |
+| G0-E per task | an (arm, seed) qualifies when the mean of the last tenth of `val_loss_curve` (lower is better) or `val_macro_f1_curve` (Person Activity, higher is better) beats its value at 2/3 of the epochs by > 5 % relative; `ceil(2n/3)` of the task's n pilot arms (LV, Duffing 4 of 5; MT, PA 2 of 2; the dt_scale control not counted) with >= 2 qualifying seeds give the DECISION "epochs x1.5 (300 to 450)" or "epochs x2 (50 to 100)", else "epochs unchanged"; the summary reads "k of n arms qualify, needs t" | a fit without the curve fails the row (operational rule, #75) |
+| G2 pa | median test macro-F1 of cfc_lrc/ncp >= 0.60, every lrc/ncp fit finite (`training_diverged` false); `wallclock_s` of both arms listed; reported, not gated (#80): every PA fit's test macro-F1 against the one-class value of the test split (from `test_confusion_by_recording`), an arm at most 0.01 above it in >= 2 of 3 seeds listed as "at chance" in the summary | stop, find the cause before S2 (F1 section 7) |
+| G3 lv | descriptive: median VPT of the dt_scale=1 control next to the main arm | never fails |
+| GK co | per arm the fit with the best `val_macro_f1_mean`: validation macro-F1 at m=0 >= 0.60; test macro-F1 degrades over the fault grid: no step m -> m' with MF1(m') - MF1(m) above one paired bootstrap SE (10 000 resamples of the test recordings in `test_confusion_by_recording_by_fault`, fixed seed, macro-F1 of the summed confusions) and MF1(m_max) < MF1(0); without the confusions the strict check (`test_macro_f1_by_fault` non-increasing), said so in the detail line; ncp_cons `vote_lambda_final` in (0.05, 0.95) | ncp_cons below 0.60 at m=0: architecture check (width, backbone) before the consensus study (F1 section 7); another arm below 0.60: arm check (lr grid, head) before the consensus study (F1 section 10.5); no degradation: protocol check (fault mask, noise scale) before the consensus study (F1 section 10.5); vote_init check of one fit for lambda at the edges (F1 section 7) |
+
+The GK detail line prints the raw `test_macro_f1_by_fault` list (the strict
+reading) and every step `m->m' difference (SE ...)`. The committee JSON
+stores no per-batch fault-count sequence or hash, so the gate says so and
+does not compare the fault schedule across the four arms (the runner draws
+every batch from `corruption_seed`, `CorruptedBatches`; the fault grid is
+K-specific). Every row is PASS, FAIL (with the consequence, which names its
+source) or DECISION; exit 0 only when no row fails, a DECISION does not fail
+the gate. The readings of G0-E, G1 and GK follow protocol freeze
+F1-2026-10-26, section 10.5 (#77).
+
+### S3 consensus GK reading and eval-only rescoring (#81)
+
+At K = 3 the split, `val_seed` (100) and `test_seeds` (0-4) are runner
+defaults, so a fixed difference between the test and the validation
+evaluation (an offset of the campaign, shared by every arm) recurs in S3 and
+does not average out over seeds. The S3 consensus GK reading therefore reads
+the K = 3 monotonicity against the reference arms of the same campaign; the
+S1 reading stays the pre-registered paired-se rule (the default of
+`--stage s1`). The offset rule, including the choices listed below, is to be
+pre-registered in the protocol addendum by the author before any S3
+consensus result is read.
+
+The offset rule, with T = `test_macro_f1_by_fault` and
+V = `val_macro_f1_grid_curve[best_val_epoch - 1]`, for every arm outside the
+reference arms aug_mono and fault_mean and every adjacent step m -> m' of its
+fault grid:
+
+- offset off_a = [T(m') - T(m)] - [V(m') - V(m)];
+- reference offset off_ref = the median of the same offset over every
+  usable fit (finite T and V on its whole grid) of aug_mono and fault_mean
+  below `--runs`, taken between the reference fit's grid entries nearest
+  the fault fractions m/K and m'/K (fault_mean, K = 3: the same counts;
+  aug_mono, K = 1: the window failure probabilities nearest m/3 and m'/3,
+  i.e. 0, 0.3 and 0.67 on the default rho grid);
+- a step violates when it violates the paired-se rule, T(m') - T(m) > SE
+  (the paired bootstrap SE of the test step over the test recordings), and
+  off_a - off_ref > SE as well; MF1(m_max) < MF1(0) stays required.
+
+The rule only relaxes the paired-se rule: it never fails a step that the
+paired-se rule accepts. Choices the addendum names: a rise seen on both
+splits is absolved (a negative offset); aug_mono is matched by fault
+fraction, not by grid index; the median runs over every learning rate and
+seed of the reference arms (on the S1 pilot including the lr 1e-4 fits); the
+reference fits are pooled over every fit below `--runs` (pass only the
+campaign's run folder). The reference arms keep the paired-se rule. Without
+a usable reference fit the paired-se rule applies to every arm, said so in
+the summary and the detail lines. The summary names the rule and the
+reference fits per arm; each detail line prints per step the test step, the
+offset, the reference offset and the SE. A violation's consequence is the
+protocol check (fault mask, noise scale) of the offset rule (#81).
+
+`suite_gate.py --stage s3co --runs <co-k3-final run> --out <report>` is the
+S3 reading. It reads the finals of `configs/suite/co_k3_final.yaml`
+(`--configs`), which the suite writes flat into `results/` (no
+`hpo/<arm>` folder), and names each fit by its campaign arm from the record
+fields `cell`, `wiring`, `n_columns`, `vote_lambda`, `consensus` and
+`view_average` (the stem suffixes `_lam0`, `_median`, `_viewavg`, `_viewfm`,
+`K1`, the cncp wiring). Rows: fits (every arm x seed 0-4 once, 45), config
+(`deterministic` true) and GK, which reads every fit of every arm by the
+offset rule (`--gk-rule`, default `offset` here); an arm fails when one of
+its seeds violates (a choice for the addendum) or it has no fit. The
+validation macro-F1 at
+m=0 and the `vote_lambda_final` criteria of the S1 GK row are not part of
+the S3 reading.
+
+`suite_gate.py --stage s1 ... --gk-rule offset` applies the same rule to the
+S1 pilot (one best-lr fit per arm, as the paired-se row); it is a check of
+the rule on the pilot, not the S3 reading.
+
+`run_committee_benchmark.py --eval-only --weights <stem>.weights.h5 --out
+<folder>` re-scores a stored committee fit without training: the model is
+rebuilt from the record's `config.effective` (`rebuild_from_result`) and its
+weights loaded; the record is `<stem>.json` next to the weights (or
+`--record`). `--out` is required and refused when it is the record's folder
+or below it: a fit folder holds exactly one result JSON (`run_grid_hpo.py`,
+`determinism_probe.py` and the S0 gate unpack it so), and a fetched results
+tree stays read-only. It refuses (exit 1) a `config.effective` that does not
+hash to its `config_hash` and a weights file that is missing or is not the
+record's `weights_path` next to the record; the record stores no hash of
+the weights, so a different file put in place under that name is not
+detected. `--test-seeds` (default: the record's `test_seeds`) draws
+`_rng(seed, m)` as the runner; `--val-draws N` (default 1) draws validation
+k from `_rng(val_seed + 1000 k, m)`, so draw 0 is the stored validation
+draw. The output `<out>/<stem>.evalonly.json` holds
+`test_confusion_by_recording_by_fault_by_seed` (`{seed: [{recording:
+confusion} per fault count]}`, one seed's entry in the layout of
+`test_confusion_by_recording_by_fault`), `val_confusion_by_fault_by_draw`
+(`[[confusion per fault count] per draw]`) and its macro-F1, the summed keys
+`test_confusion_by_recording_by_fault`, `test_macro_f1_by_fault` and
+`test_macro_f1_per_recording_by_fault` (comparable with the source record),
+`source_record`, `source_config_hash`, `fault_counts`, `eval_test_seeds`,
+`eval_val_draws` and `eval_val_draw_seeds`.
+
+```bash
+uv run python experiments/run_committee_benchmark.py --eval-only \
+    --weights results/04_column_voting/<run>/results/hpo/ncp_cons/<point>/<stem>.weights.h5 \
+    --test-seeds 0,1,2,3,4 --val-draws 5 --out <scratch folder>
+uv run python experiments/suite_gate.py --stage s3co \
+    --runs results/04_column_voting/<co-k3-final run> --out <scratch folder>/S3_GK.md
+```

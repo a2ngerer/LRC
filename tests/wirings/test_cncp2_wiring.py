@@ -13,6 +13,7 @@ from src.wirings import (CNCP2Wiring, CorticalColumnCell, CorticalColumnV2Cell,
                          SparseLinear, effective_param_count, ncp_cell_kwargs)
 
 _ASYM = dict(elastance_type='asymmetric')
+_BB0 = dict(_ASYM, backbone_layers=0)   # B.4 formula sub-cell
 F_IN = 2
 
 
@@ -63,13 +64,14 @@ def test_parameter_formula_cfc_lrc(u):
     """effective_param_count of the column (no head) equals
     3 p(u,u) + 3u^2 + 3u floor(u/2) + F_in u + u + 3 floor(u/2),
     p(u,u) = 10u^2 + 5u, up to the realised Bernoulli(0.5) masks of E_DS and
-    A_DS, which enter with their actual number of ones."""
-    model = CNCP2Wiring('cfc_lrc', units=u, seed=0, **_ASYM).build_model()
+    A_DS, which enter with their actual number of ones. p(u,u) is the
+    backbone-free sub-cell, so backbone_layers=0 is explicit (default 1)."""
+    model = CNCP2Wiring('cfc_lrc', units=u, seed=0, **_BB0).build_model()
     model((tf.zeros([1, 3, F_IN]), tf.ones([1, 3, 1])))
     cell = model.layers[0].cell
     n = effective_param_count(model)
 
-    sub = CfC_LRC_Cell(units=u, **ncp_cell_kwargs(CfC_LRC_Cell, _ASYM))
+    sub = CfC_LRC_Cell(units=u, **ncp_cell_kwargs(CfC_LRC_Cell, _BB0))
     sub.build((None, u))
     p = 10 * u * u + 5 * u
     assert sub.count_params() == p

@@ -1,0 +1,27 @@
+# Frozen final suite (protocol freeze F1-2026-10-26, sections 3, 5; #71):
+# Lotka-Volterra, 28 arms, grid HPO (4 lr x 2 clip on tuning seed 100, top 2 on
+# 101, edge rule) per arm. Fits with lv_final.yaml: 28 x 11 + 165 = 473
+#   uv run python experiments/suite_manifest.py --count configs/suite/lv_*.yaml
+# Budget 4k, mixed forcing, 300 epochs; the manifest adds the multi-anchor
+# endpoint (--anchors 8,16,24,32 --horizon 96) and --ic-spread 0.4.
+#   ./cluster/submit_suite.sh configs/suite/lv_hpo.yaml lv-hpo
+task: lv
+stage: hpo
+cells:
+  cfc: [dense, dense3, ncp, cncp]
+  cfc_lrc: [dense, dense3, ncp, cncp]
+  cfc_lrc_outer: [dense, ncp]
+  cfc_mm_lrc: [dense, ncp]
+  lrc: [dense, dense3, ncp]
+  mm_lrc: [dense, ncp]
+  gru: [dense, dense3, ncp, cncp]
+  lstm: [dense, dense3, ncp]
+  ctrnn: [dense, dense3, ncp]
+  mlp: [dense]
+param_budget: 4000
+seeds: [100, 101]
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+cluster: {runs_per_gpu: 3, walltime: "12:00:00"}

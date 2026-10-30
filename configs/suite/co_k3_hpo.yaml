@@ -1,0 +1,27 @@
+# Frozen final suite (F1-2026-10-26 j, section 3; #71): consensus study, K = 3
+# learning-rate HPO for the nine arms (fault grid {0, 1, 2}): 4 lr on tuning
+# seed 100, top 2 on 101, one fixed clip value (off), epoch guard into
+# hpo_selection.json (final_epochs). Fits with co_k3_final.yaml and
+# co_k30_final.yaml: 9 x 6 + 45 + 65 = 164
+#   uv run python experiments/suite_manifest.py --count configs/suite/co_*.yaml
+# Budget 30k, identical views, column-fault corruption, RMSprop, batch 128,
+# bb1. avg_in, fault_mean and aug_mono are single-column (K = 1 model) ncp
+# monoliths; aug_mono trains with a Bernoulli window fault (n_columns 1).
+#   ./cluster/submit_suite.sh configs/suite/co_k3_hpo.yaml co-k3-hpo
+task: co
+stage: hpo
+arms:
+  ncp_cons: {cell: cfc_lrc, wiring: ncp}
+  ncp_lam0: {cell: cfc_lrc, wiring: ncp, vote_lambda: 0}
+  ncp_med: {cell: cfc_lrc, wiring: ncp, consensus: median}
+  cncp_cons: {cell: cfc_lrc, wiring: cncp}
+  cncp_lam0: {cell: cfc_lrc, wiring: cncp, vote_lambda: 0}
+  cncp_med: {cell: cfc_lrc, wiring: cncp, consensus: median}
+  avg_in: {cell: cfc_lrc, wiring: ncp, view_average: mean}
+  fault_mean: {cell: cfc_lrc, wiring: ncp, view_average: fault_mean}
+  aug_mono: {cell: cfc_lrc, wiring: ncp, n_columns: 1}
+param_budget: 30000
+seeds: [100, 101]
+epochs: 40
+extra_args: [--n-columns, 3, --backbone-layers, 1, --grid-clip, "off", --deterministic]
+cluster: {runs_per_gpu: 3, walltime: "12:00:00"}

@@ -1,0 +1,18 @@
+# S1 consensus pilot (F1-2026-10-26 j, ladder S1, GK; #75): stage 1 of the
+# K = 3 learning-rate HPO for the four core arms of co_k3_hpo.yaml, tuning
+# seed 100 only: the default lr grid x one clip (off) = 4 fits per arm, 16
+# (an edge extension is not counted). Budget 30k, 40 epochs, bb1, identical
+# views, column-fault corruption as co_k3_hpo.yaml.
+#   ./cluster/submit_suite.sh --wandb configs/suite/pilot_co.yaml s1-pilot-co
+task: co
+stage: hpo
+arms:
+  ncp_cons: {cell: cfc_lrc, wiring: ncp}
+  ncp_lam0: {cell: cfc_lrc, wiring: ncp, vote_lambda: 0}
+  avg_in: {cell: cfc_lrc, wiring: ncp, view_average: mean}
+  aug_mono: {cell: cfc_lrc, wiring: ncp, n_columns: 1}
+param_budget: 30000
+seeds: [100]
+epochs: 40
+extra_args: [--n-columns, 3, --backbone-layers, 1, --grid-clip, "off", --deterministic]
+cluster: {runs_per_gpu: 3, walltime: "12:00:00"}

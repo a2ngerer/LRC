@@ -82,7 +82,8 @@ cc_start_gpu_logger() {
 # --- 5. the RUNS_PER_GPU parallel-launch loop (the bundling contract) --------
 # usage: cc_launch_bundle <runner-prefix-token>...
 #   env in: RUNS_PER_GPU, N_SPECS, SLURM_ARRAY_TASK_ID,
-#           RUN_EXTRA_ARGS[] (optional forwarded runner args).
+#           RUN_EXTRA_ARGS[] (optional forwarded runner args),
+#           CC_LOG_DIR (optional per-run log dir, default outputs/slurm).
 #
 # Array task t owns the contiguous block of spec indices
 #   [t*K, ..., t*K + K-1]   (K = RUNS_PER_GPU), capped at N_SPECS,
@@ -110,7 +111,7 @@ cc_launch_bundle() {
     for off in $(seq 0 $(( k - 1 ))); do
         idx=$(( start + off ))
         [[ "${idx}" -ge "${n}" ]] && break
-        run_log="outputs/slurm/run-${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID}}_idx${idx}.log"
+        run_log="${CC_LOG_DIR:-outputs/slurm}/run-${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID}}_idx${idx}.log"
         echo "    -> launch index ${idx} -> ${run_log}"
         "${runner[@]}" --index "${idx}" "${extra[@]}" > "${run_log}" 2>&1 &
         pids+=("$!")

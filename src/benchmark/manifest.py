@@ -24,15 +24,24 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _git(*args) -> str | None:
+    out = subprocess.run(['git', *args], cwd=str(_repo_root()),
+                         capture_output=True, text=True, timeout=10)
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
 def _git_sha() -> str | None:
+    """HEAD, ``-dirty`` when tracked files differ from it."""
+    # The cluster code tree is an rsync copy without .git: the launcher
+    # (cluster/_run.sh run_sbatch) exports the local commit, marked the same
+    # way, as RUN_GIT_SHA.
+    if os.environ.get('RUN_GIT_SHA'):
+        return os.environ['RUN_GIT_SHA']
     try:
-        out = subprocess.run(
-            ['git', 'rev-parse', 'HEAD'],
-            cwd=str(_repo_root()),
-            capture_output=True, text=True, timeout=10,
-        )
-        if out.returncode == 0:
-            return out.stdout.strip() or None
+        sha = _git('rev-parse', 'HEAD')
+        if sha and _git('status', '--porcelain', '--untracked-files=no'):
+            sha += '-dirty'
+        return sha or None
     except Exception:
         pass
     return None

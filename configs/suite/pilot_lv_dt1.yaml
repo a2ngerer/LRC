@@ -1,0 +1,17 @@
+# S1 dt_scale control (F1-2026-10-26 h, ladder S1, G3 descriptive; #75):
+# cfc_lrc/ncp on Lotka-Volterra with dt_scale 1 instead of 1/dt, seeds 0-2 =
+# 3 fits, lr 1e-3, clip off (fixed). Its own run folder (same result names as
+# the main arm in pilot_lv.yaml).
+#   ./cluster/submit_suite.sh --wandb configs/suite/pilot_lv_dt1.yaml s1-pilot-lv_dt1
+task: lv
+stage: final
+cells: [cfc_lrc]
+wirings: [ncp]
+param_budget: 4000
+seeds: [0, 1, 2]
+epochs: 300
+ode_unfolds: 6
+dt_scale: 1
+extra_args: [--forcing, mixed, --deterministic]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

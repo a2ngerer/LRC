@@ -1,0 +1,26 @@
+# S0 smoke of the frozen suite (protocol freeze F1-2026-10-26, validation
+# ladder S0; #72): the 28 arms of lv_hpo.yaml for 3 epochs, one fit per arm
+# (tuning seed 100 runs stage 1 only, one lr x one clip value). Same budget,
+# ode_unfolds, dt_scale and forcing as lv_hpo.yaml; checked afterwards by
+# experiments/suite_gate.py --stage s0 (cluster/README.md, "S0 smoke").
+#   BENCH=00_canary ./cluster/submit_suite.sh configs/suite/smoke_lv.yaml s0-smoke-lv
+task: lv
+stage: hpo
+cells:
+  cfc: [dense, dense3, ncp, cncp]
+  cfc_lrc: [dense, dense3, ncp, cncp]
+  cfc_lrc_outer: [dense, ncp]
+  cfc_mm_lrc: [dense, ncp]
+  lrc: [dense, dense3, ncp]
+  mm_lrc: [dense, ncp]
+  gru: [dense, dense3, ncp, cncp]
+  lstm: [dense, dense3, ncp]
+  ctrnn: [dense, dense3, ncp]
+  mlp: [dense]
+param_budget: 4000
+seeds: [100]
+epochs: 3
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --grid-lr, 1e-3, --grid-clip, "off"]
+cluster: {runs_per_gpu: 6, walltime: "01:00:00"}

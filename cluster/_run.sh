@@ -12,12 +12,17 @@
 # A run folder is never reused: an existing folder aborts the launch.
 #
 # Contract for a launcher that sources this file:
-#   run_parse_args "$@"        -> sets LABEL, DRY_RUN (-n), BENCH (env override)
+#   run_parse_args "$@"        -> sets LABEL, DRY_RUN (-n / --dry-run), BENCH (env override)
 #   run_prepare <NN_benchmark> -> sets RUN_DIR (cluster path), creates the folder
-#                                 and LAUNCH.md (skipped on DRY_RUN)
+#                                 and LAUNCH.md (skipped on DRY_RUN); with
+#                                 RUN_RESUME=1 the label is an existing run
+#                                 folder name, reused and noted in LAUNCH.md
 #   run_rsync                  -> rsync the code tree (skipped on DRY_RUN)
+#   run_require_dataset        -> abort if the PA dataset is missing on the cluster
 #   run_sbatch <sbatch file> "<ENV assignments>" -> submits, records the job id
-#   The sbatch file reads RUN_DIR from the environment (--export=ALL).
+#   The sbatch file reads RUN_DIR from the environment (--export=ALL), and
+#   RUN_GIT_SHA (the local commit; the cluster copy has no .git) reaches the
+#   runners' manifests and wandb configs.
 #
 # Dry run (-n): print the resolved paths, env and sbatch command, touch nothing.
 
@@ -27,7 +32,7 @@ _run_usage() {
     cat >&2 <<EOF
 usage: $0 [-n] <label> [setup]
   <label>   run label; the run folder is <date>_<label> (letters, digits, - _ .)
-  -n        dry run: resolve paths and print the sbatch command, do nothing
+  -n, --dry-run  dry run: resolve paths and print the sbatch command, do nothing
   setup     one-time venv setup on the login node (person_activity launcher)
 env:  BENCH=<NN_benchmark>  override the target benchmark folder (e.g. 00_canary)
       CLUSTER_HOST, CLUSTER_REPO_DIR, CLUSTER_BENCH_DIR  (cluster/config.sh)
@@ -39,7 +44,7 @@ run_parse_args() {
     DRY_RUN=0; LABEL=""; SETUP=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -n) DRY_RUN=1 ;;
+            -n|--dry-run) DRY_RUN=1 ;;
             setup) SETUP=1 ;;
             -h|--help) _run_usage ;;
             -*) echo "unknown flag $1" >&2; _run_usage ;;
@@ -65,18 +70,34 @@ _run_ssh() {
     ssh "${CLUSTER_HOST}" "$@"
 }
 
+# The Person Activity CSV is not tracked in git, so a fresh worktree has no
+# data/. 'P data/' protects the cluster copy from --delete; a local data/ is
+# still transferred and updates it.
+RUN_DATASET="data/person/ConfLongDemo_JSI.txt"
+
 run_rsync() {
+    local args=(-avz --delete --copy-links --filter='P data/'
+        --exclude='.git/' --exclude='.venv/' --exclude='results/'
+        --exclude='outputs/' --exclude='__pycache__/' --exclude='*.pyc'
+        --exclude='.DS_Store' --exclude='.pytest_cache/' --exclude='datasets/'
+        --exclude='papers/')
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
-        echo "[dry-run] rsync $(pwd)/ -> ${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/"
+        echo "[dry-run] rsync ${args[*]} $(pwd)/ -> ${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/"
         return 0
     fi
     echo "rsync $(pwd) -> ${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/"
-    rsync -avz --delete --copy-links \
-        --exclude='.git/' --exclude='.venv/' --exclude='results/' \
-        --exclude='outputs/' --exclude='__pycache__/' --exclude='*.pyc' \
-        --exclude='.DS_Store' --exclude='.pytest_cache/' --exclude='datasets/' \
-        --exclude='papers/' \
-        ./ "${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/"
+    rsync "${args[@]}" ./ "${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/"
+}
+
+# run_require_dataset: abort before sbatch when the Person Activity CSV is
+# missing from the cluster code tree (call after run_rsync).
+run_require_dataset() {
+    if ! _run_ssh "test -f ${CLUSTER_REPO_DIR}/${RUN_DATASET}"; then
+        echo "FATAL: dataset missing on the cluster: ${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/${RUN_DATASET}" >&2
+        echo "  copy it once: rsync -a data/person/ ${CLUSTER_HOST}:${CLUSTER_REPO_DIR}/data/person/" >&2
+        echo "  nothing was submitted; the run folder ${RUN_REL:-} is reserved, relaunch with a new label." >&2
+        exit 1
+    fi
 }
 
 # run_count <list> <list> ...: product of the word counts; sets RUN_COUNT (fits)
@@ -88,12 +109,16 @@ run_count() {
     echo "fits: ${RUN_COUNT}"
 }
 
-# Local provenance for LAUNCH.md.
+# Local commit, -dirty when tracked files differ from it (as
+# src/benchmark/manifest.py _git_sha): `_run_git_sha short` for LAUNCH.md, the
+# full SHA for RUN_GIT_SHA.
 _run_git_sha() {
-    local sha dirty=""
-    sha="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-    if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then dirty=" (dirty)"; fi
-    echo "${sha}${dirty}"
+    local sha
+    sha="$(git rev-parse ${1:+--short} HEAD 2>/dev/null)" || { echo unknown; return 0; }
+    if [[ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+        sha+="-dirty"
+    fi
+    echo "${sha}"
 }
 
 # run_prepare <NN_benchmark>: resolve RUN_DIR, create it, write LAUNCH.md.
@@ -103,12 +128,22 @@ run_prepare() {
     local bench="${BENCH:-$1}"
     local date_utc; date_utc="$(date -u +%F)"
     RUN_NAME="${date_utc}_${LABEL}"
+    if [[ "${RUN_RESUME:-0}" -eq 1 ]]; then RUN_NAME="${LABEL}"; fi
     RUN_REL="${CLUSTER_BENCH_DIR}/${bench}/runs/${RUN_NAME}"
     # $HOME-relative on the cluster unless absolute.
     if [[ "${RUN_REL}" == /* ]]; then RUN_DIR="${RUN_REL}"; else RUN_DIR="\$HOME/${RUN_REL}"; fi
     RUN_BENCH="${bench}"
     echo "run folder: ${CLUSTER_HOST}:${RUN_REL}"
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then return 0; fi
+    if [[ "${RUN_RESUME:-0}" -eq 1 ]]; then
+        # shellcheck disable=SC2029
+        if ! ssh "${CLUSTER_HOST}" "test -f ${RUN_DIR}/LAUNCH.md && cat >> ${RUN_DIR}/LAUNCH.md" \
+                <<<"- Resumed: $(date -u +%FT%TZ), git SHA $(_run_git_sha short), \`${RUN_COMMAND:-$0 $LABEL}\`"; then
+            echo "FATAL: no run folder ${RUN_REL} to resume" >&2
+            exit 1
+        fi
+        return 0
+    fi
     local launch_md
     launch_md="$(_run_launch_md "${RUN_NAME}")"
     # Reserve the folder atomically: a plain mkdir fails if it exists (run
@@ -127,7 +162,7 @@ _run_launch_md() {
 # ${name}
 
 - Purpose: ${LAUNCH_PURPOSE:-<fill in: what question this launch answers>}
-- Code: git SHA $(_run_git_sha) (local \`$(basename "$(pwd)")/\`, branch $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)), synced $(date -u +%FT%TZ)
+- Code: git SHA $(_run_git_sha short) (local \`$(basename "$(pwd)")/\`, branch $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)), synced $(date -u +%FT%TZ)
 - Command: \`${RUN_COMMAND:-$0 $LABEL}\`
 - Env: ${RUN_ENV:-<none>}
 - SLURM job IDs: <pending>
@@ -144,7 +179,7 @@ EOF
 run_sbatch() {
     local sbatch_file="$1" env_assign="${2:-}"
     local cmd="cd ${CLUSTER_REPO_DIR} && export PATH=\$HOME/.local/bin:\$PATH && \
-${env_assign}RUN_DIR=${RUN_DIR} sbatch --export=ALL \
+RUN_GIT_SHA=$(_run_git_sha) ${env_assign}RUN_DIR=${RUN_DIR} sbatch --export=ALL \
 ${SBATCH_EXTRA:+${SBATCH_EXTRA} }--output=${RUN_DIR}/logs/%x-%j.out --error=${RUN_DIR}/logs/%x-%j.err ${sbatch_file}"
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
         echo "[dry-run] ssh ${CLUSTER_HOST} \"${cmd}\""
@@ -171,11 +206,12 @@ ${SBATCH_EXTRA:+${SBATCH_EXTRA} }--output=${RUN_DIR}/logs/%x-%j.out --error=${RU
 
 _run_record_job() {
     local job_id="$1"
-    # LAUNCH.md: fill the job id. README index: set the "Last run folder" cell
+    # LAUNCH.md: fill the job id (append it when the line holds one already:
+    # several arrays per launch, a resumed run). README index: set the "Last run folder" cell
     # of this benchmark's row (the last cell before the closing pipe); print
     # the row when the table does not match.
     # shellcheck disable=SC2029
-    ssh "${CLUSTER_HOST}" "sed -i 's#^- SLURM job IDs: <pending>#- SLURM job IDs: ${job_id}#' ${RUN_DIR}/LAUNCH.md && \
+    ssh "${CLUSTER_HOST}" "sed -i -e 's#^- SLURM job IDs: <pending>\$#- SLURM job IDs: ${job_id}#;t' -e 's#^- SLURM job IDs: .*#&, ${job_id}#' ${RUN_DIR}/LAUNCH.md && \
 readme=\$HOME/${CLUSTER_BENCH_DIR}/README.md && \
 if grep -q '^| ${RUN_BENCH} |' \"\$readme\"; then \
   awk -v b='${RUN_BENCH}' -v r='${RUN_NAME}' 'BEGIN{FS=OFS=\"|\"} \$2==\" \" b \" \" {\$(NF-1)=\" \" r \" \"} {print}' \"\$readme\" > \"\$readme.tmp\" && mv \"\$readme.tmp\" \"\$readme\"; \

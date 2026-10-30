@@ -1,6 +1,12 @@
 """Optuna HPO for one (cell, wiring) on the Lotka-Volterra rollout task, every
 trial tracked in Weights & Biases.
 
+EXPLORATORY, not used for the final suite: the Chapter 5 protocol (fixed lr x
+clip grid, two tuning seeds, selection on validation VPT, no pruning) is
+experiments/run_grid_hpo.py (issue #22). This runner has no --ic-spread
+flag (nor do cluster/lotka_volterra.sbatch / submit_lotka_volterra.sh): it
+always samples initial conditions at the system's default spread (#64).
+
 Thesis methodology demo (Farsang 2026-07-02): the arms dense / NCP / cNCP are
 compared PARAMETER-MATCHED. The network width is therefore NOT a search
 dimension; instead ``size`` is derived per (cell, wiring) so every arm lands

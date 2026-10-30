@@ -82,6 +82,9 @@ CELL_REGISTRY: dict[str, CellConfig] = {
     # --- v1 thesis cells + classical baselines (empty kwargs) ---------------
     'ltc': CellConfig(),
     'lrc': CellConfig(kwargs=dict(_ASYM)),
+    # lrc_ar: autoregressive LRC (class default 'symmetric'), same elastance
+    # as lrc for the sequence runners.
+    'lrc_ar': CellConfig(kwargs=dict(_ASYM)),
     'gru': CellConfig(),
     'lstm': CellConfig(),
     # --- v2 vanishing-gradient-fixed cells ----------------------------------
@@ -98,6 +101,8 @@ CELL_REGISTRY: dict[str, CellConfig] = {
     'cfc_mm_lrc': CellConfig(kwargs=dict(_ASYM)),
     'cfc_mm_ltc': CellConfig(),          # CfC inner cell rejects elastance_type
     'ctrnn': CellConfig(),               # classical CT baseline, no extra kwargs
+    # stateless control of the rollout tasks, 'dense' wiring only (#60)
+    'mlp': CellConfig(),
     # --- v3.3 param-matched capacity control (the only width override) ------
     'lrc_pm': CellConfig(
         kwargs=dict(_ASYM),
@@ -124,9 +129,16 @@ KNOWN_CELLS = tuple(CELL_REGISTRY)
 
 
 # --- accessors (return copies so callers cannot mutate the registry) --------
-def cell_kwargs(cell: str) -> dict:
-    """Constructor kwargs for ``cell`` (legacy ``CELL_KWARGS.get(cell, {})``)."""
-    return dict(CELL_REGISTRY[cell].kwargs) if cell in CELL_REGISTRY else {}
+def cell_kwargs(cell: str, elastance_type: str | None = None) -> dict:
+    """Constructor kwargs for ``cell`` (legacy ``CELL_KWARGS.get(cell, {})``).
+
+    ``elastance_type`` (the runners' --elastance-type) overrides the registry
+    value for cells that carry one; other cells ignore it.
+    """
+    kwargs = dict(CELL_REGISTRY[cell].kwargs) if cell in CELL_REGISTRY else {}
+    if elastance_type is not None and 'elastance_type' in kwargs:
+        kwargs['elastance_type'] = elastance_type
+    return kwargs
 
 
 def cell_units(cell: str) -> int:

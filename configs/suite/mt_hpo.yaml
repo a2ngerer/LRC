@@ -1,0 +1,19 @@
+# Frozen final suite (F1-2026-10-26; #71): multitimescale_lib (H-a), grid HPO
+# for cfc, cfc_static, gru, ctrnn on ncp. The width-matched cfc_static_w runs
+# without HPO in mt_final_static_w.yaml. Fits with mt_final*.yaml:
+# 4 x 11 + 30 + 10 = 84
+#   uv run python experiments/suite_manifest.py --count configs/suite/mt_*.yaml
+# The manifest adds --anchors 8,16,24,32 --horizon 96 --ic-spread 0.3.
+#   ./cluster/submit_suite.sh configs/suite/mt_hpo.yaml mt-hpo
+task: lv
+system: multitimescale_lib
+stage: hpo
+cells: [cfc, cfc_static, gru, ctrnn]
+wirings: [ncp]
+param_budget: 4000
+seeds: [100, 101]
+epochs: 450
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+cluster: {runs_per_gpu: 3, walltime: "12:00:00"}

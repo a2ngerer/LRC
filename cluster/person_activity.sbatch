@@ -41,8 +41,8 @@ export TF_CPP_MIN_LOG_LEVEL=1
 export PYTHONUNBUFFERED=1
 
 # wandb: offline on the compute node (no worker internet). Runs land under
-# outputs/wandb/, are fetched back by fetch_person_activity.sh, and uploaded
-# locally via cluster/wandb_sync.sh. Opt in with PA_WANDB=1 at submit time;
+# $RUN_DIR/wandb/, come back with the fetched run folder and are uploaded
+# locally via cluster/wandb_sync.sh <run folder>. Opt in with PA_WANDB=1 at submit time;
 # default off keeps existing runs untouched.
 export WANDB_MODE=offline
 export WANDB_DIR="$RUN_DIR/wandb"
@@ -66,6 +66,10 @@ LR="${PA_LR:-1e-3}"
 # CfC-family backbone depth for every arm (V2s control: PA_BACKBONE=1); empty = flag
 # not passed, per-wiring defaults unchanged; results get a _bb<N> filename suffix.
 BACKBONE="${PA_BACKBONE:-}"
+# Grouped recording split (default) or the literature-anchor window split;
+# PA_SPLIT_SEED fixes the grouped recording assignment for the whole suite.
+SPLIT="${PA_SPLIT:-grouped}"               # also: random_window
+SPLIT_SEED="${PA_SPLIT_SEED:-0}"
 EXTRA="${PA_EXTRA:-}"   # extra runner flags, e.g. "--columns 4 --partition region --coupling lateral"
 
 if [[ ! -f "$DATA_PATH" ]]; then
@@ -84,13 +88,14 @@ run_one() {
     uv run python experiments/run_person_activity_benchmark.py \
         --wiring "$wiring" --cell "$cell" --seed "$seed" --epochs "$EPOCHS" \
         $budget_flag --data-path "$DATA_PATH" \
+        --split "$SPLIT" --split-seed "$SPLIT_SEED" \
         --outdir "$OUTDIR" --lr "$LR" $bb_flag $EXTRA $wandb_flag
     local rc=$?
     echo "[done ] ${cell}_${wiring}_seed${seed} (exit $rc)"
     return $rc
 }
 export -f run_one
-export EPOCHS DATA_PATH USE_WANDB PARAM_BUDGET OUTDIR LR BACKBONE EXTRA
+export EPOCHS DATA_PATH USE_WANDB PARAM_BUDGET OUTDIR LR BACKBONE SPLIT SPLIT_SEED EXTRA
 
 JOBS=""
 for cell in $CELLS; do

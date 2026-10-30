@@ -1,0 +1,18 @@
+# S1 floor and protocol pilot (F1-2026-10-26, ladder S1; #75):
+# multitimescale_lib, cfc/ncp and cfc_static/ncp x seeds 0-2 = 6 fits, lr
+# 1e-3, clip off (fixed). Same budget, ode_unfolds, dt_scale and forcing as
+# mt_hpo.yaml; the manifest adds --ic-spread 0.3.
+#   ./cluster/submit_suite.sh --wandb configs/suite/pilot_mt.yaml s1-pilot-mt
+task: lv
+system: multitimescale_lib
+stage: final
+cells: [cfc, cfc_static]
+wirings: [ncp]
+param_budget: 4000
+seeds: [0, 1, 2]
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

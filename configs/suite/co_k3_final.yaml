@@ -1,0 +1,22 @@
+# Frozen final suite (F1-2026-10-26 j; #71): consensus study, K = 3 final fits,
+# the nine arms of co_k3_hpo.yaml x seeds 0-4 (45), lr and epochs (40, or 60
+# after the epoch guard) from each arm's hpo_selection.json.
+# Set hpo_dir to the fetched K = 3 HPO run first.
+#   ./cluster/submit_suite.sh configs/suite/co_k3_final.yaml co-k3-final
+task: co
+stage: final
+arms:
+  ncp_cons: {cell: cfc_lrc, wiring: ncp}
+  ncp_lam0: {cell: cfc_lrc, wiring: ncp, vote_lambda: 0}
+  ncp_med: {cell: cfc_lrc, wiring: ncp, consensus: median}
+  cncp_cons: {cell: cfc_lrc, wiring: cncp}
+  cncp_lam0: {cell: cfc_lrc, wiring: cncp, vote_lambda: 0}
+  cncp_med: {cell: cfc_lrc, wiring: cncp, consensus: median}
+  avg_in: {cell: cfc_lrc, wiring: ncp, view_average: mean}
+  fault_mean: {cell: cfc_lrc, wiring: ncp, view_average: fault_mean}
+  aug_mono: {cell: cfc_lrc, wiring: ncp, n_columns: 1}
+param_budget: 30000
+seeds: [0, 1, 2, 3, 4]
+extra_args: [--n-columns, 3, --backbone-layers, 1, --deterministic]
+hpo_dir: results/04_column_voting/<co-k3-hpo run>/results/hpo
+cluster: {runs_per_gpu: 3, walltime: "06:00:00"}

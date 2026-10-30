@@ -1,6 +1,7 @@
 # tests/neurons/test_cfc_lrc_cell.py
 # Validation gates for the closed-form LRC cell (see
 # docs/superpowers/specs/2026-06-19-cfc-lrc-v3_1-design.md).
+import numpy as np
 import pytest
 import tensorflow as tf
 
@@ -159,3 +160,90 @@ def test_gradient_flow_no_vanishing():
     assert all(g is not None for g in grads)
     assert all(bool(tf.math.is_finite(tf.norm(g))) for g in grads)
     assert min(float(tf.norm(g)) for g in grads) > 0.0
+
+
+# --- head_activation (issue #24): optional tanh on ff1/ff2 ---
+
+_SENS = np.array([[1, 0, 1], [0, 1, 1]], np.float32)            # (input 2, units 3)
+_ADJ = np.array([[1, 1, 0], [0, 0, 1], [1, 0, 0]], np.float32)  # (3, 3)
+_NCP_BB0 = dict(backbone_layers=0, sparsity_mask=_ADJ, sensory_mask=_SENS)
+_HEAD_ARMS = {
+    'cfc_bb1': (CfC_Cell, {}),
+    'cfc_bb0_ncp': (CfC_Cell, _NCP_BB0),
+    'cfc_lrc_bb1': (CfC_LRC_Cell, {}),
+    'cfc_lrc_bb0_ncp': (CfC_LRC_Cell, _NCP_BB0),
+}
+# One-step outputs of _seeded_step, recorded on the cells BEFORE the
+# head_activation kwarg existed (benchmarks 2b4f68f): the default must stay
+# the linear-head cell.
+_DEFAULT_FIXTURE = {
+    'cfc_bb1': [[-3.2951531410217285, -1.2200011014938354, 0.03846590965986252], [-0.35560038685798645, -0.929089367389679, 1.619911789894104]],
+    'cfc_bb0_ncp': [[-1.5770059823989868, 0.366857647895813, 0.21311990916728973], [3.580240488052368, 1.3405214548110962, -0.26034873723983765]],
+    'cfc_lrc_bb1': [[0.058397531509399414, -1.2332098484039307, 0.3973008692264557], [0.8396316766738892, -0.4443165957927704, 1.6694730520248413]],
+    'cfc_lrc_bb0_ncp': [[-0.6562386751174927, -1.1248618364334106, 1.1318702697753906], [1.7081272602081299, 0.4391779601573944, -0.7801792621612549]],
+}
+
+
+def _seeded_step(cls, **kwargs):
+    """Build a 3-unit cell on 2 inputs, set every weight from a fixed numpy
+    seed (no TF RNG, so the values survive Keras init changes) and take one
+    step. Returns (cell, new_state)."""
+    rng = np.random.default_rng(0)
+    cell = cls(3, **kwargs)
+    cell.build((None, 2))
+    for layer in [*cell._backbone, cell._ff1, cell._ff2, cell._time_a,
+                  cell._time_b, *filter(None, [getattr(cell, '_elastance', None)])]:
+        layer.set_weights([rng.normal(size=w.shape).astype(np.float32)
+                           for w in layer.get_weights()])
+    x = tf.constant(rng.normal(size=(2, 2)), tf.float32)
+    h = tf.constant(rng.normal(size=(2, 3)), tf.float32)
+    out, _ = cell.call(x, [h])
+    return cell, out.numpy()
+
+
+@pytest.mark.parametrize('arm', sorted(_HEAD_ARMS))
+def test_default_head_activation_matches_linear_fixture(arm):
+    cls, kw = _HEAD_ARMS[arm]
+    for extra in ({}, {'head_activation': None}):
+        _, out = _seeded_step(cls, **kw, **extra)
+        np.testing.assert_allclose(out, _DEFAULT_FIXTURE[arm], rtol=0, atol=1e-6)
+
+
+@pytest.mark.parametrize('arm', sorted(_HEAD_ARMS))
+def test_tanh_bounds_ff_heads_and_leaves_gate_heads(arm):
+    """Same weights, large head inputs: tanh ff1/ff2 stay in [-1, 1] where the
+    linear heads do not; time_a/time_b are identical in both cells."""
+    cls, kw = _HEAD_ARMS[arm]
+    lin, _ = _seeded_step(cls, **kw)
+    tanh, _ = _seeded_step(cls, head_activation='tanh', **kw)
+    feats = tf.constant(100 * np.random.default_rng(1).normal(
+        size=(64, tanh._ff1.kernel.shape[0])), tf.float32)
+    for name in ('_ff1', '_ff2'):
+        assert np.abs(tanh._masked_dense(getattr(tanh, name), feats)).max() <= 1.0
+        assert np.abs(lin._masked_dense(getattr(lin, name), feats)).max() > 1.0
+    for name in ('_time_a', '_time_b'):
+        np.testing.assert_array_equal(
+            tanh._masked_dense(getattr(tanh, name), feats),
+            lin._masked_dense(getattr(lin, name), feats))
+
+
+@pytest.mark.parametrize('arm', sorted(_HEAD_ARMS))
+def test_head_activation_keeps_parameter_count(arm):
+    cls, kw = _HEAD_ARMS[arm]
+    lin, _ = _seeded_step(cls, **kw)
+    tanh, _ = _seeded_step(cls, head_activation='tanh', **kw)
+    assert tanh.count_params() == lin.count_params()
+    assert tanh.masked_off_count() == lin.masked_off_count()
+
+
+@pytest.mark.parametrize('cls', [CfC_Cell, CfC_LRC_Cell])
+def test_head_activation_config_round_trip(cls):
+    assert cls.from_config(
+        cls(4, head_activation='tanh').get_config())._head_activation == 'tanh'
+    assert cls.from_config(cls(4).get_config())._head_activation is None
+
+
+@pytest.mark.parametrize('cls', [CfC_Cell, CfC_LRC_Cell])
+def test_invalid_head_activation_raises(cls):
+    with pytest.raises(ValueError):
+        cls(4, head_activation='relu')

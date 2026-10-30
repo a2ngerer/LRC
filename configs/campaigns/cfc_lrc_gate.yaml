@@ -25,6 +25,9 @@ wirings: [dense, ncp, cncp]
 #   duffing                 bistable double-well  -> retention-ceiling stress (outer)
 #   multitimescale          two-timescale forcing -> time-rate modulation stress (inner)
 #   stiff_linear_k100       stiff linear system   -> timescale separation stress
+# Deprecated for new runs (#64): multitimescale starts in the rotation regime;
+# kept here for reproducibility. The final suite uses multitimescale_lib
+# (configs/suite/canary_mt_lib_hpo.yaml).
 systems: [spiral, nonlinear_predator_prey, duffing, multitimescale, stiff_linear_k100]
 
 # 5 seeds -> 2 x 3 x 5 x 5 = 150 runs. Bump to {range: [0, 10]} for tighter CIs.

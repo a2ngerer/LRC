@@ -1,0 +1,22 @@
+# S0 smoke of the frozen suite (protocol freeze F1-2026-10-26, validation
+# ladder S0; #72): the five multitimescale_lib arms for 3 epochs, one fit per
+# arm (tuning seed 100, one lr x one clip value): the four of mt_hpo.yaml and
+# cfc_static_w (cfc_static/ncp at --size 24, mt_final_static_w.yaml). Named
+# arms carry the 4k budget each, since the runner takes --size or
+# --param-budget, not both.
+#   BENCH=00_canary ./cluster/submit_suite.sh configs/suite/smoke_mt.yaml s0-smoke-mt
+task: lv
+system: multitimescale_lib
+stage: hpo
+arms:
+  cfc_ncp: {cell: cfc, wiring: ncp, param_budget: 4000}
+  cfc_static_ncp: {cell: cfc_static, wiring: ncp, param_budget: 4000}
+  gru_ncp: {cell: gru, wiring: ncp, param_budget: 4000}
+  ctrnn_ncp: {cell: ctrnn, wiring: ncp, param_budget: 4000}
+  cfc_static_w_ncp: {cell: cfc_static, wiring: ncp, size: 24}
+seeds: [100]
+epochs: 3
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --grid-lr, 1e-3, --grid-clip, "off"]
+cluster: {runs_per_gpu: 6, walltime: "01:00:00"}

@@ -45,7 +45,7 @@ class CorticalColumnV2Cell(BaseCell):
 
     Nodes: G, S, D are sub-cells of ``cell_cls`` (width u each, built through
     ``ncp_cell_kwargs`` like the cNCP and NCP layers, so CfC-family sub-cells
-    run without a backbone); R is a gated leaky relay of width
+    get one backbone layer by default); R is a gated leaky relay of width
     u_R = max(1, u // 2). The state is the list [g, s, d, r] (NODE_ORDER_V2),
     the output is d (output_size == u).
 

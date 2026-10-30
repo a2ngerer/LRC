@@ -1,0 +1,30 @@
+# Frozen final suite (F1-2026-10-26, sections 3, 5; #71): Person Activity,
+# 28 arms (the rollout matrix without mlp, plus cfc_static/dense), grid HPO.
+# Fits with pa_final.yaml: 28 x 11 + 180 = 488
+#   uv run python experiments/suite_manifest.py --count configs/suite/pa_*.yaml
+# Budget 30k, 50 epochs (best-val weights), grouped split. The solver arms on
+# ncp (lrc, mm_lrc, ctrnn) run one fit per GPU, every other arm three.
+#   ./cluster/submit_suite.sh configs/suite/pa_hpo.yaml pa-hpo
+task: pa
+stage: hpo
+cells:
+  cfc: [dense, dense3, ncp, cncp]
+  cfc_lrc: [dense, dense3, ncp, cncp]
+  cfc_lrc_outer: [dense, ncp]
+  cfc_mm_lrc: [dense, ncp]
+  lrc: [dense, dense3, ncp]
+  mm_lrc: [dense, ncp]
+  gru: [dense, dense3, ncp, cncp]
+  lstm: [dense, dense3, ncp]
+  ctrnn: [dense, dense3, ncp]
+  cfc_static: [dense]
+param_budget: 30000
+seeds: [100, 101]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+cluster: {runs_per_gpu: 3, walltime: "12:00:00"}
+heavy:
+  arms: [lrc_ncp, mm_lrc_ncp, ctrnn_ncp]
+  cluster: {runs_per_gpu: 1}

@@ -711,5 +711,5 @@ def test_effective_config_records_injected_ncp_defaults():
     assert lrc.effective_config['ncp']['inter_neurons'] > 0
     cfc = build_model('cfc', 'ncp', param_budget=1000)
     cfg = cfc.effective_config
-    assert cfg['cell_kwargs']['backbone_layers'] == 0
+    assert cfg['cell_kwargs']['backbone_layers'] == 1      # issue #21
     assert cfg['size'] is not None and cfg['ncp']['inter_neurons'] == cfg['size']

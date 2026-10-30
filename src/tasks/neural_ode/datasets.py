@@ -11,7 +11,24 @@ _SYSTEMS = {
     # eps-ablation: confirmatory headline host. Coexisting slow (0.05) and fast
     # (8) timescales give the inner liquid-elastance gate a timescale-separation
     # structure to exploit (spec section 2.2).
+    # Deprecated for new runs (#64): around y0 = [1, 0] the pendulum below
+    # rotates, the fast component is sampled 1.5-3 times per period at 128
+    # steps and y1 ramps without bound. Kept so the eps and cfc_lrc_gate
+    # campaigns stay reproducible; the final suite uses multitimescale_lib.
     'multitimescale': {'t_span': (0, 20), 'y0': [1.0, 0.0]},
+    # Same dynamics in the libration regime (#64, protocol freeze
+    # F1-2026-10-26). With phi = 8 y1 the system is the damped pendulum
+    # phi'' = 64 sin(phi) - 0.1 phi' - 0.0025 phi, stable at phi = pi; the box
+    # around (0, pi/8) at spread 0.3 keeps every initial state inside the
+    # separatrix (see lotka_volterra.datasets.LIBRATION_H_MAX), and (0, 10) at
+    # 128 steps samples the oscillation >= 10 times per period. 'spread' is the
+    # initial-condition jitter the sequence loader uses for this system.
+    # 'rtol'/'atol' override the shared 1e-3/1e-6 integrator tolerances: at
+    # rtol 1e-3 DOP853 phase-flips some fast oscillations (errors up to the
+    # full y0 range); at 1e-8/1e-9 the error against a tight reference is
+    # ~5e-7 of the range (atol 1e-6 alone would cap it at ~5e-4).
+    'multitimescale_lib': {'t_span': (0, 10), 'y0': [0.0, np.pi / 8],
+                           'spread': 0.3, 'rtol': 1e-8, 'atol': 1e-9},
 }
 
 _A_SPIRAL = np.array([[-0.1, 3.0], [-3.0, -0.1]])
@@ -81,6 +98,7 @@ _ODE_FUNCS = {
     'limited_predator_prey': _limited_predator_prey,
     'nonlinear_predator_prey': _nonlinear_predator_prey,
     'multitimescale': _multitimescale,
+    'multitimescale_lib': _multitimescale,
 }
 
 # eps-ablation: register the four stiff_linear systems (closures over kappa).
@@ -107,7 +125,7 @@ EPS_JITTER_KAPPA_FRAC = 0.02
 
 
 def generate_dataset(name: str, data_size: int = 1000,
-                     y0=None, seed=None, jitter: bool = False
+                     y0=None, seed=None, jitter: bool = False, t_span=None
                      ) -> tuple[np.ndarray, np.ndarray]:
     """Generate a trajectory for the named ODE system.
 
@@ -115,7 +133,7 @@ def generate_dataset(name: str, data_size: int = 1000,
         name: one of 'spiral', 'duffing', 'periodic_sinusoidal',
               'periodic_predator_prey', 'limited_predator_prey',
               'nonlinear_predator_prey', 'multitimescale',
-              'stiff_linear_k1', 'stiff_linear_k10', 'stiff_linear_k100',
+              'multitimescale_lib', 'stiff_linear_k1', 'stiff_linear_k10', 'stiff_linear_k100',
               'stiff_linear_k1000'
         data_size: number of time points
         y0: optional initial state override (length-2 sequence). Defaults to the
@@ -130,6 +148,8 @@ def generate_dataset(name: str, data_size: int = 1000,
               kappa perturbation (sigma_kappa = 0.02*kappa). Default False keeps
               the deterministic single-trajectory path (jitter-OFF mode, also
               used for the optimizer-scatter decomposition, spec section 3.0.4).
+        t_span: optional (t0, t1) override of the system's time span (the
+              _SYSTEMS entry stays unchanged).
 
     Returns:
         t: np.ndarray, shape (data_size,)
@@ -142,6 +162,7 @@ def generate_dataset(name: str, data_size: int = 1000,
         raise ValueError(f"Unknown system '{name}'. Valid: {list(_SYSTEMS.keys())}")
 
     params = _SYSTEMS[name]
+    t_span = params['t_span'] if t_span is None else tuple(t_span)
     y0 = list(params['y0']) if y0 is None else list(y0)
     ode_func = _ODE_FUNCS[name]
 
@@ -157,16 +178,16 @@ def generate_dataset(name: str, data_size: int = 1000,
             kappa_j = kappa + rng.normal(0.0, 1.0) * (EPS_JITTER_KAPPA_FRAC * kappa)
             ode_func = _make_stiff_linear(kappa_j)
 
-    t_eval = np.linspace(params['t_span'][0], params['t_span'][1], data_size)
+    t_eval = np.linspace(t_span[0], t_span[1], data_size)
 
     sol = solve_ivp(
         ode_func,
-        params['t_span'],
+        t_span,
         y0,
         method='DOP853',
         t_eval=t_eval,
-        rtol=1e-3,
-        atol=1e-6,
+        rtol=params.get('rtol', 1e-3),
+        atol=params.get('atol', 1e-6),
     )
 
     t = sol.t        # (data_size,)

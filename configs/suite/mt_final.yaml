@@ -1,0 +1,18 @@
+# Frozen final suite (F1-2026-10-26; #71): multitimescale_lib final fits,
+# seeds 0-4 for the four arms of mt_hpo.yaml (20), seeds 5-9 for cfc/ncp and
+# cfc_static/ncp (10). Set hpo_dir to the fetched HPO run first.
+#   ./cluster/submit_suite.sh configs/suite/mt_final.yaml mt-final
+task: lv
+system: multitimescale_lib
+stage: final
+cells: [cfc, cfc_static, gru, ctrnn]
+wirings: [ncp]
+param_budget: 4000
+seeds: [0, 1, 2, 3, 4]
+extra_seeds: {seeds: [5, 6, 7, 8, 9], arms: [cfc_ncp, cfc_static_ncp]}
+epochs: 450
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: results/01_lotka_volterra/<mt-hpo run>/results/hpo
+cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

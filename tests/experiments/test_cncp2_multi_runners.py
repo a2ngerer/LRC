@@ -44,6 +44,7 @@ def test_lv_runner_one_epoch_writes_multi_fields(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, 'argv', [
         'run_lotka_volterra_benchmark.py', '--wiring', 'cncp2_multi',
         '--columns', '2', '--cell', 'cfc_lrc', '--epochs', '1', '--size', '4',
+        '--anchors', '2,4', '--horizon', '4',
         '--n-trajectories', '10', '--seq-len', '8', '--batch-size', '4',
         '--outdir', str(tmp_path), '--probe-stability'])
     lv_runner.main()
@@ -68,7 +69,7 @@ def test_committee_runner_one_epoch_writes_drop_accs(tmp_path, monkeypatch):
         co_runner.main()
     (path,) = tmp_path.glob('*.json')
     assert path.name == \
-        'cfc_lrc_cncp2_multi_K2_s4_partition_median_seed0.json'
+        'cfc_lrc_cncp2_multi_K2_s4_identical_median_lr0.001_clipoff_cs0_seed0.json'
     record = json.loads(path.read_text())
     assert len(record['drop_accs']) == 2
     assert all(0.0 <= a <= 1.0 for a in record['drop_accs'])
