@@ -195,7 +195,7 @@ def run_one(spec, args):
         # same episodes, policy before the first update; the floor rule is the
         # aggregator's, the runner only records
         "untrained_return_mean": floor["mean"], "untrained_return_std": floor["std"],
-        "untrained_returns": floor["returns"],
+        "untrained_returns": floor["returns"], "untrained_obs_stats": "identity",
         "video_return": video_return, "wallclock_s": round(wall, 1),
         "video": video_path, "checkpoint": ckpt_path, "history": hist_ds,
         "timestamp": datetime.now(timezone.utc).isoformat(),

@@ -4,8 +4,9 @@
 exploration actions, drifting policy, whatever episodes happened to finish. The
 number reported for a comparison is instead the return of the *final* policy on
 ``EVAL_EPISODES`` fixed episodes (env seeds ``EVAL_SEED0 + i``), acting
-deterministically (mean action) under the frozen observation normalization of
-training -- the same policy-under-test as ``record.record_episode``.
+deterministically (mean action) under the given observation statistics -- the
+frozen ones of training for the final policy, as in ``record.record_episode``;
+the runner passes the initial identity statistics for the untrained policy.
 """
 import gymnasium as gym
 import numpy as np

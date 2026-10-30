@@ -276,6 +276,30 @@ def test_evaluation_draws_no_random_numbers(model_type):
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("model_type", ["mlp", "gru", "cfc_lrc"])
+def test_untrained_evaluation_leaves_the_training_trajectory_unchanged(model_type):
+    # Same seed, one PPO update, with and without the floor evaluation in between.
+    # Python's `random` is seeded by the test: Keras draws its initialiser seeds
+    # from it and PPOTrainer does not seed it (own issue), so the two builds
+    # would differ regardless of the evaluation.
+    import random
+    from src.tasks.mujoco_rl.envs import get_obs_stats
+    cfg = PPOConfig(num_envs=2, num_steps=8, total_steps=16, update_epochs=1,
+                    num_minibatches=2, units=8)
+
+    def final_weights(with_floor):
+        random.seed(1234)
+        t = PPOTrainer(model_type, "HalfCheetah-v5", seed=0, cfg=cfg)
+        if with_floor:
+            evaluate_policy(t.policy, "HalfCheetah-v5", *get_obs_stats(t.norm_obs),
+                            n_episodes=2)
+        return t.train()["policy"].get_weights()
+
+    for a, b in zip(final_weights(False), final_weights(True)):
+        np.testing.assert_allclose(a, b, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.slow
 @pytest.mark.parametrize("model_type", ["mlp", "cfc_lrc"])
 def test_run_one_record_has_trained_and_untrained_evaluation(tmp_path, monkeypatch, model_type):
     import argparse
@@ -283,8 +307,13 @@ def test_run_one_record_has_trained_and_untrained_evaluation(tmp_path, monkeypat
     from experiments import run_mujoco_benchmark as runner
     from src.tasks.mujoco_rl import evaluation
     real = evaluation.evaluate_policy        # two episodes instead of 20, for speed
-    monkeypatch.setattr(evaluation, "evaluate_policy",
-                        lambda *a, **k: real(*a, n_episodes=2, **k))
+    calls = []
+
+    def spy(policy, *a, **k):
+        calls.append((k["seed0"], [w.copy() for w in policy.get_weights()]))
+        return real(policy, *a, n_episodes=2, **k)
+
+    monkeypatch.setattr(evaluation, "evaluate_policy", spy)
     args = argparse.Namespace(
         profile="final", task="HalfCheetah-v5", total_steps=16, num_envs=2, num_steps=8,
         update_epochs=1, num_minibatches=2, lr=3e-4, units=8, param_budget=12000,
@@ -299,6 +328,10 @@ def test_run_one_record_has_trained_and_untrained_evaluation(tmp_path, monkeypat
     assert len(rec_["untrained_returns"]) == len(rec_["eval_returns"]) == 2
     assert rec_["untrained_return_mean"] == pytest.approx(np.mean(rec_["untrained_returns"]))
     assert rec_["params_effective"] and rec_["budget_deviation"] < 0.05
+    # floor first (initial weights), trained evaluation second, same fixed episodes
+    assert len(calls) == 2 and calls[0][0] == calls[1][0] == 12345
+    assert any(not np.array_equal(a, b) for a, b in zip(calls[0][1], calls[1][1]))
+    assert rec_["untrained_obs_stats"] == "identity"
 
 
 # --------------------------------------------------------- runner profiles
