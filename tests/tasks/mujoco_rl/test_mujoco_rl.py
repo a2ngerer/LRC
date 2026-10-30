@@ -310,14 +310,14 @@ def test_run_one_record_has_trained_and_untrained_evaluation(tmp_path, monkeypat
     calls = []
 
     def spy(policy, *a, **k):
-        calls.append((k["seed0"], [w.copy() for w in policy.get_weights()]))
+        calls.append((k["seed0"], [w.copy() for w in policy.get_weights()], a[1], a[2]))
         return real(policy, *a, n_episodes=2, **k)
 
     monkeypatch.setattr(evaluation, "evaluate_policy", spy)
     args = argparse.Namespace(
         profile="final", task="HalfCheetah-v5", total_steps=16, num_envs=2, num_steps=8,
         update_epochs=1, num_minibatches=2, lr=3e-4, units=8, param_budget=12000,
-        max_minutes=0.0, ode_unfolds=None, eval_seed=12345, no_video=True,
+        max_minutes=0.0, ode_unfolds=None, eval_seed=777, no_video=True,
         out_dir=str(tmp_path))
     runner.run_one({"model": model_type, "seed": 0}, args)
     rec_ = json.load(open(tmp_path / "runs" / f"{model_type}_s0.json"))
@@ -329,7 +329,9 @@ def test_run_one_record_has_trained_and_untrained_evaluation(tmp_path, monkeypat
     assert rec_["untrained_return_mean"] == pytest.approx(np.mean(rec_["untrained_returns"]))
     assert rec_["params_effective"] and rec_["budget_deviation"] < 0.05
     # floor first (initial weights), trained evaluation second, same fixed episodes
-    assert len(calls) == 2 and calls[0][0] == calls[1][0] == 12345
+    assert len(calls) == 2 and calls[0][0] == calls[1][0] == 777   # --eval-seed, not the default
+    np.testing.assert_array_equal(calls[0][2], 0.0)                  # floor: identity statistics
+    np.testing.assert_array_equal(calls[0][3], 1.0)
     assert any(not np.array_equal(a, b) for a, b in zip(calls[0][1], calls[1][1]))
     assert rec_["untrained_obs_stats"] == "identity"
 
