@@ -167,10 +167,16 @@ def test_trainer_reports_params_effective_and_budget_deviation():
 
 # ----------------------------------------- evaluation bookkeeping (stub env)
 class _StubEnv:
-    """Episode length 3 + seed % 3, reward 1 + seed % 5 per step, no physics."""
+    """No physics. Episode length 3 + seed % 3.
 
-    def __init__(self, log):
-        self.log, self.closed = log, False
+    Plain: reward 1 + seed % 5 per step, constant observations.
+    Responsive: reward and next observation are driven by the policy's action,
+    so the return depends on the mean action, the observation normalization and
+    the hidden state.
+    """
+
+    def __init__(self, log, responsive=False):
+        self.log, self.responsive = log, responsive
 
     def reset(self, seed=None):
         self.log.append(seed)
@@ -182,19 +188,23 @@ class _StubEnv:
         assert action.shape == (ACT_DIM,) and np.abs(action).max() <= 1.0
         self.t += 1
         done = self.t >= self.n
-        return (np.zeros(OBS_DIM, np.float32), 1.0 + self.seed_ % 5,
-                False, done, {})
+        if not self.responsive:
+            return np.zeros(OBS_DIM, np.float32), 1.0 + self.seed_ % 5, False, done, {}
+        obs = (np.resize(action, OBS_DIM) * 200.0 + self.seed_ % 7).astype(np.float32)
+        return obs, 1.0 + 100.0 * float(action.sum()), False, done, {}
 
     def close(self):
-        self.closed = True
+        pass
+
+
+STATS = (np.full(OBS_DIM, 2.0, np.float32), np.full(OBS_DIM, 4.0, np.float32))
 
 
 @pytest.mark.parametrize("model_type", ["mlp", "gru"])
 def test_evaluate_policy_bookkeeping_with_stub_env(model_type):
     pol = GaussianPolicy(model_type, OBS_DIM, ACT_DIM, units=6, seed=0)
     log = []
-    ev = evaluate_policy(pol, "unused", np.zeros(OBS_DIM, np.float32),
-                         np.ones(OBS_DIM, np.float32), env_fn=lambda: _StubEnv(log))
+    ev = evaluate_policy(pol, "unused", *STATS, env_fn=lambda: _StubEnv(log))
     seeds = [EVAL_SEED0 + i for i in range(EVAL_EPISODES)]
     assert EVAL_EPISODES == 20 and EVAL_SEED0 == 12345
     assert sorted(log) == seeds and ev["seeds"] == seeds       # one episode per fixed seed
@@ -206,14 +216,36 @@ def test_evaluate_policy_bookkeeping_with_stub_env(model_type):
     assert ev["std"] == pytest.approx(np.std(returns, ddof=1))
 
 
-def test_evaluate_policy_is_deterministic_and_independent_of_batch_mates():
-    pol = GaussianPolicy("gru", OBS_DIM, ACT_DIM, units=6, seed=0)
-    args = (pol, "unused", np.zeros(OBS_DIM, np.float32), np.ones(OBS_DIM, np.float32))
-    full = evaluate_policy(*args, env_fn=lambda: _StubEnv([]))
-    again = evaluate_policy(*args, env_fn=lambda: _StubEnv([]))
-    assert full["returns"] == again["returns"]
-    solo = evaluate_policy(*args, n_episodes=1, seed0=EVAL_SEED0 + 7, env_fn=lambda: _StubEnv([]))
-    assert solo["returns"][0] == pytest.approx(full["returns"][7])
+def _reference_return(pol, seed, stats):
+    """One episode on its own: mean action, frozen normalization, own hidden state."""
+    env = _StubEnv([], responsive=True)
+    obs, _ = env.reset(seed=seed)
+    state, _ = pol.initial_state(1)
+    total, done = 0.0, False
+    while not done:
+        o = np.clip((obs - stats[0]) / np.sqrt(stats[1] + 1e-8), -10.0, 10.0)
+        mean, state = pol.actor_forward(tf.constant(o[None], tf.float32), state)
+        obs, r, term, trunc, _ = env.step(np.clip(mean.numpy()[0], -1.0, 1.0))
+        total, done = total + r, term or trunc
+    return total
+
+
+@pytest.mark.parametrize("model_type", ["mlp", "gru"])
+def test_evaluate_policy_matches_independent_single_episode_rollouts(model_type):
+    # The stub's return depends on the action and next observation, so this fails
+    # if evaluation samples instead of taking the mean, skips the frozen
+    # normalization, or lets hidden state leak between batched episodes.
+    pol = GaussianPolicy(model_type, OBS_DIM, ACT_DIM, units=6, seed=0)
+    run = lambda: evaluate_policy(pol, "unused", *STATS,   # noqa: E731
+                                  env_fn=lambda: _StubEnv([], responsive=True))
+    ev = run()
+    expected = [_reference_return(pol, s, STATS) for s in ev["seeds"]]
+    np.testing.assert_allclose(ev["returns"], expected, rtol=1e-3, atol=1e-3)
+    assert np.std(expected) > 0.1                       # the policy's actions matter
+    assert ev["returns"] == run()["returns"]            # deterministic
+    solo = evaluate_policy(pol, "unused", *STATS, n_episodes=1, seed0=EVAL_SEED0 + 7,
+                           env_fn=lambda: _StubEnv([], responsive=True))
+    assert solo["returns"][0] == pytest.approx(ev["returns"][7], rel=1e-3, abs=1e-3)
     assert solo["std"] == 0.0
 
 
@@ -240,6 +272,16 @@ def test_final_numeric_adds_lrc_and_ltc_with_one_unfold():
     seeds = _per_model_seeds("final_numeric")
     assert seeds["lrc"] == seeds["ltc"] == list(range(5))
     assert {m: seeds[m] for m in PROFILES["final"]["models"]} == _per_model_seeds("final")
+
+
+def test_model_without_profile_seeds_needs_explicit_seeds():
+    import argparse
+    from experiments.run_mujoco_benchmark import _resolve_matrix
+    args = argparse.Namespace(profile="final", models="lrc", seeds=None)
+    with pytest.raises(SystemExit, match="--seeds"):
+        _resolve_matrix(args)
+    args.seeds = "3,4"
+    assert _resolve_matrix(args) == [{"model": "lrc", "seed": 3}, {"model": "lrc", "seed": 4}]
 
 
 def test_legacy_profiles_unchanged():

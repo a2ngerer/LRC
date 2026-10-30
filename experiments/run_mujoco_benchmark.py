@@ -31,6 +31,7 @@ import os
 import socket
 import sys
 import time
+from dataclasses import asdict
 from datetime import datetime, timezone
 
 # Allow running as a plain script (``src`` is the installed package).
@@ -75,6 +76,9 @@ def _resolve_matrix(args):
     prof = PROFILES[args.profile]
     models = args.models.split(",") if args.models else list(prof["models"])
     seeds = ([int(x) for x in args.seeds.split(",")] if args.seeds else prof["seeds"])
+    if isinstance(seeds, dict) and (missing := [m for m in models if m not in seeds]):
+        raise SystemExit(f"profile {args.profile!r} has no default seeds for {missing}; "
+                         f"pass --seeds")
     return build_specs(models, seeds)
 
 
@@ -170,7 +174,7 @@ def run_one(spec, args):
         "cell_kwargs": cell_kwargs,
         "num_envs": cfg.num_envs, "num_steps": cfg.num_steps,
         "update_epochs": cfg.update_epochs, "num_minibatches": cfg.num_minibatches,
-        "lr": cfg.lr,
+        "lr": cfg.lr, "anneal_lr": cfg.anneal_lr, "ppo_config": asdict(cfg),
         # training-episode statistics (noisy exploration policy, last 100 episodes)
         "final_return": out["final_return"], "best_return": out["best_return"],
         # final policy, deterministic, env seeds eval_seed + i

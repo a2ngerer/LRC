@@ -22,9 +22,11 @@ def evaluate_policy(policy, task, obs_mean, obs_var, n_episodes=EVAL_EPISODES,
     """Run ``n_episodes`` deterministic episodes with env seeds ``seed0 + i``.
 
     The episodes advance in lock-step so the policy is evaluated once per step on
-    the batch of live episodes; every episode keeps its own env and hidden state,
-    so its return does not depend on the others. Returns are the raw env reward
-    (no reward normalization).
+    the batch of live episodes; every episode keeps its own env and hidden state.
+    Batch mates do not interact, but the batch size changes float rounding, which
+    chaotic dynamics (HalfCheetah) amplify: returns are reproducible for a fixed
+    ``n_episodes`` (the protocol's 20), not across different batch sizes. Returns
+    are the raw env reward (no reward normalization).
 
     Args:
         env_fn: zero-argument factory of one env; defaults to ``gym.make(task)``
