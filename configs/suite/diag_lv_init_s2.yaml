@@ -1,0 +1,19 @@
+# Init diagnostic, LV stage continued (issue #82, exploratory): the two arms of
+# diag_lv_init.yaml on seeds 1 and 2, same configuration and reading, packing
+# as stage 4 (two fits per GPU). Run only after the seed-0 stage met the
+# reading for both arms. Own run folder under 00_canary; never part of an HPO
+# or final count.
+#   BENCH=00_canary ./cluster/submit_suite.sh --wandb configs/suite/diag_lv_init_s2.yaml s3-diag-lv-init-s2
+task: lv
+stage: final
+cells:
+  lrc_init: [ncp]
+  lrc_cal_lv: [ncp]
+param_budget: 4000
+seeds: [1, 2]
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic, --diagnostics]
+fixed: {lr: 0.003, clipnorm: null}
+cluster: {runs_per_gpu: 2, walltime: "04:00:00"}
