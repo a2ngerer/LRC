@@ -249,6 +249,58 @@ def test_evaluate_policy_matches_independent_single_episode_rollouts(model_type)
     assert solo["std"] == 0.0
 
 
+@pytest.mark.parametrize("model_type", ["mlp", "gru", "cfc_lrc"])
+def test_evaluation_draws_no_random_numbers(model_type):
+    # The untrained-policy evaluation runs before training; it must leave the
+    # global RNG streams (python, numpy, tf op seeds) where they were.
+    import random
+    pol = GaussianPolicy(model_type, OBS_DIM, ACT_DIM, units=6, seed=0)
+
+    def streams():
+        tf.random.set_seed(7)
+        return random.getstate(), np.random.get_state(), tf.random.normal([4]).numpy()
+
+    def after_eval():
+        tf.random.set_seed(7)
+        evaluate_policy(pol, "HalfCheetah-v5", np.zeros(17, np.float32),
+                        np.ones(17, np.float32), n_episodes=2)
+        return random.getstate(), np.random.get_state(), tf.random.normal([4]).numpy()
+
+    py0, np0, tf0 = streams()
+    random.setstate(py0)
+    np.random.set_state(np0)
+    py1, np1, tf1 = after_eval()
+    assert py1 == py0
+    assert all(np.array_equal(a, b) for a, b in zip(np1, np0))
+    np.testing.assert_array_equal(tf1, tf0)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("model_type", ["mlp", "cfc_lrc"])
+def test_run_one_record_has_trained_and_untrained_evaluation(tmp_path, monkeypatch, model_type):
+    import argparse
+    import json
+    from experiments import run_mujoco_benchmark as runner
+    from src.tasks.mujoco_rl import evaluation
+    real = evaluation.evaluate_policy        # two episodes instead of 20, for speed
+    monkeypatch.setattr(evaluation, "evaluate_policy",
+                        lambda *a, **k: real(*a, n_episodes=2, **k))
+    args = argparse.Namespace(
+        profile="final", task="HalfCheetah-v5", total_steps=16, num_envs=2, num_steps=8,
+        update_epochs=1, num_minibatches=2, lr=3e-4, units=8, param_budget=12000,
+        max_minutes=0.0, ode_unfolds=None, eval_seed=12345, no_video=True,
+        out_dir=str(tmp_path))
+    runner.run_one({"model": model_type, "seed": 0}, args)
+    rec_ = json.load(open(tmp_path / "runs" / f"{model_type}_s0.json"))
+    for key in ("eval_return_mean", "eval_return_std",
+                "untrained_return_mean", "untrained_return_std"):
+        assert np.isfinite(rec_[key]), key
+    assert rec_["untrained_return_std"] >= 0 and rec_["eval_return_std"] >= 0
+    assert len(rec_["untrained_returns"]) == len(rec_["eval_returns"]) == 2
+    assert rec_["untrained_return_mean"] == pytest.approx(np.mean(rec_["untrained_returns"]))
+    assert rec_["params_effective"] and rec_["budget_deviation"] < 0.05
+
+
 # --------------------------------------------------------- runner profiles
 def _per_model_seeds(profile):
     specs = build_specs(PROFILES[profile]["models"], PROFILES[profile]["seeds"])

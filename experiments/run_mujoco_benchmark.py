@@ -6,7 +6,9 @@ filters (``--models`` / ``--seeds``) and a ``--profile`` of sensible defaults.
 
 A run trains a PPO policy (see ``src.tasks.mujoco_rl.ppo``), evaluates the final
 policy on 20 fixed episodes (``eval_return_mean`` / ``eval_return_std``, kept
-apart from the training returns ``final_return`` / ``best_return``), saves a
+apart from the training returns ``final_return`` / ``best_return``; the freshly
+initialised policy of the seed gets the same episodes before training:
+``untrained_return_mean`` / ``untrained_return_std``), saves a
 JSON metrics record, a ``.npz`` policy checkpoint, and -- unless ``--no-video``
 -- a rendered mp4 of a deterministic rollout. Rendering is wrapped so a render
 failure (e.g. no GL backend on a compute node) never fails the training run:
@@ -99,6 +101,7 @@ def _make_cfg(args):
 
 def run_one(spec, args):
     from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
+    from src.tasks.mujoco_rl.envs import get_obs_stats
     from src.tasks.mujoco_rl.evaluation import evaluate_policy
     from src.tasks.mujoco_rl.ppo import PPOTrainer
     from src.tasks.mujoco_rl import record as rec
@@ -131,6 +134,14 @@ def run_one(spec, args):
     print(f"=== TRAIN {tag} task={args.task} total_steps={cfg.total_steps} "
           f"units={trainer.policy.units} params={trainer.params_effective} "
           f"envs={cfg.num_envs}x{cfg.num_steps} cell_kwargs={cell_kwargs} ===", flush=True)
+    # Floor of the family (protocol F2): the freshly initialised policy of this
+    # seed on the same fixed episodes, under the initial (identity) observation
+    # statistics. Pure forward passes with mean actions on separate envs: no
+    # RNG draw, so the training trajectory is the one it would be without this.
+    floor = evaluate_policy(trainer.policy, args.task, *get_obs_stats(trainer.norm_obs),
+                            seed0=args.eval_seed)
+    print(f"[{tag}] untrained {len(floor['returns'])} episodes: "
+          f"{floor['mean']:.1f} +- {floor['std']:.1f}", flush=True)
     t0 = time.time()
     out = trainer.train()
     wall = time.time() - t0
@@ -181,6 +192,10 @@ def run_one(spec, args):
         "eval_return_mean": ev["mean"], "eval_return_std": ev["std"],
         "eval_returns": ev["returns"], "eval_lengths": ev["lengths"],
         "eval_seed": args.eval_seed,
+        # same episodes, policy before the first update; the floor rule is the
+        # aggregator's, the runner only records
+        "untrained_return_mean": floor["mean"], "untrained_return_std": floor["std"],
+        "untrained_returns": floor["returns"],
         "video_return": video_return, "wallclock_s": round(wall, 1),
         "video": video_path, "checkpoint": ckpt_path, "history": hist_ds,
         "timestamp": datetime.now(timezone.utc).isoformat(),
