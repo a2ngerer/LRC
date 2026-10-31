@@ -11,6 +11,7 @@ policy. This decouples training from rendering -- the cluster can train and save
 a checkpoint, and rendering can happen anywhere (e.g. locally, where MuJoCo
 offscreen rendering is known to work).
 """
+import json
 import os
 
 import gymnasium as gym
@@ -32,6 +33,7 @@ def save_policy(path, policy, obs_mean, obs_var, extra=None):
     payload["obs_var"] = np.asarray(obs_var, np.float32)
     payload["model_type"] = np.array(policy.model_type)
     payload["units"] = np.array(policy.units)
+    payload["cell_kwargs"] = np.array(json.dumps(policy.cell_kwargs, sort_keys=True))
     payload["obs_dim"] = np.array(policy.obs_dim)
     payload["act_dim"] = np.array(policy.act_dim)
     for k, v in (extra or {}).items():
@@ -47,10 +49,15 @@ def load_policy(path):
     units = int(d["units"])
     obs_dim = int(d["obs_dim"])
     act_dim = int(d["act_dim"])
-    policy = GaussianPolicy(model_type, obs_dim, act_dim, units=units, seed=0)
+    # Checkpoints from before the registry kwargs carry none: those policies were
+    # built without cell kwargs, so {} (not the registry's) rebuilds them.
+    cell_kwargs = json.loads(str(d["cell_kwargs"])) if "cell_kwargs" in d.files else {}
+    policy = GaussianPolicy(model_type, obs_dim, act_dim, units=units,
+                            cell_kwargs=cell_kwargs, seed=0)
     n = int(d["n_weights"])
     policy.set_weights([d[f"w{i}"] for i in range(n)])
-    return policy, d["obs_mean"], d["obs_var"], {"model_type": model_type, "units": units}
+    return policy, d["obs_mean"], d["obs_var"], {"model_type": model_type, "units": units,
+                                                 "cell_kwargs": cell_kwargs}
 
 
 def _overlay(frame, lines):

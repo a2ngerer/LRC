@@ -22,8 +22,10 @@ from dataclasses import dataclass
 import numpy as np
 import tensorflow as tf
 
+from src.wirings import effective_param_count
+
 from .envs import make_train_envs, get_obs_stats, clip_obs
-from .policies import GaussianPolicy
+from .policies import GaussianPolicy, size_for_param_budget
 
 
 @dataclass
@@ -44,6 +46,9 @@ class PPOConfig:
     norm_adv: bool = True
     clip_vloss: bool = True
     units: int = 64
+    # Effective parameter budget of actor + critic; when set, ``units`` is
+    # replaced by the width whose policy lands closest to it (per model type).
+    param_budget: int | None = None
     max_seconds: float = 0.0  # optional wall-clock cap; 0 = train all updates
 
 
@@ -67,7 +72,8 @@ def _compute_gae(rewards, values, dones, next_value, next_done, gamma, lam):
 
 
 class PPOTrainer:
-    def __init__(self, model_type, task, seed, cfg: PPOConfig, log_fn=None):
+    def __init__(self, model_type, task, seed, cfg: PPOConfig, log_fn=None,
+                 cell_kwargs=None):
         self.model_type = model_type
         self.task = task
         self.seed = int(seed)
@@ -80,8 +86,17 @@ class PPOTrainer:
         self.envs, self.norm_obs = make_train_envs(task, cfg.num_envs, cfg.gamma, self.seed)
         self.obs_dim = int(np.prod(self.envs.single_observation_space.shape))
         self.act_dim = int(np.prod(self.envs.single_action_space.shape))
+        units = cfg.units
+        if cfg.param_budget:
+            units, _ = size_for_param_budget(model_type, self.obs_dim, self.act_dim,
+                                             cfg.param_budget, cell_kwargs, self.seed)
         self.policy = GaussianPolicy(model_type, self.obs_dim, self.act_dim,
-                                     units=cfg.units, seed=self.seed)
+                                     units=units, cell_kwargs=cell_kwargs, seed=self.seed)
+        self.params_effective = int(effective_param_count(self.policy))
+        self.params_raw = int(sum(int(np.prod(v.shape))
+                                  for v in self.policy.trainable_variables))
+        self.budget_deviation = (abs(self.params_effective - cfg.param_budget) / cfg.param_budget
+                                 if cfg.param_budget else None)
         self.opt = tf.keras.optimizers.Adam(learning_rate=cfg.lr, epsilon=1e-5)
         # Force-build optimizer slots so apply_gradients inside tf.function is stable.
         self.opt.build(self.policy.trainable_variables)
@@ -274,6 +289,10 @@ class PPOTrainer:
             "final_return": final_return,
             "best_return": float(best_return) if best_return > -1e17 else float("nan"),
             "global_step": global_step,
+            "units": self.policy.units,
+            "params_effective": self.params_effective,
+            "params_raw": self.params_raw,
+            "budget_deviation": self.budget_deviation,
         }
 
     def _optimize(self, b_obs, b_act, b_logp, b_val, b_done, adv, ret,
@@ -313,5 +332,6 @@ class PPOTrainer:
                         tf.constant(f_ret[idx]), tf.constant(f_val[idx]))
 
 
-def train(model_type, task, seed, cfg, log_fn=None):
-    return PPOTrainer(model_type, task, seed, cfg, log_fn=log_fn).train()
+def train(model_type, task, seed, cfg, log_fn=None, cell_kwargs=None):
+    return PPOTrainer(model_type, task, seed, cfg, log_fn=log_fn,
+                      cell_kwargs=cell_kwargs).train()
