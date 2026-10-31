@@ -2,6 +2,7 @@ import numpy as np
 import tensorflow as tf
 from ncps.wirings import NCP
 from .base_wiring import BaseWiring
+from .rewiring import SWAPS_PER_EDGE, rewire_degree_preserving
 from src.neurons.base_cell import BaseCell
 from src.neurons import (GRU_Cell, LSTM_Cell, CfC_Cell, CfC_LRC_Cell,
                          CfC_MM_LRC_Cell, CfC_MM_LTC_Cell)
@@ -114,11 +115,23 @@ class NCPWiring(BaseWiring):
         seed:             random seed for NCP wiring generation (default 42)
         self_recurrent:   diagonal self-recurrence for CFC_NCP_CELLS sub-cells
                           (see NCPLayeredCell; default True, issue #23)
+        rewire:           the ``ncp_random`` null model (issue #17): the masks
+                          of the NCP graph of this seed after a
+                          degree-preserving, pass-order-respecting random
+                          rewiring (``rewire_degree_preserving``), with
+                          ``SWAPS_PER_EDGE`` x edges swap proposals. Sensory
+                          inputs may then reach any layer, any layer may read
+                          all earlier ones, and inter and motor neurons may
+                          get intra-layer edges (the statements about the
+                          plain NCP above and below do not hold for the
+                          rewired graph). The effective parameter count equals
+                          the plain NCP of the same seed. Raises when no swap
+                          is admissible (tiny sizes).
         **cell_kwargs:    forwarded to the cell constructor
     """
 
     def __init__(self, cell_cls, inter_neurons, command_neurons, motor_neurons,
-                 seed=42, self_recurrent=True, **cell_kwargs):
+                 seed=42, self_recurrent=True, rewire=False, **cell_kwargs):
         super().__init__(cell=None)
         self.cell_cls = cell_cls
         self.inter_neurons = inter_neurons
@@ -127,8 +140,10 @@ class NCPWiring(BaseWiring):
         self.units = inter_neurons + command_neurons + motor_neurons
         self.seed = seed
         self.self_recurrent = self_recurrent
+        self.rewire = rewire
         self.cell_kwargs = cell_kwargs
         self._graphs = {}
+        self._rewired = {}
 
     def graph(self, input_dim):
         """The ncps NCP graph for ``input_dim`` sensory features (cached)."""
@@ -138,13 +153,51 @@ class NCPWiring(BaseWiring):
                 self.seed, int(input_dim))
         return self._graphs[int(input_dim)]
 
+    def _rewired_masks(self, input_dim):
+        """``(sensory, adjacency, overlap)`` of the rewired graph (cached).
+
+        The input features are source-only nodes in front of the units; the
+        pass order is input < inter < command < motor.
+        """
+        input_dim = int(input_dim)
+        if input_dim not in self._rewired:
+            g = self.graph(input_dim)
+            n, u = input_dim, self.units
+            full = np.zeros((n + u, n + u), bool)
+            full[:n, n:] = np.abs(g.sensory_adjacency_matrix) > 0
+            full[n:, n:] = np.abs(g.adjacency_matrix) > 0
+            layer_of = np.zeros(n + u, int)
+            for k, idx in enumerate((g._inter_neurons, g._command_neurons,
+                                     g._motor_neurons), 1):
+                layer_of[n + np.asarray(idx)] = k
+            new, overlap = rewire_degree_preserving(
+                full, layer_of, self.seed, SWAPS_PER_EDGE * int(full.sum()))
+            if overlap == 1.0:
+                raise ValueError(
+                    "ncp_random: no edge swap is admissible for sizes "
+                    f"({self.inter_neurons}, {self.command_neurons}, "
+                    f"{self.motor_neurons}) and input_dim {input_dim}; the "
+                    "rewired graph would equal the NCP graph.")
+            self._rewired[input_dim] = (new[:n, n:], new[n:, n:], overlap)
+        return self._rewired[input_dim]
+
+    def rewire_overlap(self, input_dim):
+        """Fraction of the original neuron-level edges (sensory and state edges,
+        fixed self-loops included) still present after rewiring; reported in the
+        result JSON as ``rewire_overlap``. None for the plain NCP."""
+        return self._rewired_masks(input_dim)[2] if self.rewire else None
+
     def adjacency_mask(self, input_dim):
         """Binary state -> state mask, shape (units, units)."""
+        if self.rewire:
+            return self._rewired_masks(input_dim)[1].astype(np.float32)
         return (np.abs(self.graph(input_dim).adjacency_matrix) > 0
                 ).astype(np.float32)
 
     def sensory_mask(self, input_dim):
         """Binary input -> state mask, shape (input_dim, units)."""
+        if self.rewire:
+            return self._rewired_masks(input_dim)[0].astype(np.float32)
         return (np.abs(self.graph(input_dim).sensory_adjacency_matrix) > 0
                 ).astype(np.float32)
 
@@ -187,7 +240,8 @@ class NCPLayeredCell(BaseCell):
     its input mask is the NCP adjacency from the previous layer (the sensory
     adjacency for inter), its recurrent mask the intra-layer adjacency, which
     is empty for inter and motor and the command <-> command synapses for
-    command. Every layer receives the same ``elapsed_time``. Unlike ncps
+    command (for the plain NCP graph; see the read set below for the rewired
+    one). Every layer receives the same ``elapsed_time``. Unlike ncps
     (``fully_recurrent=True`` default) the intra-layer recurrence is masked.
     CfC-family sub-cells default to ``backbone_layers=1`` (see CFC_NCP_CELLS).
 
@@ -201,6 +255,14 @@ class NCPLayeredCell(BaseCell):
     The hidden state stays one concatenated vector per state slot in ncps
     order ``[motor | command | inter]``, so the motor slice, state handling and
     ``effective_param_count`` see the same layout as the synchronous cell.
+
+    Read set (issue #17): layer l reads the masked concatenation of the input
+    ``x`` and the new states of all earlier layers. Sources that carry no edge
+    into the layer are left out, except the layer before it (``x`` for the
+    first), so in the plain NCP graph (sensory -> inter -> command -> motor)
+    every layer reads exactly its predecessor, with the weights and the call
+    graph of the previous-layer-only cell. Only a rewired graph (``ncp_random``)
+    adds ``x`` or earlier layers to a read set.
     """
 
     def __init__(self, wiring, self_recurrent=True, **kwargs):
@@ -223,20 +285,24 @@ class NCPLayeredCell(BaseCell):
         if isinstance(input_shape[0], (tuple, list, tf.TensorShape)):
             input_shape = input_shape[0]
         input_dim = int(input_shape[-1])
-        g = self._wiring.graph(input_dim)
-        adj = (np.abs(g.adjacency_matrix) > 0).astype(np.float32)
-        sens = (np.abs(g.sensory_adjacency_matrix) > 0).astype(np.float32)
         w = self._wiring
+        g = w.graph(input_dim)
+        adj, sens = w.adjacency_mask(input_dim), w.sensory_mask(input_dim)
         kw = ncp_cell_kwargs(w.cell_cls, w.cell_kwargs)
         self_loops = (self._self_recurrent
                       and issubclass(w.cell_cls, CFC_NCP_CELLS))
-        self._slices, self._cells = [], []    # compute order: inter, command, motor
-        prev = None
+        layers = []                           # compute order: inter, command, motor
         for idx in (g._inter_neurons, g._command_neurons, g._motor_neurons):
             idx = np.asarray(idx)
             assert np.array_equal(idx, np.arange(idx[0], idx[-1] + 1)), \
                 'ncps neuron ids per layer are expected to be contiguous'
-            in_mask = sens[:, idx] if prev is None else adj[np.ix_(prev, idx)]
+            layers.append(idx)
+        self._slices, self._cells, self._reads = [], [], []
+        for k, idx in enumerate(layers):
+            # sources 0 = x, 1.. = new states of the layers before this one
+            blocks = [sens[:, idx]] + [adj[np.ix_(p, idx)] for p in layers[:k]]
+            reads = [i for i, b in enumerate(blocks) if i == k or b.any()]
+            in_mask = np.concatenate([blocks[i] for i in reads], axis=0)
             rec_mask = adj[np.ix_(idx, idx)]              # a copy
             if self_loops:
                 np.fill_diagonal(rec_mask, 1.0)
@@ -244,7 +310,7 @@ class NCPLayeredCell(BaseCell):
                               sensory_mask=in_mask, **kw)
             self._slices.append(slice(int(idx[0]), int(idx[-1]) + 1))
             self._cells.append(cell)
-            prev = idx
+            self._reads.append(reads)
         self.built = True
 
     def call(self, inputs, states):
@@ -254,12 +320,14 @@ class NCPLayeredCell(BaseCell):
         else:
             x, feed = inputs, (lambda v: v)
         states = list(states) if isinstance(states, (list, tuple)) else [states]
-        outs, new = [], []
-        for sl, cell in zip(self._slices, self._cells):
-            out, ns = cell(feed(x), [s[:, sl] for s in states])
+        sources, outs, new = [x], [], []   # x, then each layer's new state
+        for sl, cell, reads in zip(self._slices, self._cells, self._reads):
+            v = (sources[reads[0]] if len(reads) == 1
+                 else tf.concat([sources[i] for i in reads], axis=-1))
+            out, ns = cell(feed(v), [s[:, sl] for s in states])
             outs.append(out)
             new.append(list(ns) if isinstance(ns, (list, tuple)) else [ns])
-            x = out
+            sources.append(out)
         # compute order is inter, command, motor; ncps order is the reverse.
         output = tf.concat(outs[::-1], axis=-1)
         new_states = [tf.concat([n[i] for n in new[::-1]], axis=-1)

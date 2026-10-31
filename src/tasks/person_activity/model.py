@@ -43,9 +43,15 @@ from src.wirings.ncp import BUDGET_SIZES, CFC_NCP_CELLS, ncp_cell_kwargs
 # cncp2:  one four-node cNCP v2 column (width u = size), output = D
 # cncp2_multi: K independent cNCP v2 columns (width u = size each), optional
 #         lateral coupling, readout over the column outputs (spec B.7, V4)
-WIRINGS = ("cncp", "ncp", "dense", "dense3", "cncp2", "cncp2_multi")
+# ncp_random / cncp_random: the degree-preserving random-rewiring null models of
+#         ncp / cncp (issue #17), same weights and effective parameter count
+WIRINGS = ("cncp", "ncp", "dense", "dense3", "cncp2", "cncp2_multi",
+           "ncp_random", "cncp_random")
 # Wirings whose composite state holds one slot per graph node.
-COMPOSITE_WIRINGS = ("cncp", "cncp2", "cncp2_multi")
+COMPOSITE_WIRINGS = ("cncp", "cncp2", "cncp2_multi", "cncp_random")
+# The two null models run the node-for-node same cell as their plain wiring.
+NCP_WIRINGS = ("ncp", "ncp_random")
+CNCP_WIRINGS = ("cncp", "cncp_random")
 
 # Person Activity rows are one-hot(sensor tag, 4) ++ xyz (datasets.py), the
 # sensor structure of partition='region' (spec B.7).
@@ -116,7 +122,7 @@ def budget_sizes(wiring):
     """The ``size_for_budget`` scan of one arm: the finer lamina knob for the
     wirings built from scaled_lamina_units (cncp, tbt_cncp*), else every
     integer size in BUDGET_SIZES."""
-    if wiring == "cncp" or wiring.startswith("tbt_"):
+    if wiring in CNCP_WIRINGS or wiring.startswith("tbt_"):
         return lamina_sizes()
     return BUDGET_SIZES
 
@@ -218,7 +224,8 @@ def effective_self_recurrent(wiring, cell, self_recurrent=True):
     """Diagonal NCP self-recurrence this arm actually gets (None: not
     applicable). Only the closed-form sub-cells under 'ncp' have it (issue #23,
     NCPLayeredCell); the runners' --no-self-recurrence passes False."""
-    if wiring != "ncp" or not issubclass(_resolve_cell_cls(cell), CFC_NCP_CELLS):
+    if (wiring not in NCP_WIRINGS
+            or not issubclass(_resolve_cell_cls(cell), CFC_NCP_CELLS)):
         return None
     return bool(self_recurrent)
 
@@ -365,7 +372,10 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
     """Build and compile a person-activity model for one (wiring, cell).
 
     Args:
-        wiring:       'cncp', 'ncp', 'dense', 'dense3', 'cncp2' or 'cncp2_multi'.
+        wiring:       'cncp', 'ncp', 'dense', 'dense3', 'cncp2', 'cncp2_multi',
+                      or the random-rewiring controls 'ncp_random' /
+                      'cncp_random' (issue #17; same effective parameter count
+                      as 'ncp' / 'cncp' of the same seed and size).
         cell:         _CELL_REGISTRY key (e.g. 'cfc_lrc', 'gru', 'lstm') or
                       BaseCell subclass; cncp takes single-state cells only.
         size:         the arm's width knob. dense/dense3: RNN units per layer;
@@ -412,7 +422,8 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
         Compiled tf.keras.Model with inputs [features (B, seq_len,
         feature_size), time (B, seq_len, 1)] and output (B, seq_len,
         num_classes) logits; loss SparseCategoricalCrossentropy(from_logits),
-        metric SparseCategoricalAccuracy.
+        metric SparseCategoricalAccuracy. ``model.rewire_overlap`` is the share
+        of the original edges the random wirings kept (None otherwise).
     """
     if wiring not in WIRINGS:
         raise ValueError(f"wiring must be one of {WIRINGS}, got {wiring!r}")
@@ -433,6 +444,7 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
          if dt_feature and wiring not in ("dense", "dense3") else features)
 
     logits = None
+    rewire_overlap = None
     if wiring == "cncp2_multi":
         logits = multi_column_head(
             (x, time), num_classes, "logits", columns=columns,
@@ -440,28 +452,34 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
             coupling=coupling, readout=readout or default_readout(partition),
             region_tags=PA_SENSOR_TAGS,
             **cell_kwargs)
-    elif wiring == "cncp":
+    elif wiring in CNCP_WIRINGS:
         # One composite RNN cell holding the whole sparse cNCP graph; it
         # consumes (features, time) directly, so every sub-cell integrates
-        # the true elapsed time at every step.
+        # the true elapsed time at every step. cncp_random: the group-level
+        # null model (issue #17).
         cncp_cell = CorticalColumnCell(
             cell_cls=cell_cls, lamina_units=scaled_lamina_units(size),
-            seed=seed, timescale_prior=timescale_prior, **cell_kwargs)
+            seed=seed, timescale_prior=timescale_prior,
+            rewire=wiring == "cncp_random", **cell_kwargs)
         h = tf.keras.layers.RNN(cncp_cell, return_sequences=True)((x, time))
+        rewire_overlap = cncp_cell.rewire_overlap
     elif wiring == "cncp2":
         col = CorticalColumnV2Cell(cell_cls=cell_cls, units=size, seed=seed,
                                    **cell_kwargs)
         h = tf.keras.layers.RNN(col, return_sequences=True)((x, time))
-    elif wiring == "ncp":
+    elif wiring in NCP_WIRINGS:
         # One NCP cell: the sparse circuit lives inside a single recurrent
         # cell, so it consumes (features, time) directly and every neuron
         # integrates the true elapsed time (docs/ncp-wiring-fix-2026-09-17.md).
+        # ncp_random: the rewired graph (issue #17).
         inter, command, motor = ncp_layer_sizes(size)
         ncp = NCPWiring(cell_cls, inter, command, motor, seed=seed,
-                        self_recurrent=self_recurrent, **cell_kwargs)
+                        self_recurrent=self_recurrent,
+                        rewire=wiring == "ncp_random", **cell_kwargs)
         h = tf.keras.layers.RNN(ncp.make_cell(), return_sequences=True)(
             (x, time))
         h = ncp.motor_slice()(h)
+        rewire_overlap = ncp.rewire_overlap(x.shape[-1])
     else:  # dense / dense3
         h = stacked_dense(cell_cls, size, features, time,
                           n_layers=DENSE3_LAYERS if wiring == "dense3" else 1,
@@ -479,4 +497,5 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
         loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
         metrics=[tf.keras.metrics.SparseCategoricalAccuracy()],
     )
+    model.rewire_overlap = rewire_overlap      # None unless a *_random wiring
     return model

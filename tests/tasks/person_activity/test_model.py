@@ -86,3 +86,38 @@ def test_dense3_feeds_dt_to_every_layer():
                    for i in concat.input)
     x, t = _batch()
     assert not np.allclose(model([x, t]), model([x, 3.0 * t]))
+
+
+# --- random-rewiring controls (issue #17) -------------------------------------
+
+@pytest.mark.parametrize("plain,random", [("ncp", "ncp_random"),
+                                          ("cncp", "cncp_random")])
+@pytest.mark.parametrize("cell", ["cfc_lrc", "gru"])
+def test_random_wirings_match_their_plain_wiring_in_effective_params(
+        plain, random, cell):
+    # raw counts differ for ncp_random: its layers read more sources and so
+    # hold larger, partly masked kernels
+    p, r = (param_counts(_build(w, cell, True))["params_effective"]
+            for w in (plain, random))
+    assert p == r
+    x, t = _batch()
+    assert tuple(_build(random, cell, True)([x, t]).shape) == (2, T, C)
+
+
+def test_random_wirings_report_the_kept_edge_share():
+    assert _build("ncp", "gru", True).rewire_overlap is None
+    assert _build("cncp", "gru", True).rewire_overlap is None
+    assert 0.0 < _build("ncp_random", "gru", True).rewire_overlap < 1.0
+    assert _build("cncp_random", "gru", True).rewire_overlap == \
+        pytest.approx(17 / 19)
+
+
+def test_random_wirings_follow_the_plain_ones_in_the_helpers():
+    from src.tasks.person_activity.model import (budget_sizes,
+                                                 effective_self_recurrent,
+                                                 lamina_sizes)
+    assert budget_sizes("cncp_random") == lamina_sizes()
+    assert effective_self_recurrent("ncp_random", "cfc_lrc") is True
+    assert effective_self_recurrent("ncp_random", "gru") is None
+    with pytest.raises(ValueError, match="single-state"):
+        _build("cncp_random", "lstm", True)
