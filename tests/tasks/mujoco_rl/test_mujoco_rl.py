@@ -281,20 +281,62 @@ def test_evaluation_draws_no_random_numbers(model_type):
     np.testing.assert_array_equal(tf1, tf0)
 
 
+# ------------------------------------------------- run-seed determinism (issue #108)
+def _foreign_rng_state(k):
+    """Leave behind what other code leaves: a Keras seed generator (the task model
+    builders call tf.keras.utils.set_random_seed) and draws from Python, NumPy,
+    TF and a Keras initialiser. Different `k`, different leftover state."""
+    import random
+    tf.keras.utils.set_random_seed(1000 + k)
+    random.random()
+    np.random.rand(3)
+    tf.random.normal([2])
+    tf.keras.layers.Dense(3).build((None, 4))
+
+
+@pytest.mark.parametrize("model_type", MODEL_TYPES)
+def test_policy_start_weights_follow_the_seed_only(model_type):
+    def weights(seed, k):
+        _foreign_rng_state(k)
+        return GaussianPolicy(model_type, OBS_DIM, ACT_DIM, units=6, seed=seed).get_weights()
+
+    ref = weights(3, 0)
+    for a, b in zip(ref, weights(3, 1)):
+        np.testing.assert_array_equal(a, b)
+    assert any(not np.array_equal(a, b) for a, b in zip(ref, weights(4, 2)))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("model_type", ["mlp", "gru", "cfc", "lrc", "cfc_lrc"])
+def test_ppo_update_reproduces_across_foreign_rng_state(model_type):
+    cfg = PPOConfig(num_envs=2, num_steps=8, total_steps=16, update_epochs=1,
+                    num_minibatches=2, units=8)
+
+    def start_and_trained(k):
+        _foreign_rng_state(k)
+        t = PPOTrainer(model_type, "HalfCheetah-v5", seed=0, cfg=cfg)
+        start = [w.copy() for w in t.policy.get_weights()]
+        return start, t.train()["policy"].get_weights()
+
+    (start_a, final_a), (start_b, final_b) = start_and_trained(0), start_and_trained(1)
+    for a, b in zip(start_a, start_b):
+        np.testing.assert_array_equal(a, b)
+    for a, b in zip(final_a, final_b):
+        np.testing.assert_allclose(a, b, rtol=1e-5, atol=1e-6)
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("model_type", ["mlp", "gru", "cfc_lrc"])
 def test_untrained_evaluation_leaves_the_training_trajectory_unchanged(model_type):
     # Same seed, one PPO update, with and without the floor evaluation in between.
-    # Python's `random` is seeded by the test: Keras draws its initialiser seeds
-    # from it and PPOTrainer does not seed it (own issue), so the two builds
-    # would differ regardless of the evaluation.
-    import random
+    # The leftover RNG state differs between the two builds (as when other tests
+    # ran first), so this also covers the order dependence of issue #108.
     from src.tasks.mujoco_rl.envs import get_obs_stats
     cfg = PPOConfig(num_envs=2, num_steps=8, total_steps=16, update_epochs=1,
                     num_minibatches=2, units=8)
 
     def final_weights(with_floor):
-        random.seed(1234)
+        _foreign_rng_state(int(with_floor))
         t = PPOTrainer(model_type, "HalfCheetah-v5", seed=0, cfg=cfg)
         if with_floor:
             evaluate_policy(t.policy, "HalfCheetah-v5", *get_obs_stats(t.norm_obs),
