@@ -492,3 +492,43 @@ def test_fractional_cncp_scan_reaches_4k_within_tolerance(cell):
     size, n = size_for_budget(build, 4000, lamina_sizes(range(14, 30)))
     assert abs(n - 4000) / 4000 <= 0.05, (size, n)
     assert size != int(size)                  # only reachable off the integers
+
+
+# --- random-rewiring controls (issue #17) ---
+
+@pytest.mark.parametrize("plain,random", [("ncp", "ncp_random"),
+                                          ("cncp", "cncp_random")])
+def test_random_wirings_build_match_params_and_roll_out(plain, random):
+    from src.wirings import param_counts
+    from src.tasks.lotka_volterra.model import (FORCEABLE_WIRINGS,
+                                                forced_rollout_model)
+    p = build_lotka_volterra_model(plain, "cfc_lrc", size=16, seed=0)
+    r = build_lotka_volterra_model(random, "cfc_lrc", size=16, seed=0)
+    assert (param_counts(p)["params_effective"]
+            == param_counts(r)["params_effective"])
+    assert random in FORCEABLE_WIRINGS and random in LV_WIRINGS
+    x, t, _ = _dummy_batch()
+    assert r([x, t]).shape == (2, 16, FEATURES)
+    alpha = tf.Variable(1.0, trainable=False)
+    assert forced_rollout_model(r, alpha)([x, t]).shape == (2, 16, FEATURES)
+    assert p.rewire_overlap is None and 0.0 < r.rewire_overlap < 1.0
+    assert not np.allclose(p([x, t]).numpy(), r([x, t]).numpy())
+
+
+@pytest.mark.parametrize("wiring", ["ncp_random", "cncp_random"])
+def test_runner_records_the_kept_edge_share_of_the_random_wirings(
+        tmp_path, monkeypatch, wiring):
+    def run(w):
+        monkeypatch.setattr(sys, "argv", [
+            "run_lotka_volterra_benchmark.py", "--wiring", w, "--cell",
+            "cfc_lrc", "--epochs", "1", "--n-trajectories", "6", "--seq-len",
+            "6", "--size", "8", "--outdir", str(tmp_path), "--diagnostics",
+            "--anchors", "1,2", "--horizon", "4"])
+        lv_runner.main()
+        return json.loads((tmp_path / f"cfc_lrc_{w}_seed0.json").read_text())
+    rec, plain = run(wiring), run(wiring.replace("_random", ""))
+    assert 0.0 < rec["rewire_overlap"] < 1.0
+    assert "rewire_overlap" not in plain
+    assert rec["params_effective"] == plain["params_effective"]
+    assert rec["config"]["effective"]["config_hash"] != \
+        plain["config"]["effective"]["config_hash"]
