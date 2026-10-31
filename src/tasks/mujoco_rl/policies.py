@@ -78,7 +78,7 @@ class GaussianPolicy(tf.keras.Model):
         # non-JSON-serialisable container (checkpoints store it as JSON).
         self._cell_kwargs_json = json.dumps(cell_kwargs, sort_keys=True)
 
-        tf.random.set_seed(seed)
+        tf.keras.utils.set_random_seed(int(seed))
         self.log_std = tf.Variable(
             tf.ones([act_dim], tf.float32) * LOG_STD_INIT, name="log_std", trainable=True)
 
