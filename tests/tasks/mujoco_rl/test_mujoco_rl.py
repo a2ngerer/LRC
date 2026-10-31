@@ -3,6 +3,12 @@ import numpy as np
 import pytest
 import tensorflow as tf
 
+# gymnasium, mujoco and imageio come with the optional `rl` extra
+# (uv sync --extra rl); without it the whole module is skipped, not an
+# ImportError at collection.
+for _mod in ("gymnasium", "mujoco", "imageio"):
+    pytest.importorskip(_mod)
+
 from experiments.run_mujoco_benchmark import PROFILES, build_specs
 from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
 from src.tasks.mujoco_rl.evaluation import EVAL_EPISODES, EVAL_SEED0, evaluate_policy

@@ -3,6 +3,7 @@ import random
 
 import numpy as np
 import tensorflow as tf
+from keras.src import backend as keras_backend  # tensorflow<2.16 pins keras 2.15
 
 
 def set_global_seed(seed: int, deterministic_ops: bool = False) -> np.random.Generator:
@@ -25,6 +26,11 @@ def set_global_seed(seed: int, deterministic_ops: bool = False) -> np.random.Gen
     random.seed(seed)
     np.random.seed(seed)
     tf.random.set_seed(seed)
+    # tf.keras.utils.set_random_seed (called by the task model builders) leaves
+    # a thread-local generator that feeds every later initializer seed. Drop
+    # it so the seeding above decides again; a fresh process has none, so
+    # behaviour there is unchanged.
+    keras_backend._SEED_GENERATOR.generator = None
     if deterministic_ops:
         tf.config.experimental.enable_op_determinism()
     return np.random.default_rng(seed)
