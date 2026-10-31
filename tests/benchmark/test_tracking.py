@@ -18,6 +18,7 @@ from experiments import run_person_activity_benchmark as pa_runner
 import src.tasks.person_activity as pa_pkg
 from src.benchmark.checkpoints import (PROTOCOL_VERSION, config_hash,
                                        stamp_protocol)
+from src.benchmark.tracking import track
 from tests.benchmark.test_checkpoints import _lv_argv, _pa_stub
 
 # the run config keys every sequence runner sends (#53)
@@ -89,6 +90,16 @@ def _fake_wandb(monkeypatch):
     return runs
 
 
+def _failing_init(monkeypatch, exc=RuntimeError):
+    """Fake wandb whose init raises, like a service that does not come up."""
+    _fake_wandb(monkeypatch)
+
+    def init(**kw):
+        raise exc('Failed to read port info after 30.0 seconds')
+
+    monkeypatch.setattr(sys.modules['wandb'], 'init', init)
+
+
 @pytest.mark.parametrize('runner', sorted(RUNNERS))
 def test_runner_works_without_wandb(runner, tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, 'wandb', None)   # import wandb fails
@@ -153,6 +164,39 @@ def test_runner_tracks_suite_metadata(runner, tmp_path, monkeypatch):
                 record['fault_counts']] == record['test_macro_f1_by_fault']
         assert [summary[f'test_per_position_macro_f1_auc_m{m}'] for m in
                 record['fault_counts']] == record['per_position_macro_f1_auc']
+
+
+def test_track_yields_none_when_wandb_init_raises(monkeypatch, capsys):
+    _failing_init(monkeypatch)
+    seen = []
+    with track(True, group='g', job_type='j', name='n', config={}) as run:
+        seen.append(run)                                # the body runs
+    assert seen == [None]
+    err = capsys.readouterr().err
+    assert err.count('wandb.init failed') == 1
+    assert 'port info' in err
+
+
+def test_track_does_not_swallow_a_keyboard_interrupt(monkeypatch):
+    _failing_init(monkeypatch, KeyboardInterrupt)
+    with pytest.raises(KeyboardInterrupt):
+        with track(True, group='g', job_type='j', name='n', config={}):
+            pytest.fail('body must not run')
+
+
+@pytest.mark.parametrize('runner', sorted(RUNNERS))
+def test_runner_survives_wandb_init_failure(runner, tmp_path, monkeypatch,
+                                            capsys):
+    run_fit = RUNNERS[runner][0]
+    monkeypatch.setitem(sys.modules, 'wandb', None)     # untracked reference
+    ref = json.loads(run_fit(tmp_path / 'ref', monkeypatch).read_text())
+    _failing_init(monkeypatch)
+    capsys.readouterr()
+    path = run_fit(tmp_path / 'fail', monkeypatch)      # trains, writes JSON
+    assert capsys.readouterr().err.count('wandb.init failed') == 1
+    eff = json.loads(path.read_text())['config']['effective']
+    assert eff['config_hash'] == ref['config']['effective']['config_hash']
+    assert eff['config_hash'] == config_hash(eff)
 
 
 def test_adhoc_run_falls_back_to_the_cell(tmp_path, monkeypatch):
