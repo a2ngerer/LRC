@@ -314,15 +314,23 @@ def test_ppo_update_reproduces_across_foreign_rng_state(model_type):
 
     def start_and_trained(k):
         _foreign_rng_state(k)
-        t = PPOTrainer(model_type, "HalfCheetah-v5", seed=0, cfg=cfg)
+        logs = []
+        t = PPOTrainer(model_type, "HalfCheetah-v5", seed=0, cfg=cfg,
+                       log_fn=lambda **kw: logs.append(kw))
         start = [w.copy() for w in t.policy.get_weights()]
-        return start, t.train()["policy"].get_weights()
+        return start, t.train()["policy"].get_weights(), logs
 
-    (start_a, final_a), (start_b, final_b) = start_and_trained(0), start_and_trained(1)
+    (start_a, final_a, logs_a), (start_b, final_b, logs_b) = (
+        start_and_trained(0), start_and_trained(1))
     for a, b in zip(start_a, start_b):
         np.testing.assert_array_equal(a, b)
+    # Multithreaded CPU reductions are not guaranteed bit-exact, hence the tolerance.
     for a, b in zip(final_a, final_b):
         np.testing.assert_allclose(a, b, rtol=1e-5, atol=1e-6)
+    assert [l["global_step"] for l in logs_a] == [l["global_step"] for l in logs_b]
+    for key in ("mean_return", "mean_len"):
+        np.testing.assert_allclose([l[key] for l in logs_a], [l[key] for l in logs_b],
+                                   rtol=1e-5, atol=1e-6, equal_nan=True)
 
 
 @pytest.mark.slow
