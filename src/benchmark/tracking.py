@@ -3,8 +3,9 @@
 wandb is an optional dependency (``uv sync --extra tracking``). Every helper
 here degrades to a no-op when wandb is not installed or tracking was not
 requested, so smoke tests and the pytest suite keep working without a wandb
-install or login. On the cluster set ``WANDB_MODE=offline`` and ``wandb sync``
-the run directories from the login node (compute nodes have no internet).
+install or login; a failing ``wandb.init`` degrades to the same no-op (#84).
+On the cluster set ``WANDB_MODE=offline`` and ``wandb sync`` the run
+directories from the login node (compute nodes have no internet).
 
 Usage (Keras backend)::
 

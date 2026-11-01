@@ -177,6 +177,15 @@ def test_track_yields_none_when_wandb_init_raises(monkeypatch, capsys):
     assert 'port info' in err
 
 
+def test_track_propagates_a_body_error_after_a_failed_init(monkeypatch,
+                                                           capsys):
+    _failing_init(monkeypatch)
+    with pytest.raises(ValueError, match='fit failed'):
+        with track(True, group='g', job_type='j', name='n', config={}):
+            raise ValueError('fit failed')
+    assert capsys.readouterr().err.count('wandb.init failed') == 1
+
+
 def test_track_does_not_swallow_a_keyboard_interrupt(monkeypatch):
     _failing_init(monkeypatch, KeyboardInterrupt)
     with pytest.raises(KeyboardInterrupt):
