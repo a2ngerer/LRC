@@ -328,6 +328,8 @@ def test_ppo_update_reproduces_across_foreign_rng_state(model_type):
     for a, b in zip(final_a, final_b):
         np.testing.assert_allclose(a, b, rtol=1e-5, atol=1e-6)
     assert [l["global_step"] for l in logs_a] == [l["global_step"] for l in logs_b]
+    # With 16 HalfCheetah steps no episode ends, so both are NaN (equal_nan); the
+    # check mainly pins that the logging path agrees.
     for key in ("mean_return", "mean_len"):
         np.testing.assert_allclose([l[key] for l in logs_a], [l[key] for l in logs_b],
                                    rtol=1e-5, atol=1e-6, equal_nan=True)

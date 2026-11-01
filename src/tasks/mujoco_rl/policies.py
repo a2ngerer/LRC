@@ -60,7 +60,8 @@ class GaussianPolicy(tf.keras.Model):
         cell_kwargs: kwargs forwarded to the cell constructor. ``None`` takes the
                     registry's (``src.benchmark.registry.cell_kwargs``), the same
                     per-cell config the supervised tasks use; ``{}`` passes none.
-        seed:       initialization seed.
+        seed:       initialization seed; also reseeds the global Python, NumPy, TF and
+                    Keras initialiser RNGs (tf.keras.utils.set_random_seed).
     """
 
     def __init__(self, model_type, obs_dim, act_dim, units=64, cell_kwargs=None, seed=0):
