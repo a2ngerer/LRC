@@ -150,6 +150,9 @@ def lsuv(model, x, t, slices, log=print):
                 break
             last = float(np.clip(target / ratio, 1 / MAX_SCALE, MAX_SCALE))
             scale(last)
+        else:                                   # last step applied, unchecked
+            log(f"   lsuv {layer:7s} not converged in {ROUNDS} rounds")
+            trace.append(dict(layer=layer, event="not_converged"))
     return fac, trace
 
 

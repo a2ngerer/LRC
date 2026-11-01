@@ -144,7 +144,9 @@ SLICE_SCALE = {"lrc_cal": {"inter": 7.2, "command": 6.6, "motor": 6.6},
 
 # config_hash[:12] of config.effective without protocol_version / config_hash
 # (stamp_protocol writes protocol_version in before hashing; the F2 freeze
-# changes it), as recorded before lrc_cal_duffing existed (issue #86).
+# changes it), as recorded before lrc_cal_duffing existed (issue #86). A
+# change here changes the fits these arms produce: re-pin only together with a
+# new PROTOCOL_VERSION.
 EXISTING_EFFECTIVE_HASHES = {
     ("lv", "dense", "lrc_cal"): "628022dbf352",
     ("lv", "dense", "lrc_cal_lv"): "ec37a236e554",

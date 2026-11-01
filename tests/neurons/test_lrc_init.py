@@ -283,7 +283,7 @@ EXISTING_ARM_BUILDS = {
 @pytest.mark.parametrize('arm,wiring', sorted(EXISTING_ARM_BUILDS))
 def test_existing_arms_are_built_as_before(arm, wiring):
     kw = {k: v for k, v in cell_kwargs(arm).items() if k != 'ode_unfolds'}
-    model = build_lotka_volterra_model(wiring, 'lrc', size=8, seed=0,
+    model = build_lotka_volterra_model(wiring, arm, size=8, seed=0,
                                        feature_size=2, ode_unfolds=6, **kw)
     model([np.zeros((1, 4, 2), np.float32), np.ones((1, 4, 1), np.float32)])
     pc = param_counts(model)
