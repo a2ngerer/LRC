@@ -61,6 +61,12 @@ one replicate share a draw and every replicate gets a fresh one.
 
 Init diagnostic (issue #82): --init-ranges JSON sets the cell's
 initialization_ranges (replaces a registry value of that kwarg);
+--lr-schedule linear (#88, protocol F2 C8) lowers the learning rate linearly
+from --lr to --lr-end-fraction * --lr (default 0) over the whole --epochs
+budget; the forcing ramp does not shorten it. The default constant adds no key
+to the result or config.effective (lr_schedule, lr_end_fraction, lr_curve
+appear only for linear), so config_hash of every existing arm is unchanged.
+
 --optimizer {rmsprop, rmsprop_legacy, adam} and --opt-epsilon choose the
 optimizer (src/benchmark/optimizers.py). At the defaults neither adds a key to
 config.effective, so the config_hash of a default run is unchanged.
@@ -112,7 +118,7 @@ from src.tasks.person_activity.model import (
     DEFAULT_ODE_UNFOLDS, dt_scale_arg, resolve_dt_scale, ncp_layer_sizes,
     NCP_WIRINGS)
 from src.tasks.active_sensing.model import TBT_MODES
-from src.benchmark.optimizers import (add_optimizer_args,
+from src.benchmark.optimizers import (LinearLRDecay, add_optimizer_args,
                                       optimizer_build_kwargs)
 from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
 from src.benchmark.tracking import keras_callbacks, log_summary, track_fit
@@ -599,6 +605,15 @@ def main():
                      help="size the arm to this EFFECTIVE parameter budget "
                           "(closest size on the arm's own knob)")
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--lr-schedule", choices=("constant", "linear"),
+                    default="constant",
+                    help="linear: lr falls linearly from --lr to "
+                         "--lr-end-fraction * --lr over the whole --epochs "
+                         "budget, independent of the --forcing ramp (#88); "
+                         "constant adds no key to the result or config_hash")
+    ap.add_argument("--lr-end-fraction", type=float, default=None,
+                    help="share of --lr reached after the last epoch of "
+                         "--lr-schedule linear, in [0, 1]; default 0")
     ap.add_argument("--clipnorm", type=float, default=None,
                     help="clip the global gradient norm to this value (the "
                          "optimizer's global_clipnorm); default: no clipping")
@@ -699,6 +714,18 @@ def main():
         ap.error(f"--forcing mixed needs one of {FORCEABLE_WIRINGS}")
     if not 0.0 <= args.alpha_min <= 1.0:
         ap.error("--alpha-min must lie in [0, 1]")
+    linear_lr = args.lr_schedule == "linear"
+    if args.lr_end_fraction is not None and not linear_lr:
+        ap.error("--lr-end-fraction needs --lr-schedule linear")
+    if linear_lr:
+        args.lr_end_fraction = (0.0 if args.lr_end_fraction is None
+                                else args.lr_end_fraction)
+        if not 0.0 <= args.lr_end_fraction <= 1.0:
+            ap.error("--lr-end-fraction must lie in [0, 1]")
+    # keys exist only for a non-constant schedule (#88): the default leaves
+    # config.effective, config_hash and the result JSON as they were
+    lr_keys = ({"lr_schedule": "linear", "lr_end_fraction": args.lr_end_fraction}
+               if linear_lr else {})
 
     if args.deterministic:
         tf.config.experimental.enable_op_determinism()
@@ -772,7 +799,7 @@ def main():
         "dt_scale": args.dt_scale, "forcing": args.forcing,
         "alpha_min": args.alpha_min if mixed else None,
         "tau_orb": args.tau_orb,
-        "deterministic": args.deterministic,
+        "deterministic": args.deterministic, **lr_keys,
         # training and evaluation knobs the builder does not take: without
         # them config_hash cannot tell such fits apart (#53)
         "epochs": args.epochs, "batch_size": args.batch_size,
@@ -796,7 +823,7 @@ def main():
         "batch_size": args.batch_size, "epochs": args.epochs,
         "backbone_layers": args.backbone_layers, "self_recurrent": self_rec,
         "head_activation": args.head_activation, "data_seed": data_seed,
-        "forcing": args.forcing, **pc, **multi, **rewire,
+        "forcing": args.forcing, **pc, **multi, **rewire, **lr_keys,
         "ode_unfolds": cell_kwargs.get("ode_unfolds"), "dt_scale": args.dt_scale,
     }
     tag = result_filename(args, multi)[:-len(".json")]
@@ -825,6 +852,8 @@ def main():
         alpha = tf.Variable(1.0, trainable=False, name="alpha")
         schedule = AlphaSchedule(alpha, args.epochs, args.alpha_min)
         train_model = forced_rollout_model(model, alpha)
+    lr_decay = (LinearLRDecay(args.lr, args.epochs, args.lr_end_fraction)
+                if linear_lr else None)
     t0 = time.time()
     with track_fit(args.wandb, task=args.system, name=tag,
                    config=wandb_config, effective=effective) as run_:
@@ -833,7 +862,8 @@ def main():
             batch_size=args.batch_size, epochs=args.epochs,
             validation_data=(val_in, data.val_y),
             verbose=args.verbose,
-            callbacks=([schedule] if schedule else []) + keras_callbacks(run_)
+            callbacks=([schedule] if schedule else [])
+            + ([lr_decay] if lr_decay else []) + keras_callbacks(run_)
             + [test_tap] + ([probe] if probe else []) + ([diag] if diag else []))
         wall = time.time() - t0
         evaluation = evaluate(model, data, args.wiring, args.system,
@@ -872,6 +902,8 @@ def main():
         "alpha_curve": _round(schedule.curve, 6) if mixed else None,
         "config": {"effective": effective},
     }
+    if lr_decay is not None:
+        record.update(**lr_keys, lr_curve=lr_decay.curve)
     if probe is not None:
         record["stability"] = probe.result
     if diag is not None:
