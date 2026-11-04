@@ -4,7 +4,7 @@
 # protocol optimizer and adds no config key, --optimizer rmsprop_legacy / adam
 # train with --clipnorm and --diagnostics (slot norms, eff_lr, optimizer
 # record), and lrc_working_point covers dense ('all') and ncp (three slices).
-# The init arms lrc_init / lrc_cal through both runners: cell_kwargs in the
+# The init arms lrc_init / lrc_cal* through both runners: cell_kwargs in the
 # result, the lrc parameter count, the init vleak range and the rebuild.
 # One epoch on the synthetic stubs of tests/benchmark/test_checkpoints.py.
 import json
@@ -17,7 +17,8 @@ import tensorflow as tf
 import src.tasks.person_activity as pa_pkg
 from experiments import run_lotka_volterra_benchmark as lv_runner
 from experiments import run_person_activity_benchmark as pa_runner
-from src.benchmark.checkpoints import BUILDERS, rebuild_from_result
+from src.benchmark.checkpoints import (BUILDERS, config_hash,
+                                       rebuild_from_result)
 from src.benchmark.registry import _LRC_INIT_RANGES
 from src.neurons import LRC_Cell
 from src.wirings import param_counts
@@ -137,10 +138,33 @@ def test_opt_epsilon_reaches_the_optimizer(tmp_path, monkeypatch):
 
 
 SLICE_SCALE = {"lrc_cal": {"inter": 7.2, "command": 6.6, "motor": 6.6},
-               "lrc_cal_lv": {"inter": 5.3, "command": 4.3, "motor": 3.8}}
+               "lrc_cal_lv": {"inter": 5.3, "command": 4.3, "motor": 3.8},
+               "lrc_cal_duffing": {"inter": 6.3, "command": 4.2, "motor": 3.9}}
 
 
-@pytest.mark.parametrize("cell", ["lrc_init", "lrc_cal", "lrc_cal_lv"])
+# config_hash[:12] of config.effective without protocol_version / config_hash
+# (stamp_protocol writes protocol_version in before hashing; the F2 freeze
+# changes it), as recorded before lrc_cal_duffing existed (issue #86). A
+# change here changes the fits these arms produce: re-pin only together with a
+# new PROTOCOL_VERSION.
+EXISTING_EFFECTIVE_HASHES = {
+    ("lv", "dense", "lrc_cal"): "628022dbf352",
+    ("lv", "dense", "lrc_cal_lv"): "ec37a236e554",
+    ("lv", "dense", "lrc_init"): "b68331d08850",
+    ("lv", "ncp", "lrc_cal"): "c4299888c77f",
+    ("lv", "ncp", "lrc_cal_lv"): "3b39220131e9",
+    ("lv", "ncp", "lrc_init"): "7055cf407937",
+    ("pa", "dense", "lrc_cal"): "3c2f81525ef1",
+    ("pa", "dense", "lrc_cal_lv"): "5ea055db2023",
+    ("pa", "dense", "lrc_init"): "217dd1f087ab",
+    ("pa", "ncp", "lrc_cal"): "1c6404bf13cc",
+    ("pa", "ncp", "lrc_cal_lv"): "e05c35b67ebd",
+    ("pa", "ncp", "lrc_init"): "1f285013b094",
+}
+
+
+@pytest.mark.parametrize("cell", ["lrc_init", "lrc_cal", "lrc_cal_lv",
+                                  "lrc_cal_duffing"])
 @pytest.mark.parametrize("wiring", ["dense", "ncp"])
 @pytest.mark.parametrize("runner", ["pa", "lv"])
 def test_init_arms_through_the_runners(runner, wiring, cell, tmp_path,
@@ -148,6 +172,11 @@ def test_init_arms_through_the_runners(runner, wiring, cell, tmp_path,
     record, path, model = _run(runner, wiring, tmp_path, monkeypatch,
                                "--diagnostics", cell=cell)
     eff = record["config"]["effective"]
+    if (runner, wiring, cell) in EXISTING_EFFECTIVE_HASHES:
+        rest = {k: v for k, v in eff.items()
+                if k not in ("protocol_version", "config_hash")}
+        assert (config_hash(rest)[:12]
+                == EXISTING_EFFECTIVE_HASHES[(runner, wiring, cell)])
     kw = eff["cell_kwargs"]
     assert "init_slices" not in kw                  # set by the wiring only
     if cell == "lrc_init":

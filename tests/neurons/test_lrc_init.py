@@ -1,11 +1,16 @@
-"""Init-scaling options of LRC_Cell and the lrc_init / lrc_cal arms (issue #82)."""
+"""Init-scaling options of LRC_Cell and the lrc_init / lrc_cal arms (issue #82);
+the lrc_cal_duffing arm and the existing arms next to it (issue #86)."""
 import numpy as np
 import pytest
 import tensorflow as tf
 
+from src.benchmark.checkpoints import config_hash
 from src.benchmark.registry import cell_kwargs
 from src.neurons import LRC_Cell
-from src.tasks.person_activity.model import build_person_activity_model
+from src.tasks.lotka_volterra.datasets import DATA_SEED_BASE, load_lotka_volterra
+from src.tasks.lotka_volterra.model import build_lotka_volterra_model
+from src.tasks.person_activity.model import (build_person_activity_model,
+                                             resolve_dt_scale)
 from src.wirings import NCPWiring, param_counts
 
 IN = 5
@@ -147,12 +152,13 @@ def test_slice_scaling_masked_without_slices_raises():
 def test_param_counts_match_lrc(wiring):
     stub = [np.zeros((1, 32, 7), np.float32), np.ones((1, 32, 1), np.float32)]
     counts = {}
-    for cell in ('lrc', 'lrc_init', 'lrc_cal'):
+    arms = ('lrc', 'lrc_init', 'lrc_cal', 'lrc_cal_lv', 'lrc_cal_duffing')
+    for cell in arms:
         model = build_person_activity_model(wiring, cell, size=8, seed=0,
                                             **cell_kwargs(cell))
         model(stub)
         counts[cell] = param_counts(model)
-    assert counts['lrc_init'] == counts['lrc'] == counts['lrc_cal']
+    assert all(counts[cell] == counts['lrc'] for cell in arms)
 
 
 # --- (v) the wiring passes init_slices only with init_slice_scale -----------
@@ -202,3 +208,90 @@ def test_default_path_matches_pre_change_cell(masked):
     assert got.keys() == exp.keys()
     for k, e in exp.items():
         np.testing.assert_allclose(got[k], e, rtol=1e-5, atol=1e-6, err_msg=k)
+
+
+# --- (vi) lrc_cal_duffing and the Duffing probe (issue #86) -----------------
+
+def _duffing_model(cell, data):
+    return build_lotka_volterra_model(
+        'ncp', cell, size=43, seed=0, lr=3e-3, ode_unfolds=6,
+        dt_scale=resolve_dt_scale('auto', data.dt), **cell_kwargs(cell))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('cell', ['lrc_init', 'lrc_cal_duffing'])
+def test_duffing_probe_has_no_nan(cell):
+    """Fresh lrc_init/ncp and lrc_cal_duffing/ncp on the Duffing graph (suite
+    size 43, k 6, dt_scale auto): the lrc parameter count, a finite forward
+    pass and finite losses and weights over a few RMSprop steps."""
+    data = load_lotka_volterra(n_trajectories=20, seq_len=128,
+                               seed=DATA_SEED_BASE, system='duffing')
+    x, t, y = data.train_x[:8], data.train_t[:8], data.train_y[:8]
+    model = _duffing_model(cell, data)
+    assert (param_counts(model)['params_effective']
+            == param_counts(_duffing_model('lrc', data))['params_effective'])
+    assert np.isfinite(model.predict_on_batch([x, t])).all()
+    for _ in range(3):
+        loss = model.train_on_batch([x, t], y, return_dict=True)['loss']
+        assert np.isfinite(loss)
+    assert all(np.isfinite(w).all() for w in model.get_weights())
+
+
+# --- (vii) the existing arms stay as they were (issue #86) -------------------
+
+# config_hash[:12] of {cell, cell_kwargs} per registry key before lrc_cal_duffing
+# existed. No protocol_version enters the dict: stamp_protocol adds it to
+# config.effective before hashing, and the F2 freeze changes it.
+EXISTING_ARM_HASHES = {
+    'ltc': 'e3130db2588f', 'lrc': 'fad15369b134', 'lrc_ar': '2c1bfb212854',
+    'gru': 'da98b7840b55', 'lstm': '34a1d28574e8', 'mm_ltc': '7300ab75399e',
+    'mm_lrc': 'dc6d6c37ad2d', 'cfc': '3e6ceeee4bab', 'cfc_lrc': '4c5052c39c22',
+    'cfc_lrc_outer': '57fc9002e484', 'cfc_pm': 'eb6850981d33',
+    'cfc_mm_lrc': '17691c053e02', 'cfc_mm_ltc': '21568e0a7dd3',
+    'ctrnn': '382ae4c6b5ab', 'mlp': 'f1fb4c5cf9d0', 'lrc_pm': 'a4930149d813',
+    'lrc_interp': '4da795dc0320', 'lrc_asym': '1db1e91316ef',
+    'lrc_sym': 'b7b34f1d042a', 'lrc_frozen': '85830ba6045f',
+    'lrc_pmctrl': '4eab2f0ce3a8', 'lrc_pmctrl_c': '961eef9028e5',
+    'lrc_asym_hybrid': '6a161a91eab4', 'lrc_interp_hybrid': '2c4d6f0a1803',
+    'lrc_init': 'ab81774a91f2', 'lrc_cal': '40a257c96bf0',
+    'lrc_cal_lv': '71a31f868d07',
+}
+
+
+@pytest.mark.parametrize('cell', sorted(EXISTING_ARM_HASHES))
+def test_existing_arm_kwargs_keep_their_config_hash(cell):
+    got = config_hash({'cell': cell, 'cell_kwargs': cell_kwargs(cell)})
+    assert got[:12] == EXISTING_ARM_HASHES[cell]
+
+
+# Sum |w| over all weights (and of vleak / h / sensory_h) and the parameter
+# counts of the init arms built on the LV builder (size 8, seed 0), as built
+# before lrc_cal_duffing existed: the parameters and RNG draws of the existing
+# arms. Same tolerance as the pre-change cell fingerprint above.
+EXISTING_ARM_BUILDS = {
+    ('lrc', 'dense'): (462, 462, 612.3479409813881, 0.5685396790504456, 18.206083297729492, 4.88465690612793),
+    ('lrc_init', 'dense'): (462, 462, 544.0841791927814, 2.842698335647583, 18.206083297729492, 9.76931381225586),
+    ('lrc_cal', 'dense'): (462, 462, 759.0354657173157, 4.0934858322143555, 131.0837860107422, 35.169532775878906),
+    ('lrc_cal_lv', 'dense'): (462, 462, 714.0828475952148, 3.0132603645324707, 96.49224090576172, 25.88868522644043),
+    ('lrc', 'ncp'): (284, 1534, 2065.370660185814, 1.6330426931381226, 52.50053787231445, 7.117923736572266),
+    ('lrc_init', 'ncp'): (284, 1534, 1851.8075850009918, 8.165213584899902, 85.2728271484375, 15.903200149536133),
+    ('lrc_cal', 'ncp'): (284, 1534, 2426.7678508758545, 11.416784286499023, 362.2952880859375, 48.936622619628906),
+    ('lrc_cal_lv', 'ncp'): (284, 1534, 2290.2140974998474, 7.909776210784912, 245.30856323242188, 32.87660217285156),
+}
+
+
+@pytest.mark.parametrize('arm,wiring', sorted(EXISTING_ARM_BUILDS))
+def test_existing_arms_are_built_as_before(arm, wiring):
+    kw = {k: v for k, v in cell_kwargs(arm).items() if k != 'ode_unfolds'}
+    model = build_lotka_volterra_model(wiring, arm, size=8, seed=0,
+                                       feature_size=2, ode_unfolds=6, **kw)
+    model([np.zeros((1, 4, 2), np.float32), np.ones((1, 4, 1), np.float32)])
+    pc = param_counts(model)
+    w = {v.name.split('/')[-1].split(':')[0]: float(np.abs(v.numpy()).sum())
+         for v in model.weights}
+    got = (pc['params_effective'], pc['params_raw'],
+           sum(float(np.abs(v.numpy()).sum()) for v in model.weights),
+           w['vleak'], w['h'], w['sensory_h'])
+    assert got[:2] == EXISTING_ARM_BUILDS[(arm, wiring)][:2]
+    np.testing.assert_allclose(got[2:], EXISTING_ARM_BUILDS[(arm, wiring)][2:],
+                               rtol=1e-5)

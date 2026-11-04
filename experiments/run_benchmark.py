@@ -248,6 +248,9 @@ CELL_KWARGS = {
     'lrc_cal_lv': dict(elastance_type='asymmetric',
                        init_slice_scale={'inter': 5.3, 'command': 4.3,
                                          'motor': 3.8}),
+    'lrc_cal_duffing': dict(elastance_type='asymmetric',
+                            init_slice_scale={'inter': 6.3, 'command': 4.2,
+                                              'motor': 3.9}),
 }
 
 # Benchmark eps: liquid-elastance over-parameterization ablation (see

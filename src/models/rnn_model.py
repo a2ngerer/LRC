@@ -58,6 +58,7 @@ _CELL_REGISTRY = {
     "lrc_init": LRC_Cell,
     "lrc_cal": LRC_Cell,
     "lrc_cal_lv": LRC_Cell,
+    "lrc_cal_duffing": LRC_Cell,
 }
 
 

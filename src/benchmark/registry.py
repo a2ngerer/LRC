@@ -20,8 +20,9 @@ and documents the cell configs in one place for the engine.
 Init diagnostic keys (issue #82), plain LRC_Cell with elastance 'asymmetric':
 ``lrc_init`` (re-centred init ranges + fan-in scaling of h / sensory_h) and
 ``lrc_cal`` (per-layer scaling of vleak / h / sensory_h, NCP slices from the
-wiring), ``lrc_cal_lv`` (the same with the factors of the LV graph); all have
-the parameter count of ``lrc``.
+wiring), ``lrc_cal_lv`` / ``lrc_cal_duffing`` (the same with the factors of the
+LV / Duffing graph, issue #86); all have the parameter count of ``lrc``. The
+factors come from ``experiments/calibrate_lrc_init.py``.
 """
 from __future__ import annotations
 
@@ -143,7 +144,8 @@ CELL_REGISTRY: dict[str, CellConfig] = {
                                    'initialization_ranges': _LRC_INIT_RANGES,
                                    'init_fanin_scale': 'units'}),
     # lrc_cal: per-layer scaling of vleak / h / sensory_h (NCP slices from
-    # the wiring; the dense cell uses the 'inter' factor).
+    # the wiring; the dense cell uses the 'inter' factor). Factors from
+    #   uv run python experiments/calibrate_lrc_init.py --task pa --seed 0
     'lrc_cal': CellConfig(kwargs={'elastance_type': 'asymmetric',
                                   'init_slice_scale': {'inter': 7.2,
                                                        'command': 6.6,
@@ -151,11 +153,22 @@ CELL_REGISTRY: dict[str, CellConfig] = {
     # lrc_cal_lv: lrc_cal with the factors of the LV graph (square roots of
     # its layer-wise unit-variance calibration, inter 28.0 / command 18.4 /
     # motor 14.4); the PA factors overshoot there. LV stage of the init
-    # diagnostic only.
+    # diagnostic only. Factors from
+    #   uv run python experiments/calibrate_lrc_init.py --task lv --seed 0
     'lrc_cal_lv': CellConfig(kwargs={'elastance_type': 'asymmetric',
                                      'init_slice_scale': {'inter': 5.3,
                                                           'command': 4.3,
                                                           'motor': 3.8}}),
+    # lrc_cal_duffing: lrc_cal with the factors of the Duffing graph (square
+    # roots of its layer-wise unit-variance calibration, inter 39.75 /
+    # command 17.40 / motor 15.54). Factors from
+    #   uv run python experiments/calibrate_lrc_init.py --task lv --system duffing --seed 0
+    # (ncp, size 43 at budget 4000, seed 0, ode_unfolds 6, dt_scale auto).
+    # Duffing stage of the init diagnostic only.
+    'lrc_cal_duffing': CellConfig(kwargs={'elastance_type': 'asymmetric',
+                                          'init_slice_scale': {'inter': 6.3,
+                                                               'command': 4.2,
+                                                               'motor': 3.9}}),
 }
 
 KNOWN_CELLS = tuple(CELL_REGISTRY)
