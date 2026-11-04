@@ -105,8 +105,9 @@ def test_floor_applies_to_the_regular_sampling_dt():
         cell = LTC_Cell(UNITS, **kw)
         outs.append(tf.keras.layers.RNN(cell, return_sequences=True)(x).numpy())
     assert np.isfinite(outs[1]).all()
-    np.testing.assert_array_equal(outs[0], outs[1])
-    np.testing.assert_array_equal(outs[0], outs[2])
+    # python-float dt vs float32 floor tensor: equal up to rounding
+    np.testing.assert_allclose(outs[0], outs[1], rtol=1e-6)
+    np.testing.assert_allclose(outs[0], outs[2], rtol=1e-6)
 
 
 def test_integer_dt_is_accepted():

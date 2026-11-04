@@ -39,7 +39,9 @@ class LTC_Cell(BaseCell):
             ``min_elapsed`` (default None = off) is a floor on the elapsed
             time of a step: the fused step divides by it (cm / (t / unfolds)),
             so a zero gap gives a NaN state. When set, the step integrates
-            over max(elapsed_time, min_elapsed). The other cells are unaffected.
+            over max(elapsed_time, min_elapsed). The floor is in the units the cell
+            receives, i.e. after the runners' dt_scale. The other cells are
+            unaffected.
 
         """
 
