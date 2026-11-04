@@ -24,6 +24,9 @@ wiring), ``lrc_cal_lv`` / ``lrc_cal_duffing`` (the same with the factors of the
 LV / Duffing graph, issue #86); all have the parameter count of ``lrc``. The
 factors come from ``experiments/calibrate_lrc_init.py``.
 
+``cfc_lrc_eps1`` (issue #90): ``cfc_lrc`` with ``elastance_one`` (eps = 1, head
+built and frozen); its params_effective leaves the frozen head out.
+
 C7 tau-init keys (issue #87): ``lrc_tau`` and ``lrc_init_tau`` are ``lrc`` and
 ``lrc_init`` with the elastance bias drawn for a log-uniform time scale
 (``tau_init`` / ``tau_min`` / ``tau_max``); same parameter count.
@@ -118,6 +121,12 @@ CELL_REGISTRY: dict[str, CellConfig] = {
     'cfc_lrc': CellConfig(kwargs=dict(_ASYM)),
     # cfc_lrc_outer: eps scales the gate output, not its time-rate (M. Farsang
     # review variant). Same cell/param count as cfc_lrc; head-to-head benchmark.
+    # cfc_lrc_eps1: cfc_lrc with the elastance held at exactly 1 (issue #90,
+    # protocol F2 C-2, label [eps=1]). The head is built (same init draws as
+    # cfc_lrc) and frozen, so it leaves params_effective; the width comes from
+    # the cfc_lrc arm. The flag enters config.effective.cell_kwargs.
+    'cfc_lrc_eps1': CellConfig(kwargs={'elastance_type': 'asymmetric',
+                                       'elastance_one': True}),
     'cfc_lrc_outer': CellConfig(kwargs={'elastance_type': 'asymmetric',
                                         'elastance_gate': 'outer'}),
     'cfc_pm': CellConfig(kwargs={'backbone_units': 20}),

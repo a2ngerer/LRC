@@ -103,7 +103,7 @@ def run(args):
                                            load_person_activity)
     from src.benchmark.tracking import keras_callbacks, log_summary, track_fit
     from src.benchmark.checkpoints import save_weights, stamp_protocol
-    from src.wirings import param_counts, size_for_budget
+    from src.wirings import param_counts, size_for_budget, width_cell_kwargs
 
     if args.deterministic:
         tf.config.experimental.enable_op_determinism()
@@ -139,19 +139,21 @@ def run(args):
     multi = multi_column_config(args)
     dt_feature = dt_feature_applies(args.cell, args.dt_feature == "on")
 
-    def build(size):
+    def build(size, kwargs=cell_kwargs):
         return build_person_activity_model(
             args.wiring, args.cell, size=size, seed=args.seed,
             num_classes=data.num_classes, feature_size=data.feature_size,
             seq_len=data.seq_len, lr=args.lr, dt_feature=dt_feature,
             dt_scale=args.dt_scale, self_recurrent=args.self_recurrent,
-            **opt_kwargs, **multi, **cell_kwargs)
+            **opt_kwargs, **multi, **kwargs)
 
     # Capacity: either a fixed width knob or the knob that lands closest to the
     # effective parameter budget for THIS arm.
     budget_dev, over_budget = None, False
     if args.param_budget is not None:
-        args.size, n_eff = size_for_budget(build, args.param_budget,
+        search_kwargs = width_cell_kwargs(cell_kwargs)
+        args.size, n_eff = size_for_budget(lambda s: build(s, search_kwargs),
+                                           args.param_budget,
                                            budget_sizes(args.wiring))
         budget_dev = abs(n_eff - args.param_budget) / args.param_budget
         over_budget = budget_dev > BUDGET_TOLERANCE

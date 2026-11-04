@@ -100,7 +100,8 @@ import tensorflow as tf
 
 from src.wirings import (CorticalColumnCell, CorticalColumnV2Cell,
                          MultiColumnV2Cell, NODE_ORDER, NODE_ORDER_V2,
-                         param_counts, size_for_budget)
+                         param_counts, size_for_budget,
+                         width_cell_kwargs)
 
 DEFAULT_SIZE = 64
 BUDGET_TOLERANCE = 0.05
@@ -756,18 +757,20 @@ def main():
           f"{data.seq_len}, dt {data.dt:.4f}, "
           f"dt_scale {args.dt_scale:g}, loc_dim {data.loc_dim}")
 
-    def build(size):
+    def build(size, kwargs=cell_kwargs):
         return build_lotka_volterra_model(
             args.wiring, args.cell, size=size, seed=args.seed,
             feature_size=data.feature_size, loc_dim=data.loc_dim, lr=args.lr,
             self_recurrent=args.self_recurrent, dt_scale=args.dt_scale,
-            **opt_kwargs, **multi, **cell_kwargs)
+            **opt_kwargs, **multi, **kwargs)
 
     # Capacity: a fixed width knob, or the knob closest to the effective
     # parameter budget for THIS arm.
     budget_dev, over_budget = None, False
     if args.param_budget is not None:
-        args.size, n_eff = size_for_budget(build, args.param_budget,
+        search_kwargs = width_cell_kwargs(cell_kwargs)
+        args.size, n_eff = size_for_budget(lambda s: build(s, search_kwargs),
+                                           args.param_budget,
                                            budget_sizes(args.wiring))
         budget_dev = abs(n_eff - args.param_budget) / args.param_budget
         over_budget = budget_dev > BUDGET_TOLERANCE

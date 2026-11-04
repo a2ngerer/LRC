@@ -495,6 +495,18 @@ def match_param_budget(count_fn, target, sizes):
 BUDGET_SIZES = range(2, 513)
 
 
+def width_cell_kwargs(cell_kwargs):
+    """Cell kwargs the ``--param-budget`` width search builds with.
+
+    ``elastance_one`` (cfc_lrc_eps1, issue #90) freezes the elastance head, so
+    the head leaves ``params_effective``; searched with that count the arm would
+    get a wider model than cfc_lrc. The search therefore counts the head (the
+    cfc_lrc build), and the arm keeps the cfc_lrc width at the same budget
+    (protocol F2 C-2). Every other arm searches with its own kwargs.
+    """
+    return {k: v for k, v in cell_kwargs.items() if k != 'elastance_one'}
+
+
 def size_for_budget(build_fn, target, sizes=BUDGET_SIZES):
     """``(size, params_effective)`` of the arm whose EFFECTIVE count is closest
     to ``target``.
