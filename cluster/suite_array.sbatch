@@ -55,7 +55,7 @@ want=$(( rows - start < RUNS_PER_GPU ? rows - start : RUNS_PER_GPU ))
 started=$(( N_SPECS - start < RUNS_PER_GPU ? N_SPECS - start : RUNS_PER_GPU ))
 [[ "$started" -lt 0 ]] && started=0
 if [[ "$start" -lt "$rows" && "$started" -lt "$want" ]]; then
-    echo "ERROR: task ${SLURM_ARRAY_TASK_ID} owns manifest lines from ${start} of ${rows} but N_SPECS=${N_SPECS} starts only ${started} of ${want} runner(s)" >&2
+    echo "ERROR: task ${SLURM_ARRAY_TASK_ID} has manifest lines ${start}.. (manifest rows: ${rows}) but N_SPECS=${N_SPECS} starts only ${started} of ${want} runner(s)" >&2
     exit 1
 fi
 
