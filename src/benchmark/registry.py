@@ -23,6 +23,10 @@ Init diagnostic keys (issue #82), plain LRC_Cell with elastance 'asymmetric':
 wiring), ``lrc_cal_lv`` / ``lrc_cal_duffing`` (the same with the factors of the
 LV / Duffing graph, issue #86); all have the parameter count of ``lrc``. The
 factors come from ``experiments/calibrate_lrc_init.py``.
+
+C7 tau-init keys (issue #87): ``lrc_tau`` and ``lrc_init_tau`` are ``lrc`` and
+``lrc_init`` with the elastance bias drawn for a log-uniform time scale
+(``tau_init`` / ``tau_min`` / ``tau_max``); same parameter count.
 """
 from __future__ import annotations
 
@@ -90,6 +94,8 @@ _ASYM = {'elastance_type': 'asymmetric'}
 _LRC_INIT_RANGES = {'vleak': (-1.0, 1.0), 'mu': (-0.2, 0.2),
                     'sensory_mu': (-0.2, 0.2), 'w': (0.001, 0.05),
                     'sensory_w': (0.001, 0.5), 'gleak': (0.001, 0.1)}
+# Time-scale init of the C7 arms (issue #87, protocol F2 B4).
+_TAU_INIT = {'tau_init': 'log_uniform', 'tau_min': 1.01, 'tau_max': 32.0}
 
 CELL_REGISTRY: dict[str, CellConfig] = {
     # --- v1 thesis cells + classical baselines (empty kwargs) ---------------
@@ -169,6 +175,14 @@ CELL_REGISTRY: dict[str, CellConfig] = {
                                           'init_slice_scale': {'inter': 6.3,
                                                                'command': 4.2,
                                                                'motor': 3.9}}),
+    # --- C7 tau-init arms (issue #87, protocol F2 B4) -----------------------
+    # The two base arms lrc / lrc_init plus a log-uniform time-scale init of
+    # the elastance bias, -log(T - 1) with T on [1.01, 32].
+    'lrc_tau': CellConfig(kwargs={'elastance_type': 'asymmetric', **_TAU_INIT}),
+    'lrc_init_tau': CellConfig(kwargs={'elastance_type': 'asymmetric',
+                                       'initialization_ranges': _LRC_INIT_RANGES,
+                                       'init_fanin_scale': 'units',
+                                       **_TAU_INIT}),
 }
 
 KNOWN_CELLS = tuple(CELL_REGISTRY)

@@ -152,7 +152,8 @@ def test_slice_scaling_masked_without_slices_raises():
 def test_param_counts_match_lrc(wiring):
     stub = [np.zeros((1, 32, 7), np.float32), np.ones((1, 32, 1), np.float32)]
     counts = {}
-    arms = ('lrc', 'lrc_init', 'lrc_cal', 'lrc_cal_lv', 'lrc_cal_duffing')
+    arms = ('lrc', 'lrc_init', 'lrc_cal', 'lrc_cal_lv', 'lrc_cal_duffing',
+            'lrc_tau', 'lrc_init_tau')
     for cell in arms:
         model = build_person_activity_model(wiring, cell, size=8, seed=0,
                                             **cell_kwargs(cell))
@@ -240,7 +241,7 @@ def test_duffing_probe_has_no_nan(cell):
 # --- (vii) the existing arms stay as they were (issue #86) -------------------
 
 # config_hash[:12] of {cell, cell_kwargs} per registry key before lrc_cal_duffing
-# existed. No protocol_version enters the dict: stamp_protocol adds it to
+# (issue #86) and the tau-init option (issue #87) existed. No protocol_version enters the dict: stamp_protocol adds it to
 # config.effective before hashing, and the F2 freeze changes it.
 EXISTING_ARM_HASHES = {
     'ltc': 'e3130db2588f', 'lrc': 'fad15369b134', 'lrc_ar': '2c1bfb212854',
@@ -255,6 +256,8 @@ EXISTING_ARM_HASHES = {
     'lrc_asym_hybrid': '6a161a91eab4', 'lrc_interp_hybrid': '2c4d6f0a1803',
     'lrc_init': 'ab81774a91f2', 'lrc_cal': '40a257c96bf0',
     'lrc_cal_lv': '71a31f868d07',
+    # recorded before the tau-init option existed (issue #87)
+    'lrc_cal_duffing': '587764bda040',
 }
 
 
@@ -277,6 +280,9 @@ EXISTING_ARM_BUILDS = {
     ('lrc_init', 'ncp'): (284, 1534, 1851.8075850009918, 8.165213584899902, 85.2728271484375, 15.903200149536133),
     ('lrc_cal', 'ncp'): (284, 1534, 2426.7678508758545, 11.416784286499023, 362.2952880859375, 48.936622619628906),
     ('lrc_cal_lv', 'ncp'): (284, 1534, 2290.2140974998474, 7.909776210784912, 245.30856323242188, 32.87660217285156),
+    # recorded before the tau-init option existed (issue #87)
+    ('lrc_cal_duffing', 'dense'): (462, 462, 737.7421295642853, 3.5818002223968506, 114.69832611083984, 30.77334213256836),
+    ('lrc_cal_duffing', 'ncp'): (284, 1534, 2320.975522994995, 8.988149642944336, 271.71539306640625, 36.15282440185547),
 }
 
 

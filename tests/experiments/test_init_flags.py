@@ -19,7 +19,7 @@ from experiments import run_lotka_volterra_benchmark as lv_runner
 from experiments import run_person_activity_benchmark as pa_runner
 from src.benchmark.checkpoints import (BUILDERS, config_hash,
                                        rebuild_from_result)
-from src.benchmark.registry import _LRC_INIT_RANGES
+from src.benchmark.registry import _LRC_INIT_RANGES, cell_kwargs
 from src.neurons import LRC_Cell
 from src.wirings import param_counts
 from tests.benchmark.test_checkpoints import _capture_builds, _pa_stub
@@ -160,6 +160,11 @@ EXISTING_EFFECTIVE_HASHES = {
     ("pa", "ncp", "lrc_cal"): "1c6404bf13cc",
     ("pa", "ncp", "lrc_cal_lv"): "e05c35b67ebd",
     ("pa", "ncp", "lrc_init"): "1f285013b094",
+    # recorded before the tau-init option existed (issue #87)
+    ("lv", "dense", "lrc_cal_duffing"): "8948ea63681b",
+    ("lv", "ncp", "lrc_cal_duffing"): "a7b610a382f2",
+    ("pa", "dense", "lrc_cal_duffing"): "48067d9dd2f4",
+    ("pa", "ncp", "lrc_cal_duffing"): "a1a0ddf7d1cb",
 }
 
 
@@ -307,3 +312,49 @@ def test_working_point_matches_the_cell_solver():
         assert point[name]["sig_f"] == pytest.approx(s[:, a:b].mean(), abs=1e-4)
         assert point[name]["tanh_g"] == pytest.approx(
             np.abs(t[:, a:b]).mean(), abs=1e-4)
+
+
+# --- C7: tau-init arms through the LV runner (issue #87) ---------------------
+
+# config_hash[:12] of config.effective without protocol_version / config_hash
+# of the plain lrc base arm of C7, recorded before the tau-init option existed.
+LRC_EFFECTIVE_HASHES = {"dense": "660b1e57dd7c", "ncp": "3c82f5b67486"}
+
+
+@pytest.mark.parametrize("wiring", ["dense", "ncp"])
+def test_lrc_base_arm_keeps_its_config_hash(wiring, tmp_path, monkeypatch):
+    record, _, model = _run("lv", wiring, tmp_path, monkeypatch,
+                            "--diagnostics")
+    eff = record["config"]["effective"]
+    rest = {k: v for k, v in eff.items()
+            if k not in ("protocol_version", "config_hash")}
+    assert config_hash(rest)[:12] == LRC_EFFECTIVE_HASHES[wiring]
+    (c,) = _lrc_cells(model)
+    assert c._tau_init is None
+
+
+@pytest.mark.parametrize("cell,base", [("lrc_tau", "lrc"),
+                                       ("lrc_init_tau", "lrc_init")])
+def test_tau_arms_through_the_lv_runner(cell, base, tmp_path, monkeypatch):
+    record, path, model = _run("lv", "ncp", tmp_path, monkeypatch, cell=cell)
+    kw = record["config"]["effective"]["cell_kwargs"]
+    # the base arm's kwargs plus the C7 option at the protocol bounds (F2 B4)
+    tau = {"tau_init": "log_uniform", "tau_min": 1.01, "tau_max": 32.0}
+    extra = {k: kw[k] for k in set(kw) - set(cell_kwargs(base))
+             if k != "ode_unfolds"}                  # added by the runner
+    assert extra == tau
+    rest = {k: v for k, v in kw.items() if k not in extra}
+    assert {k: v for k, v in rest.items() if k != "ode_unfolds"} == json.loads(
+        json.dumps(cell_kwargs(base)))
+    eff = record["config"]["effective"]
+    ref = BUILDERS[eff["task"]](**{**eff["build"], "cell": base},
+                                **{k: v for k, v in kw.items()
+                                   if k not in extra})
+    assert record["params_effective"] == param_counts(ref)["params_effective"]
+    assert record["params_raw"] == param_counts(ref)["params_raw"]
+    # the run trained one epoch, so the bias left its init draw; the rebuild
+    # restores the trained weights
+    (c,) = _lrc_cells(model)
+    (rc,) = _lrc_cells(rebuild_from_result(str(path)))
+    np.testing.assert_array_equal(rc.elastance_mapping.bias.numpy(),
+                                  c.elastance_mapping.bias.numpy())

@@ -131,4 +131,40 @@ if out="$(PATH="$tmp/bin:$PATH" ./cluster/wandb_sync.sh "$tmp/bin" 2>&1)"; then
     echo "FAIL [wandb_sync]: accepted a folder without offline runs"; fail=1
 fi
 
+# suite_array.sbatch slice exit code (#91): a fake uv stands in for the runner
+# (prints a skip line for index 3 and exits 0), no SLURM involved.
+suite_task() {  # suite_task <expected rc> <name> <task id> <N_SPECS> <rows> <K>
+    local want="$1" name="$2" task="$3" n="$4" rows="$5" k="$6" rc=0 i
+    local rd="$tmp/suite_$name" st="$tmp/stub"
+    mkdir -p "$rd" "$st" "$tmp/home"
+    : >"$rd/manifest_default.jsonl"
+    for ((i = 0; i < rows; i++)); do echo "{\"id\": $i}" >>"$rd/manifest_default.jsonl"; done
+    echo >>"$rd/manifest_default.jsonl"   # a trailing blank line is no row
+    cat >"$st/uv" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in *suite_manifest.py*) ;; *) exit 0 ;; esac
+args="$*"; idx="${args##*--index }"; idx="${idx%% *}"
+[[ "$idx" == 3 ]] && echo "[skip] line 3: done exists"
+exit 0
+STUB
+    chmod +x "$st/uv"
+    HOME="$tmp/home" PATH="$st:$PATH" RUN_DIR="$rd" SUITE_GROUP=default N_SPECS="$n" \
+        RUNS_PER_GPU="$k" SLURM_ARRAY_TASK_ID="$task" SLURM_ARRAY_JOB_ID=7 \
+        bash cluster/suite_array.sbatch >"$rd/out" 2>&1 || rc=$?
+    if [[ "$rc" -ne "$want" ]]; then
+        echo "FAIL [suite_slice_$name]: rc=$rc, expected $want"; sed 's/^/    /' "$rd/out"; fail=1
+    fi
+    if [[ "$want" -ne 0 ]] && ! grep -q "N_SPECS=${n}" "$rd/out"; then
+        echo "FAIL [suite_slice_$name]: message does not name N_SPECS"; fail=1
+    fi
+}
+suite_task 0 normal      1 4 4 2    # slice 2..3 starts both runners
+suite_task 0 empty       3 4 4 2    # slice 6..7 beyond the 4 rows
+suite_task 0 skipdone    1 4 4 2    # runner 3 prints a skip line and exits 0
+suite_task 1 nspecs_zero 0 0 4 2    # non-empty slice, N_SPECS=0
+suite_task 1 nspecs_low  1 3 4 2    # slice 2..3, only index 2 < N_SPECS
+suite_task 0 partial     1 3 3 2    # last slice holds one row, N_SPECS = rows
+grep -q "skip\] line 3" "$tmp/suite_skipdone/logs/run-7_idx3.log" \
+    || { echo "FAIL [suite_slice_skipdone]: runner was not started"; fail=1; }
+
 if [[ $fail -eq 0 ]]; then echo "launchers: OK"; else exit 1; fi
