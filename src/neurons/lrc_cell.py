@@ -27,6 +27,10 @@ class LogUniformTauBias(tf.keras.initializers.Initializer):
         return {"tau_min": self.tau_min, "tau_max": self.tau_max}
 
 
+# Keys init_slice_scale may carry: the NCP layers plus the "all" fallback.
+INIT_SLICE_NAMES = frozenset({"inter", "command", "motor", "all"})
+
+
 class LRC_Cell(BaseCell):
     def __init__(
         self,
@@ -138,6 +142,12 @@ class LRC_Cell(BaseCell):
                 "init_fanin_scale must be None, 'units' or 'input_dim', "
                 f"got {init_fanin_scale!r}")
         self._init_fanin_scale = init_fanin_scale
+        if init_slice_scale is not None:
+            unknown = set(init_slice_scale) - INIT_SLICE_NAMES
+            if unknown:
+                raise ValueError(
+                    f"init_slice_scale has unknown keys {sorted(unknown, key=str)!r}; "
+                    f"allowed keys: {sorted(INIT_SLICE_NAMES)!r}")
         self._init_slice_scale = init_slice_scale
         self._init_slices = init_slices
         self._init_scale_report = {}
