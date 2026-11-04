@@ -1,5 +1,7 @@
 """Init-scaling options of LRC_Cell and the lrc_init / lrc_cal arms (issue #82);
 the lrc_cal_duffing arm and the existing arms next to it (issue #86)."""
+import re
+
 import numpy as np
 import pytest
 import tensorflow as tf
@@ -148,7 +150,7 @@ def test_slice_scaling_masked_without_slices_raises():
 
 @pytest.mark.parametrize('bad', ['motr', 'Inter', 'sensory', ''])
 def test_slice_scale_rejects_unknown_keys(bad):
-    with pytest.raises(ValueError, match=r'init_slice_scale.*' + bad) as e:
+    with pytest.raises(ValueError, match='init_slice_scale.*' + re.escape(repr(bad))) as e:
         LRC_Cell(units=4, init_slice_scale={'inter': 2.0, bad: 3.0})
     for allowed in ('inter', 'command', 'motor', 'all'):
         assert allowed in str(e.value)

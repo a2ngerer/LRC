@@ -146,7 +146,7 @@ class LRC_Cell(BaseCell):
             unknown = set(init_slice_scale) - INIT_SLICE_NAMES
             if unknown:
                 raise ValueError(
-                    f"init_slice_scale has unknown keys {sorted(unknown)!r}; "
+                    f"init_slice_scale has unknown keys {sorted(unknown, key=str)!r}; "
                     f"allowed keys: {sorted(INIT_SLICE_NAMES)!r}")
         self._init_slice_scale = init_slice_scale
         self._init_slices = init_slices
