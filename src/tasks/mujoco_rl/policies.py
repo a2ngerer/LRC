@@ -60,7 +60,8 @@ class GaussianPolicy(tf.keras.Model):
         cell_kwargs: kwargs forwarded to the cell constructor. ``None`` takes the
                     registry's (``src.benchmark.registry.cell_kwargs``), the same
                     per-cell config the supervised tasks use; ``{}`` passes none.
-        seed:       initialization seed.
+        seed:       initialization seed; also reseeds the global Python, NumPy, TF and
+                    Keras initialiser RNGs (tf.keras.utils.set_random_seed).
     """
 
     def __init__(self, model_type, obs_dim, act_dim, units=64, cell_kwargs=None, seed=0):
@@ -78,7 +79,7 @@ class GaussianPolicy(tf.keras.Model):
         # non-JSON-serialisable container (checkpoints store it as JSON).
         self._cell_kwargs_json = json.dumps(cell_kwargs, sort_keys=True)
 
-        tf.random.set_seed(seed)
+        tf.keras.utils.set_random_seed(int(seed))
         self.log_std = tf.Variable(
             tf.ones([act_dim], tf.float32) * LOG_STD_INIT, name="log_std", trainable=True)
 

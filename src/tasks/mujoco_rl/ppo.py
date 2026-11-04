@@ -80,8 +80,10 @@ class PPOTrainer:
         self.cfg = cfg
         self.log_fn = log_fn or (lambda **kw: None)
 
-        np.random.seed(self.seed)
-        tf.random.set_seed(self.seed)
+        # Python, NumPy, TF and the Keras initialiser generator in one call: Keras
+        # draws its initialiser seeds from a thread-local generator that an
+        # earlier set_random_seed (e.g. a task model builder) leaves behind.
+        tf.keras.utils.set_random_seed(self.seed)
 
         self.envs, self.norm_obs = make_train_envs(task, cfg.num_envs, cfg.gamma, self.seed)
         self.obs_dim = int(np.prod(self.envs.single_observation_space.shape))
