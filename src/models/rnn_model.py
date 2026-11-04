@@ -31,6 +31,9 @@ _CELL_REGISTRY = {
     # (elastance_gate='outer', set via CELL_KWARGS) -- M. Farsang's review
     # variant. Identical parameter count to cfc_lrc; benchmarked head-to-head.
     "cfc_lrc_outer": CfC_LRC_Cell,
+    # cfc_lrc_eps1: CfC_LRC_Cell with elastance_one=True (eps = 1, frozen head;
+    # set via the cell kwargs in src/benchmark/registry.py; issue #90).
+    "cfc_lrc_eps1": CfC_LRC_Cell,
     "cfc_pm": CfC_Cell,
     "mm_ltc": MM_LTC_Cell,
     "mm_lrc": MM_LRC_Cell,

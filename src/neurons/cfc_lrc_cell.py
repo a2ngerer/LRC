@@ -41,7 +41,8 @@ from .cfc_cell import _check_head_activation, _lecun_tanh
 class CfC_LRC_Cell(BaseCell):
     def __init__(self, units, backbone_units=None, backbone_layers=1, dt=1.0,
                  elastance_type='asymmetric', elastance_init_bias=1.0,
-                 elastance_gate='inner', head_activation=None, **kwargs):
+                 elastance_gate='inner', head_activation=None,
+                 elastance_one=False, **kwargs):
         """Closed-form LRC cell: a CfC whose time-gate is modulated by a liquid
         elastance head.
 
@@ -67,6 +68,14 @@ class CfC_LRC_Cell(BaseCell):
                                  count -- eps only changes position, not head size).
             head_activation:     None (default, linear ff1/ff2) or 'tanh'; see
                                  CfC_Cell. Gate and elastance heads unchanged.
+            elastance_one:       False (default) or True. True holds eps at exactly
+                                 1 (the cell computes plain CfC). The elastance
+                                 head is still built, so its initializer draw is
+                                 consumed and every later layer gets the same init
+                                 as with the option off at the same seed; it is
+                                 frozen (non-trainable) and never called, so it
+                                 leaves the effective parameter count. Issue #90,
+                                 protocol F2 C-2.
         """
         super().__init__(units, **kwargs)
         if elastance_type not in ('asymmetric', 'symmetric'):
@@ -80,6 +89,10 @@ class CfC_LRC_Cell(BaseCell):
                 "elastance_gate must be 'inner' or 'outer', got "
                 f"{elastance_gate!r}."
             )
+        if not isinstance(elastance_one, bool):
+            raise ValueError(
+                f"elastance_one must be True or False, got {elastance_one!r}.")
+        self._elastance_one = elastance_one
         self._backbone_units = backbone_units or units
         self._backbone_layers = backbone_layers
         self._dt = dt
@@ -139,18 +152,23 @@ class CfC_LRC_Cell(BaseCell):
                 self._elastance_init_bias),
         )
         self._elastance.build((None, raw_width))
+        if self._elastance_one:          # draw consumed above, head frozen
+            self._elastance.trainable = False
 
         if self._elastance_type == 'symmetric':
             self._distr_shift = self.add_weight(
                 name='distr_shift', shape=(self.units,), dtype=tf.float32,
                 constraint=tf.keras.constraints.NonNeg(),
                 initializer=tf.keras.initializers.Constant(1),
+                trainable=not self._elastance_one,
             )
 
         self.built = True
 
     def _elastance_value(self, raw):
         """Liquid elastance eps in [0,1] from the raw [inputs, state] tensor."""
+        if self._elastance_one:
+            return tf.ones_like(raw[:, :self.units])
         e_pre = self._masked_dense(self._elastance, raw)
         if self._elastance_type == 'symmetric':
             return (tf.nn.sigmoid(e_pre + self._distr_shift)
@@ -181,6 +199,12 @@ class CfC_LRC_Cell(BaseCell):
         ff2 = head(self._ff2)
         t_a = head(self._time_a)
         t_b = head(self._time_b)
+
+        if self._elastance_one:
+            # eps = 1 exactly: both gate variants reduce to the CfC gate.
+            t_interp = tf.nn.sigmoid(t_a * elapsed_time + t_b)
+            new_state = ff1 * (1.0 - t_interp) + t_interp * ff2
+            return new_state, [new_state]
 
         eps = self._elastance_value(raw)
         if self._elastance_gate == 'inner':

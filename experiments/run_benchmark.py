@@ -206,6 +206,9 @@ CELL_KWARGS = {
     # src/benchmark/registry.py.
     'ltc_minel': dict(min_elapsed=0.05),
     'lrc': dict(elastance_type='asymmetric'),
+    # cfc_lrc_eps1: elastance held at 1 (issue #90), mirror of
+    # src/benchmark/registry.py.
+    'cfc_lrc_eps1': dict(elastance_type='asymmetric', elastance_one=True),
     'lrc_ar': dict(elastance_type='asymmetric'),
     'mm_lrc': dict(elastance_type='asymmetric'),
     # cfc_lrc: liquid-elastance gate, asymmetric to match lrc/mm_lrc.

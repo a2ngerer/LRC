@@ -73,7 +73,7 @@ import numpy as np
 import tensorflow as tf
 
 from src.evaluation.metrics import confusion_matrix, macro_f1
-from src.wirings import param_counts, size_for_budget
+from src.wirings import param_counts, size_for_budget, width_cell_kwargs
 from src.benchmark.checkpoints import (config_hash, rebuild_from_result,
                                        save_weights, stamp_protocol)
 from src.benchmark.tracking import keras_callbacks, log_summary, track_fit
@@ -555,7 +555,7 @@ def main():
           f"fault grid {grid} sigma {np.round(sigma[COORDS], 4).tolist()}",
           flush=True)
 
-    def build(size):
+    def build(size, kwargs=cell_kwargs):
         return build_committee_model(
             args.wiring, n_cols, cell=args.cell, size=size,
             feature_size=F, seq_len=args.seq_len, num_classes=C, lr=args.lr,
@@ -563,13 +563,15 @@ def main():
             vote_lambda=args.vote_lambda, consensus=args.consensus,
             dense_vote_units=args.dense_vote_units,
             train_drop=args.train_drop, train_noise=args.train_noise,
-            column_loop=args.column_loop, **cell_kwargs)
+            column_loop=args.column_loop, **kwargs)
 
     # Capacity: a fixed width knob, or the knob closest to the effective
     # parameter budget for THIS arm.
     budget_dev, over_budget = None, False
     if args.param_budget is not None:
-        args.size, n_eff = size_for_budget(build, args.param_budget,
+        search_kwargs = width_cell_kwargs(cell_kwargs)
+        args.size, n_eff = size_for_budget(lambda s: build(s, search_kwargs),
+                                           args.param_budget,
                                            budget_sizes(args.wiring))
         budget_dev = abs(n_eff - args.param_budget) / args.param_budget
         over_budget = budget_dev > BUDGET_TOLERANCE
