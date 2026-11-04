@@ -5,7 +5,7 @@ import pytest
 import tensorflow as tf
 
 from src.benchmark.checkpoints import config_hash
-from src.benchmark.registry import cell_kwargs
+from src.benchmark.registry import CELL_REGISTRY, cell_kwargs
 from src.neurons import LRC_Cell
 from src.tasks.lotka_volterra.datasets import DATA_SEED_BASE, load_lotka_volterra
 from src.tasks.lotka_volterra.model import build_lotka_volterra_model
@@ -144,6 +144,27 @@ def test_slice_scaling_dense_uses_inter_factor():
 def test_slice_scaling_masked_without_slices_raises():
     with pytest.raises(ValueError, match='init_slices'):
         _cell(True, init_slice_scale={'inter': 2.0})
+
+
+@pytest.mark.parametrize('bad', ['motr', 'Inter', 'sensory', ''])
+def test_slice_scale_rejects_unknown_keys(bad):
+    with pytest.raises(ValueError, match=r'init_slice_scale.*' + bad) as e:
+        LRC_Cell(units=4, init_slice_scale={'inter': 2.0, bad: 3.0})
+    for allowed in ('inter', 'command', 'motor', 'all'):
+        assert allowed in str(e.value)
+
+
+def test_slice_scale_accepts_all_allowed_keys():
+    LRC_Cell(units=4, init_slice_scale={'inter': 1.0, 'command': 1.0,
+                                        'motor': 1.0, 'all': 1.0})
+
+
+def test_registry_slice_scale_arms_use_allowed_keys():
+    arms = [c for c in CELL_REGISTRY
+            if 'init_slice_scale' in cell_kwargs(c)]
+    assert {'lrc_cal', 'lrc_cal_lv', 'lrc_cal_duffing'} <= set(arms)
+    for c in arms:
+        LRC_Cell(units=4, **cell_kwargs(c))
 
 
 # --- (iv) parameter counts unchanged ----------------------------------------
