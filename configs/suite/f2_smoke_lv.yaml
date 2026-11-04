@@ -1,0 +1,22 @@
+# F2 T1 smoke (protocol F2 sections 7, 8.4; #105): 9 LV arm-tasks, 3 epochs,
+# seed 0, fixed lr: the new arms (ncp_random, lrc_init, lrc_cal_lv, the C7 arms
+# lrc_tau / lrc_init_tau) and the 2x arms. 9 lines (not fits). dense3_w and the
+# C8 arms are f2_smoke_lv_w.yaml / f2_smoke_lv_c8.yaml (equal result names).
+#   BENCH=00_canary ./cluster/submit_suite.sh configs/suite/f2_smoke_lv.yaml f2-smoke-lv
+task: lv
+stage: final
+cells:
+  cfc_lrc: [ncp_random, ncp, dense3, cncp]
+  lrc_init: [ncp]
+  lrc_cal_lv: [ncp]
+  gru: [ncp]
+  lrc_tau: [ncp]
+  lrc_init_tau: [ncp]
+param_budget: 4000
+seeds: [0]
+epochs: 3
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 8, walltime: "01:00:00"}

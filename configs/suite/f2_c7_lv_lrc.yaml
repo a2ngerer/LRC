@@ -1,0 +1,18 @@
+# F2 T2 C7 on lrc (protocol F2 sections 4, 5.1 B4, A9 c; #105, #87): lrc_tau/ncp
+# (log-uniform time-scale init of the elastance bias), seeds 0-2, lr/clip of
+# the F1 LV lrc/ncp selection (set hpo_dir to the F1 LV HPO run). 3 fits.
+#   ./cluster/submit_suite.sh configs/suite/f2_c7_lv_lrc.yaml f2-c7-lv-lrc
+task: lv
+stage: final
+cells:
+  lrc_tau: [ncp]
+param_budget: 4000
+seeds: [0, 1, 2]
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: results/01_lotka_volterra/<lv-hpo run>/results/hpo
+selection_from:
+  lrc_tau_ncp: {arm: lrc_ncp, cell: lrc, wiring: ncp}
+cluster: {runs_per_gpu: 5, walltime: "04:00:00"}

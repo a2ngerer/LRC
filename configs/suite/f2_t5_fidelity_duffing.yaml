@@ -1,0 +1,19 @@
+# F2 T5 fidelity (protocol F2 section 7; #105): eval-only of every Duffing F2
+# record of T1-T3, no training. 54 lines. records_dir: the run folder of each
+# source YAML (read only); the updated JSONs go to results/<source stem>/.
+#   ./cluster/submit_suite.sh configs/suite/f2_t5_fidelity_duffing.yaml f2-t5-fidelity-duffing
+task: lv
+system: duffing
+stage: eval
+sources:
+  - config: configs/suite/f2_guard_duffing.yaml
+    records_dir: results/02_duffing/<f2-guard-duffing run>/results
+  - config: configs/suite/f2_budget_duffing.yaml
+    records_dir: results/02_duffing/<f2-budget-duffing run>/results
+  - config: configs/suite/f2_budget_desc_duffing.yaml
+    records_dir: results/02_duffing/<f2-budget-desc-duffing run>/results
+  - config: configs/suite/f2_b1_duffing_init.yaml
+    records_dir: results/02_duffing/<f2-b1-duffing-init run>/results
+  - config: configs/suite/f2_c2_eps1_duffing.yaml
+    records_dir: results/02_duffing/<f2-c2-eps1-duffing run>/results
+cluster: {runs_per_gpu: 10, walltime: "02:00:00"}

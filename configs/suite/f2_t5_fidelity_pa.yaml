@@ -1,0 +1,19 @@
+# F2 T5 fidelity (protocol F2 section 7; #105): rebuild check
+# (eval_robustness.py) of every PA F2 record of T1-T3 (HPO fits excluded), no
+# training. 31 lines. records_dir: the run folder of each source YAML (read
+# only); one CSV per record in results/<source stem>/.
+#   ./cluster/submit_suite.sh configs/suite/f2_t5_fidelity_pa.yaml f2-t5-fidelity-pa
+task: pa
+stage: eval
+sources:
+  - config: configs/suite/f2_guard_pa.yaml
+    records_dir: results/03_person_activity/<f2-guard-pa run>/results
+  - config: configs/suite/f2_rewiring_pa_final.yaml
+    records_dir: results/03_person_activity/<f2-rewiring-pa-final run>/results
+  - config: configs/suite/f2_width_pa_final.yaml
+    records_dir: results/03_person_activity/<f2-width-pa-final run>/results
+  - config: configs/suite/f2_b5_p2b_pa.yaml
+    records_dir: results/03_person_activity/<f2-b5-p2b-pa run>/results
+  - config: configs/suite/f2_ba2_cncp_random_pa.yaml
+    records_dir: results/03_person_activity/<f2-ba2-cncp-random-pa run>/results
+cluster: {runs_per_gpu: 10, walltime: "02:00:00"}

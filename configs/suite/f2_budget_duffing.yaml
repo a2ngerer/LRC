@@ -1,0 +1,18 @@
+# F2 T2 budget family (protocol F2 sections 2.3, 4, A3, A4; #105):
+# cfc_lrc/ncp at 2x the epochs (900), F1 selection (set hpo_dir to the F1 HPO
+# run); the forcing ramp follows epochs // 2 (450 epochs). Each line equals the
+# duffing_final.yaml line except --epochs. 10 fits.
+#   ./cluster/submit_suite.sh configs/suite/f2_budget_duffing.yaml f2-budget-duffing
+task: lv
+system: duffing
+stage: final
+cells:
+  cfc_lrc: [ncp]
+param_budget: 4000
+seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+epochs: 900
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: results/02_duffing/<duffing-hpo run>/results/hpo
+cluster: {runs_per_gpu: 5, walltime: "04:00:00"}

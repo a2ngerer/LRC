@@ -1,0 +1,22 @@
+# F2 T2 B1 Duffing init (protocol F2 sections 4, 5.1 B1; #105, #86):
+# lrc_init/ncp and lrc_cal_duffing/ncp, seeds 0-2, lr/clip of the F1 Duffing
+# lrc/ncp selection (set hpo_dir to the F1 Duffing HPO run). 6 fits. Submit
+# after the B1 CPU probe; if it fails for lrc_cal_duffing, only lrc_init runs.
+#   ./cluster/submit_suite.sh configs/suite/f2_b1_duffing_init.yaml f2-b1-duffing-init
+task: lv
+system: duffing
+stage: final
+cells:
+  lrc_init: [ncp]
+  lrc_cal_duffing: [ncp]
+param_budget: 4000
+seeds: [0, 1, 2]
+epochs: 450
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: results/02_duffing/<duffing-hpo run>/results/hpo
+selection_from:
+  lrc_init_ncp: {arm: lrc_ncp, cell: lrc, wiring: ncp}
+  lrc_cal_duffing_ncp: {arm: lrc_ncp, cell: lrc, wiring: ncp}
+cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

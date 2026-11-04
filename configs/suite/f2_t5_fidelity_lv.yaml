@@ -1,0 +1,31 @@
+# F2 T5 fidelity (protocol F2 section 7; #105): eval-only of every LV F2
+# record of T1-T3 (HPO fits excluded), no training. 107 lines. records_dir:
+# the run folder of each source YAML (read only); the updated JSONs go to this
+# run's results/<source stem>/.
+#   ./cluster/submit_suite.sh configs/suite/f2_t5_fidelity_lv.yaml f2-t5-fidelity-lv
+task: lv
+stage: eval
+sources:
+  - config: configs/suite/f2_guard_lv.yaml
+    records_dir: results/01_lotka_volterra/<f2-guard-lv run>/results
+  - config: configs/suite/f2_rewiring_lv_final.yaml
+    records_dir: results/01_lotka_volterra/<f2-rewiring-lv-final run>/results
+  - config: configs/suite/f2_width_lv_final.yaml
+    records_dir: results/01_lotka_volterra/<f2-width-lv-final run>/results
+  - config: configs/suite/f2_budget_lv.yaml
+    records_dir: results/01_lotka_volterra/<f2-budget-lv run>/results
+  - config: configs/suite/f2_budget_desc_lv.yaml
+    records_dir: results/01_lotka_volterra/<f2-budget-desc-lv run>/results
+  - config: configs/suite/f2_lrc_ncp_lv_s59.yaml
+    records_dir: results/01_lotka_volterra/<f2-lrc-ncp-lv-s59 run>/results
+  - config: configs/suite/f2_b2_lv_final.yaml
+    records_dir: results/01_lotka_volterra/<f2-b2-lv-final run>/results
+  - config: configs/suite/f2_c8_lv_f1sel.yaml
+    records_dir: results/01_lotka_volterra/<f2-c8-lv-f1sel run>/results
+  - config: configs/suite/f2_c8_lv_f2sel.yaml
+    records_dir: results/01_lotka_volterra/<f2-c8-lv-f2sel run>/results
+  - config: configs/suite/f2_c7_lv_lrc.yaml
+    records_dir: results/01_lotka_volterra/<f2-c7-lv-lrc run>/results
+  - config: configs/suite/f2_c7_lv_lrc_init.yaml
+    records_dir: results/01_lotka_volterra/<f2-c7-lv-lrc-init run>/results
+cluster: {runs_per_gpu: 10, walltime: "02:00:00"}

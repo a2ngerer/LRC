@@ -1,0 +1,18 @@
+# F2 T3 C8 (protocol F2 sections 5.1 B3, A10; #105, #88): lrc_init/ncp and
+# lrc_cal_lv/ncp with --lr-schedule linear at 900 epochs (ramp epochs // 2),
+# seeds 0-2, selection of the F2 LV addendum HPO (set hpo_dir to the fetched
+# run of f2_hpo_lv.yaml). 6 fits. Submit after T2.
+#   ./cluster/submit_suite.sh configs/suite/f2_c8_lv_f2sel.yaml f2-c8-lv-f2sel
+task: lv
+stage: final
+cells:
+  lrc_init: [ncp]
+  lrc_cal_lv: [ncp]
+param_budget: 4000
+seeds: [0, 1, 2]
+epochs: 900
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic, --lr-schedule, linear]
+hpo_dir: results/01_lotka_volterra/<f2-hpo-lv run>/results/hpo
+cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

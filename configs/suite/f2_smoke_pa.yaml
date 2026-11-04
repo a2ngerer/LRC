@@ -1,0 +1,20 @@
+# F2 T1 smoke (protocol F2 sections 7, 8.4; #105): 3 PA arm-tasks, 3 epochs,
+# seed 0: ncp_random, cncp_random and the P2b solver arm ltc_minel (heavy, one
+# fit per GPU). 3 lines. dense3_w is f2_smoke_pa_w.yaml.
+#   BENCH=00_canary ./cluster/submit_suite.sh configs/suite/f2_smoke_pa.yaml f2-smoke-pa
+task: pa
+stage: final
+cells:
+  cfc_lrc: [ncp_random, cncp_random]
+  ltc_minel: [ncp]
+param_budget: 30000
+seeds: [0]
+epochs: 3
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 8, walltime: "01:00:00"}
+heavy:
+  cells: [ltc_minel]
+  cluster: {runs_per_gpu: 1}

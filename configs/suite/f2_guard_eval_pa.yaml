@@ -1,0 +1,13 @@
+# F2 T1 reuse guard a (protocol F2 section 3.3; #105): rebuild check
+# (eval_robustness.py, rebuild_rel_dev) of the reused F1 PA records, no
+# training. 30 lines. records_dir: the F1 PA final run (read only); one CSV per
+# record in this run's results/pa_final/.
+#   ./cluster/submit_suite.sh configs/suite/f2_guard_eval_pa.yaml f2-guard-eval-pa
+task: pa
+stage: eval
+sources:
+  - config: configs/suite/pa_final.yaml
+    records_dir: results/03_person_activity/<pa-final run>/results
+    arms: [cfc_lrc_ncp, cfc_lrc_dense3, cfc_lrc_cncp]
+    seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+cluster: {runs_per_gpu: 10, walltime: "02:00:00"}
