@@ -5,6 +5,10 @@ the builders compiled it before this option existed; 'rmsprop_legacy'
 (tf.keras.optimizers.legacy.RMSprop, step lr * g / (sqrt(rms) + eps)) and
 'adam' (tf.keras.optimizers.Adam) exist for the pre-registered init
 diagnostic. ``epsilon=None`` keeps the class default.
+
+LinearLRDecay (issue #88, protocol F2 C8) lowers the learning rate linearly
+over the epoch budget; it only sets the optimizer's lr, so clipnorm, epsilon
+and the optimizer class stay as built.
 """
 import argparse
 
@@ -54,3 +58,24 @@ def optimizer_build_kwargs(args):
     if args.optimizer == DEFAULT_OPTIMIZER and args.opt_epsilon is None:
         return {}
     return {"optimizer": args.optimizer, "opt_epsilon": args.opt_epsilon}
+
+
+class LinearLRDecay(tf.keras.callbacks.Callback):
+    """lr linear from ``lr`` in epoch 0 to ``end_fraction * lr`` after the last
+    of ``epochs`` epochs: epoch e trains with lr * (1 - (1 - end_fraction) *
+    e / epochs), so the last epoch still has a nonzero step. The value used in
+    each epoch is appended to ``curve`` (the result JSON's lr_curve)."""
+
+    def __init__(self, lr, epochs, end_fraction=0.0):
+        super().__init__()
+        self.lr, self.epochs, self.end_fraction = lr, epochs, end_fraction
+        self.curve = []
+
+    def value(self, epoch):
+        return self.lr * (1.0 - (1.0 - self.end_fraction) * epoch / self.epochs)
+
+    def on_epoch_begin(self, epoch, logs=None):
+        # set_value works for the new and the legacy optimizers alike
+        tf.keras.backend.set_value(self.model.optimizer.learning_rate,
+                                   self.value(epoch))
+        self.curve.append(self.value(epoch))
