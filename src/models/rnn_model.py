@@ -59,6 +59,9 @@ _CELL_REGISTRY = {
     "lrc_cal": LRC_Cell,
     "lrc_cal_lv": LRC_Cell,
     "lrc_cal_duffing": LRC_Cell,
+    # C7 tau-init arms (issue #87): elastance-bias init via the cell kwargs.
+    "lrc_tau": LRC_Cell,
+    "lrc_init_tau": LRC_Cell,
 }
 
 

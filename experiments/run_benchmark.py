@@ -251,6 +251,16 @@ CELL_KWARGS = {
     'lrc_cal_duffing': dict(elastance_type='asymmetric',
                             init_slice_scale={'inter': 6.3, 'command': 4.2,
                                               'motor': 3.9}),
+    # C7 tau-init arms (issue #87), mirror of src/benchmark/registry.py.
+    'lrc_tau': dict(elastance_type='asymmetric', tau_init='log_uniform',
+                    tau_min=1.01, tau_max=32.0),
+    'lrc_init_tau': dict(elastance_type='asymmetric',
+                         initialization_ranges={
+                             'vleak': (-1.0, 1.0), 'mu': (-0.2, 0.2),
+                             'sensory_mu': (-0.2, 0.2), 'w': (0.001, 0.05),
+                             'sensory_w': (0.001, 0.5), 'gleak': (0.001, 0.1)},
+                         init_fanin_scale='units', tau_init='log_uniform',
+                         tau_min=1.01, tau_max=32.0),
 }
 
 # Benchmark eps: liquid-elastance over-parameterization ablation (see

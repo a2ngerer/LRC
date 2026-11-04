@@ -5,6 +5,22 @@ import tensorflow as tf
 from .base_cell import BaseCell
 
 
+def log_uniform_tau_bias(tau_min, tau_max):
+    """Initializer of the elastance bias for a log-uniform time scale (#87).
+
+    Draws T log-uniform on [tau_min, tau_max] and returns -log(T - 1), so the
+    initial asymmetric gate sigmoid(bias) is 1 / T. The draw goes through
+    Keras' RandomUniform, i.e. it follows tf.keras.utils.set_random_seed like
+    the cell's other initializers.
+    """
+    log_t = tf.keras.initializers.RandomUniform(np.log(tau_min), np.log(tau_max))
+
+    def init(shape, dtype=None):
+        t = tf.cast(log_t(shape, tf.float32), tf.float64)
+        return tf.cast(-tf.math.log(tf.math.expm1(t)), dtype or tf.float32)
+    return init
+
+
 class LRC_Cell(BaseCell):
     def __init__(
         self,
@@ -24,6 +40,9 @@ class LRC_Cell(BaseCell):
         init_fanin_scale=None,
         init_slice_scale=None,
         init_slices=None,
+        tau_init=None,
+        tau_min=1.01,
+        tau_max=32.0,
         **kwargs
     ):
         """
@@ -60,6 +79,18 @@ class LRC_Cell(BaseCell):
                 supplied by the wiring. Unmasked cells default to
                 {"all": (0, state_size)}; a masked cell requires it whenever
                 init_slice_scale is set.
+
+            Time-scale init of the elastance bias (issue #87, protocol F2 arm
+            C7). With the default (None) the gate bias starts at zero as before
+            and no extra random draw happens.
+
+            tau_init: None | "log_uniform". "log_uniform" draws the bias of
+                elastance_mapping as -log(T - 1) with T log-uniform on
+                [tau_min, tau_max], so the initial gate sigmoid(bias) = 1 / T
+                sets an implied time constant T per unit. Asymmetric elastance
+                only (the gate whose output is sigmoid(bias) at zero input).
+            tau_min, tau_max: bounds of T; defaults 1.01 and 32.0 (protocol F2,
+                B4). tau_min > 1 keeps the bias finite.
 
         """
 
@@ -104,6 +135,20 @@ class LRC_Cell(BaseCell):
         self._init_slice_scale = init_slice_scale
         self._init_slices = init_slices
         self._init_scale_report = {}
+
+        if tau_init not in (None, "log_uniform"):
+            raise ValueError(
+                f"tau_init must be None or 'log_uniform', got {tau_init!r}")
+        if tau_init is not None:
+            if elastance_type != "asymmetric":
+                raise ValueError("tau_init needs elastance_type='asymmetric', "
+                                 f"got {elastance_type!r}")
+            if not 1.0 < tau_min < tau_max:
+                raise ValueError("tau_init needs 1 < tau_min < tau_max, got "
+                                 f"tau_min={tau_min!r}, tau_max={tau_max!r}")
+        self._tau_init = tau_init
+        self._tau_min = tau_min
+        self._tau_max = tau_max
 
         self._input_mapping = input_mapping
         self._output_mapping = output_mapping
@@ -239,7 +284,12 @@ class LRC_Cell(BaseCell):
             self._record_mask(self._params["sensory_mu"], self.sensory_mask)
             self._record_mask(self._params["sensory_sigma"], self.sensory_mask)
 
-        self.elastance_mapping = tf.keras.layers.Dense(self.state_size, name="elastance_mapping")
+        # tau_init (issue #87): only a non-default bias initializer; unset, the
+        # Dense is constructed exactly as before.
+        tau_kw = ({} if self._tau_init is None else {"bias_initializer":
+                  log_uniform_tau_bias(self._tau_min, self._tau_max)})
+        self.elastance_mapping = tf.keras.layers.Dense(
+            self.state_size, name="elastance_mapping", **tau_kw)
 
         # eps-ablation: same-budget additive-residual pad (controls E / E_C).
         # Only built in the interp branch, where elastance_mapping is never
