@@ -8,7 +8,7 @@ from scipy import stats
 
 from src.benchmark.registry import cell_kwargs
 from src.neurons import LRC_Cell
-from src.neurons.lrc_cell import log_uniform_tau_bias
+from src.neurons.lrc_cell import LogUniformTauBias
 from src.wirings import NCPWiring
 
 IN = 3
@@ -41,7 +41,7 @@ def _implied_tau(bias):
 
 def test_draw_is_log_uniform_within_the_bounds():
     tf.keras.utils.set_random_seed(0)
-    bias = log_uniform_tau_bias(1.01, 32.0)((20000,), tf.float32).numpy()
+    bias = LogUniformTauBias(1.01, 32.0)((20000,), tf.float32).numpy()
     tau = _implied_tau(bias)
     assert tau.min() >= 1.01 * (1 - 1e-5) and tau.max() <= 32.0 * (1 + 1e-5)
     u = (np.log(tau) - np.log(1.01)) / (np.log(32.0) - np.log(1.01))
@@ -52,13 +52,26 @@ def test_draw_is_log_uniform_within_the_bounds():
     assert stats.kstest(u_lin, "uniform").pvalue < 1e-6
 
 
-def test_cell_gate_starts_at_one_over_tau():
-    cell = _built(units=64, tau_init="log_uniform", tau_min=2.0, tau_max=8.0)
-    bias = cell.elastance_mapping.bias.numpy()
-    tau = _implied_tau(bias)
+@pytest.mark.parametrize("masked", [False, True])
+def test_cell_gate_starts_at_dt_over_tau(masked):
+    """At zero input and state the gate of a fresh cell is dt / T, T the
+    implied time constant inside the bounds."""
+    cell = _built(units=64, masked=masked, tau_init="log_uniform",
+                  tau_min=2.0, tau_max=8.0)
+    tau = _implied_tau(cell.elastance_mapping.bias.numpy())
     assert tau.min() >= 2.0 * (1 - 1e-5) and tau.max() <= 8.0 * (1 + 1e-5)
-    np.testing.assert_allclose(tf.nn.sigmoid(bias).numpy(), 1.0 / tau,
+    cell._capture_gate = True
+    cell([np.zeros((1, IN), np.float32), np.full((1, 1), 0.5, np.float32)],
+         [tf.zeros((1, cell.state_size))])
+    np.testing.assert_allclose(cell._last_elastance_t.numpy()[0], 0.5 / tau,
                                rtol=1e-5)
+
+
+def test_draw_follows_the_seed():
+    def bias(seed):
+        return _built(seed=seed, tau_init="log_uniform").elastance_mapping.bias.numpy()
+    np.testing.assert_array_equal(bias(1), bias(1))
+    assert not np.allclose(bias(1), bias(2))
 
 
 def test_defaults_are_the_protocol_bounds():
@@ -68,8 +81,9 @@ def test_defaults_are_the_protocol_bounds():
 
 @pytest.mark.parametrize("masked", [False, True])
 def test_option_changes_only_the_elastance_bias(masked):
-    """Same seed: every weight but the gate bias is drawn as without the
-    option (the bias is the last draw of the build)."""
+    """Same seed: every cell weight but the gate bias is drawn as without the
+    option (the bias is the last draw of the cell build). In a full model,
+    layers built after the cell (the readout) draw differently."""
     off = _weights(_built(masked=masked))
     on = _weights(_built(masked=masked, tau_init="log_uniform"))
     assert off.keys() == on.keys()
@@ -96,10 +110,18 @@ def test_option_off_is_the_cell_without_the_kwargs():
     dict(tau_init="log_uniform", elastance_type="interp"),
     dict(tau_init="log_uniform", tau_min=1.0),
     dict(tau_init="log_uniform", tau_min=4.0, tau_max=4.0),
+    dict(tau_init="log_uniform", tau_max=np.inf),
 ])
 def test_invalid_settings_raise(kw):
     with pytest.raises(ValueError):
         LRC_Cell(4, **{"elastance_type": "asymmetric", **kw})
+
+
+@pytest.mark.parametrize("elastance_type", ["symmetric", "interp"])
+def test_elastance_override_on_a_tau_arm_raises(elastance_type):
+    """The runners' --elastance-type override cannot silently drop C7."""
+    with pytest.raises(ValueError):
+        LRC_Cell(4, **cell_kwargs("lrc_tau", elastance_type))
 
 
 @pytest.mark.parametrize("cell,base", [("lrc_tau", "lrc"),

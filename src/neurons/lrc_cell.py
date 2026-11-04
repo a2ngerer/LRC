@@ -5,7 +5,7 @@ import tensorflow as tf
 from .base_cell import BaseCell
 
 
-def log_uniform_tau_bias(tau_min, tau_max):
+class LogUniformTauBias(tf.keras.initializers.Initializer):
     """Initializer of the elastance bias for a log-uniform time scale (#87).
 
     Draws T log-uniform on [tau_min, tau_max] and returns -log(T - 1), so the
@@ -13,12 +13,18 @@ def log_uniform_tau_bias(tau_min, tau_max):
     Keras' RandomUniform, i.e. it follows tf.keras.utils.set_random_seed like
     the cell's other initializers.
     """
-    log_t = tf.keras.initializers.RandomUniform(np.log(tau_min), np.log(tau_max))
 
-    def init(shape, dtype=None):
-        t = tf.cast(log_t(shape, tf.float32), tf.float64)
-        return tf.cast(-tf.math.log(tf.math.expm1(t)), dtype or tf.float32)
-    return init
+    def __init__(self, tau_min, tau_max):
+        self.tau_min, self.tau_max = tau_min, tau_max
+        self._log_t = tf.keras.initializers.RandomUniform(np.log(tau_min),
+                                                          np.log(tau_max))
+
+    def __call__(self, shape, dtype=None, **kwargs):
+        t = self._log_t(shape, dtype or tf.float32)
+        return -tf.math.log(tf.math.expm1(t))
+
+    def get_config(self):
+        return {"tau_min": self.tau_min, "tau_max": self.tau_max}
 
 
 class LRC_Cell(BaseCell):
@@ -143,7 +149,7 @@ class LRC_Cell(BaseCell):
             if elastance_type != "asymmetric":
                 raise ValueError("tau_init needs elastance_type='asymmetric', "
                                  f"got {elastance_type!r}")
-            if not 1.0 < tau_min < tau_max:
+            if not 1.0 < tau_min < tau_max < np.inf:
                 raise ValueError("tau_init needs 1 < tau_min < tau_max, got "
                                  f"tau_min={tau_min!r}, tau_max={tau_max!r}")
         self._tau_init = tau_init
@@ -287,7 +293,7 @@ class LRC_Cell(BaseCell):
         # tau_init (issue #87): only a non-default bias initializer; unset, the
         # Dense is constructed exactly as before.
         tau_kw = ({} if self._tau_init is None else {"bias_initializer":
-                  log_uniform_tau_bias(self._tau_min, self._tau_max)})
+                  LogUniformTauBias(self._tau_min, self._tau_max)})
         self.elastance_mapping = tf.keras.layers.Dense(
             self.state_size, name="elastance_mapping", **tau_kw)
 

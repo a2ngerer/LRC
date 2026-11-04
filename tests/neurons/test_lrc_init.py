@@ -241,7 +241,7 @@ def test_duffing_probe_has_no_nan(cell):
 # --- (vii) the existing arms stay as they were (issue #86) -------------------
 
 # config_hash[:12] of {cell, cell_kwargs} per registry key before lrc_cal_duffing
-# existed. No protocol_version enters the dict: stamp_protocol adds it to
+# (issue #86) and the tau-init option (issue #87) existed. No protocol_version enters the dict: stamp_protocol adds it to
 # config.effective before hashing, and the F2 freeze changes it.
 EXISTING_ARM_HASHES = {
     'ltc': 'e3130db2588f', 'lrc': 'fad15369b134', 'lrc_ar': '2c1bfb212854',
