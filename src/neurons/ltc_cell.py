@@ -84,7 +84,7 @@ class LTC_Cell(BaseCell):
         self._ode_unfolds = ode_unfolds
         self._dt = dt
         self._epsilon = epsilon
-        if min_elapsed is not None and not min_elapsed > 0:
+        if min_elapsed is not None and not 0 < min_elapsed < float('inf'):
             raise ValueError(
                 "min_elapsed must be > 0 or None, got {}".format(min_elapsed))
         self._min_elapsed = min_elapsed
