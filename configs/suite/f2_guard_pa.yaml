@@ -1,0 +1,16 @@
+# F2 T1 reuse guard b (protocol F2 section 3.3; #105): seed 0 of the reused PA
+# arms, each line equal to its pa_final.yaml line. 3 fits. Set hpo_dir to the
+# F1 PA HPO run. Own run folder.
+#   ./cluster/submit_suite.sh configs/suite/f2_guard_pa.yaml f2-guard-pa
+task: pa
+stage: final
+cells:
+  cfc_lrc: [dense3, ncp, cncp]
+param_budget: 30000
+seeds: [0]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+hpo_dir: results/03_person_activity/<pa-hpo run>/results/hpo
+cluster: {runs_per_gpu: 3, walltime: "06:00:00"}

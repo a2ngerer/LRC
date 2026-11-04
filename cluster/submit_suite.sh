@@ -46,6 +46,7 @@ RUN_ENV="config ${CONFIG}, stage ${SUITE_STAGE}, manifest_{${SUITE_GROUPS// /,}}
 RESUME_FLAG=""; [[ $RUN_RESUME -eq 1 ]] && RESUME_FLAG="--resume "
 RUN_COMMAND="./cluster/submit_suite.sh ${WANDB_FLAG:+--wandb }${RESUME_FLAG}${CONFIG} ${LABEL}"
 DONE_FILE="one result JSON"; [[ $SUITE_STAGE == hpo ]] && DONE_FILE="hpo/<arm>/hpo_selection.json"
+[[ $SUITE_STAGE == eval ]] && DONE_FILE="<source stem>/<record>: JSON (lv) or CSV (pa)"
 RUN_COUNT="${SUITE_COUNT} manifest lines (${DONE_FILE} each)"
 echo "fits: ${RUN_COUNT}"
 

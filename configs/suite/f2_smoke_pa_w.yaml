@@ -1,0 +1,15 @@
+# F2 T1 smoke (protocol F2 sections 2.2, 7; #105, #85): dense3_w on PA, i.e.
+# cfc_lrc/dense3 at the fixed width --size 43 without a parameter budget,
+# 3 epochs, seed 0. 1 line.
+#   BENCH=00_canary ./cluster/submit_suite.sh configs/suite/f2_smoke_pa_w.yaml f2-smoke-pa-w
+task: pa
+stage: final
+cells:
+  cfc_lrc: [dense3]
+seeds: [0]
+epochs: 3
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic, --size, 43]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 8, walltime: "01:00:00"}

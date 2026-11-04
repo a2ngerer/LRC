@@ -5,7 +5,7 @@ configs/suite/{lv,duffing,mt,pa,co}_*.yaml, #71):
 
     task: lv                    # lv | pa | co (committee, consensus study)
     system: duffing             # lv only; the runner default if unset
-    stage: hpo                  # hpo | final
+    stage: hpo                  # hpo | final | eval (see below)
     cells: [cfc_lrc, gru]       # cells x wirings, or a mapping cell -> its
     wirings: [dense3, ncp]      # wirings ({gru: [dense, ncp], mlp: [dense]})
     arms:                       # or named arms (co): name -> cell, wiring and
@@ -36,6 +36,13 @@ configs/suite/{lv,duffing,mt,pa,co}_*.yaml, #71):
     fixed: {lr: 0.001, clipnorm: null}   # final only, instead of hpo_dir: one
                                 # lr and clipnorm (null: off) for every arm, no
                                 # hpo_selection.json (the S1 pilots)
+    selection_from:             # final only, with hpo_dir (#105): an arm with
+      cfc_lrc_eps1_ncp: {arm: cfc_lrc_ncp, cell: cfc_lrc, wiring: ncp}
+                                # a new cell or wiring and no HPO of its own
+                                # reads <hpo_dir>/<arm>/hpo_selection.json of a
+                                # reference arm that is not in the YAML (an F1
+                                # HPO run); the selection is checked against
+                                # the reference's cell and wiring
     cluster: {runs_per_gpu: 4, mem: 32G, walltime: "12:00:00", cpus: 12,
               array_throttle: 8}                    # optional, see below
     heavy:                      # optional: arms with one of these cells,
@@ -43,6 +50,27 @@ configs/suite/{lv,duffing,mt,pa,co}_*.yaml, #71):
       wirings: [cncp]           # job with cluster resources merged over
       arms: [ctrnn_ncp]         # `cluster`
       cluster: {runs_per_gpu: 1, mem: 48G, walltime: "48:00:00"}
+
+Stage eval (#105) trains nothing: it re-evaluates stored result JSONs.
+
+    task: lv                    # lv | pa
+    system: duffing             # lv: the system of every source
+    stage: eval
+    sources:                    # the records of these final-stage YAMLs
+      - config: configs/suite/lv_final.yaml
+        records_dir: results/01_lotka_volterra/<run>/results
+        arms: [cfc_lrc_ncp]     # optional: default every arm of the source
+        seeds: [0, 1]           # optional: default every seed of the arm
+    cluster: {runs_per_gpu: 10}
+
+One line per record, named with result_name from the source YAML: lv runs
+run_lotka_volterra_benchmark.py --eval-only <record> --anchors 8,16,24,32
+--horizon 96 (the updated JSON goes to results/<source stem>/), pa runs
+eval_robustness.py --results <record> --out results/<source stem>/<record
+stem>.csv (the rebuild check; no --outdir; the line carries that path as
+`out`). id and done are <source stem>/<record>, so equal record names of two
+sources never collide; the records_dir folders are read-only inputs (a cluster
+path, read at run time only). --count gives the line count.
 
 Arms are ordered cell-major in YAML order and named <cell>_<wiring> (or by
 their `arms` key). Stage hpo gives one line per arm: one
@@ -96,7 +124,10 @@ LV_DEFAULT_SYSTEM = "periodic_predator_prey"   # run_lotka_volterra_benchmark.py
 KEYS = {"task", "system", "stage", "cells", "wirings", "arms", "param_budget",
         "seeds", "extra_seeds", "config_from", "epochs", "ode_unfolds",
         "dt_scale", "extra_args", "per_cell", "hpo_dir", "fixed", "cluster",
-        "heavy", "description"}
+        "heavy", "description", "selection_from", "sources"}
+EVAL_KEYS = {"task", "system", "stage", "sources", "cluster", "description"}
+EVAL_RUNNERS = {"lv": RUNNERS["lv"], "pa": "experiments/eval_robustness.py"}
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLUSTER_KEYS = ("runs_per_gpu", "mem", "walltime", "cpus", "array_throttle")
 
 
@@ -111,6 +142,8 @@ def load(path):
     unknown = set(cfg) - KEYS
     if unknown:
         raise SystemExit(f"{path}: unknown keys {sorted(unknown)}")
+    if cfg.get("stage") == "eval":
+        return _load_eval(path, cfg)
     for k in ("task", "stage", "seeds"):
         if not cfg.get(k):
             raise SystemExit(f"{path}: '{k}' is required")
@@ -135,7 +168,9 @@ def load(path):
             isinstance(cfg["dt_scale"], (int, float)) and cfg["dt_scale"] > 0):
         raise SystemExit(f"{path}: dt_scale must be auto or a positive number")
     if cfg["stage"] not in ("hpo", "final"):
-        raise SystemExit(f"{path}: stage must be hpo or final")
+        raise SystemExit(f"{path}: stage must be hpo, final or eval")
+    if cfg.get("sources"):
+        raise SystemExit(f"{path}: sources applies to stage eval only")
     if cfg.get("system") and cfg["task"] != "lv":
         raise SystemExit(f"{path}: system applies to task lv only")
     if cfg["stage"] == "hpo" and (len(cfg["seeds"]) > 2 or len(
@@ -168,7 +203,101 @@ def load(path):
                              f"{sorted(set(listed) - set(names))}")
     if set(refs) & set(refs.values()):
         raise SystemExit(f"{path}: a config_from reference has no HPO itself")
+    sel_from = cfg.get("selection_from") or {}
+    if sel_from:
+        if cfg["stage"] != "final" or cfg.get("fixed"):
+            raise SystemExit(f"{path}: selection_from needs stage final with "
+                             "hpo_dir, not fixed")
+        if set(sel_from) - set(names):
+            raise SystemExit(f"{path}: selection_from names unknown arms "
+                             f"{sorted(set(sel_from) - set(names))}")
+        if set(sel_from) & set(refs):
+            raise SystemExit(f"{path}: an arm takes config_from or "
+                             "selection_from, not both")
+        if any(not isinstance(r, dict) or set(r) != {"arm", "cell", "wiring"}
+               for r in sel_from.values()):
+            raise SystemExit(f"{path}: selection_from maps an arm to "
+                             "{arm, cell, wiring}")
     return cfg
+
+
+def _source_path(config):
+    return config if os.path.isabs(config) else os.path.join(ROOT, config)
+
+
+def _load_eval(path, cfg):
+    """stage eval: task (+ system for a non-default lv system) and sources;
+    every source a final-stage YAML of the same task and system."""
+    extra = set(cfg) - EVAL_KEYS
+    if extra:
+        raise SystemExit(f"{path}: stage eval does not take {sorted(extra)}")
+    if cfg.get("task") not in EVAL_RUNNERS:
+        raise SystemExit(f"{path}: stage eval needs task lv or pa")
+    if cfg.get("system") and cfg["task"] != "lv":
+        raise SystemExit(f"{path}: system applies to task lv only")
+    if not cfg.get("sources"):
+        raise SystemExit(f"{path}: 'sources' is required")
+    for src in cfg["sources"]:
+        if not isinstance(src, dict) or not {"config", "records_dir"} <= set(
+                src) <= {"config", "records_dir", "arms", "seeds"}:
+            raise SystemExit(f"{path}: a source is {{config, records_dir, "
+                             "arms (optional), seeds (optional)}")
+        scfg = load(_source_path(src["config"]))
+        if scfg["stage"] != "final" or (scfg["task"], scfg.get("system")) != (
+                cfg["task"], cfg.get("system")):
+            raise SystemExit(f"{path}: source {src['config']} is not a final "
+                             "stage of the same task and system")
+        have = {(a[0], s) for a, _, s in jobs(scfg)}
+        unknown = set(src.get("arms") or []) - {n for n, _ in have}
+        if unknown:
+            raise SystemExit(f"{path}: source {src['config']} has no arms "
+                             f"{sorted(unknown)}")
+        names = src.get("arms") or sorted({n for n, _ in have})
+        want = {(n, s) for n in names
+                for s in src.get("seeds") or [t for m, t in have if m == n]}
+        if not want or want - have:
+            raise SystemExit(f"{path}: source {src['config']} has no fit "
+                             f"{sorted(want - have) or names}")
+    return cfg
+
+
+def _eval_jobs(scfg, src):
+    """(arm, seed) of the source records an eval source names, in the
+    source's job order (arms and seeds filter it)."""
+    names, seeds = src.get("arms"), src.get("seeds")
+    return [(arm, s) for arm, _, s in jobs(scfg)
+            if (names is None or arm[0] in names)
+            and (seeds is None or s in seeds)]
+
+
+def expand_eval(cfg):
+    """The lines of a stage eval YAML (see the module docstring)."""
+    from src.evaluation.rollout_metrics import ANCHOR_HORIZON, ANCHORS
+    task, lines = cfg["task"], []
+    for src in cfg["sources"]:
+        scfg = load(_source_path(src["config"]))
+        stem = os.path.splitext(os.path.basename(src["config"]))[0]
+        common = [*_common(scfg), *map(str, scfg.get("extra_args") or [])]
+        for (_, cell, wiring, flags), seed in _eval_jobs(scfg, src):
+            rec = result_name(task, cell, wiring, seed,
+                              [*common, *_flags(flags)])
+            record = os.path.join(src["records_dir"], rec)
+            argv = ["uv", "run", "python", EVAL_RUNNERS[task]]
+            line = {"id": f"{stem}/{rec}", "group": "default", "outdir": stem}
+            if task == "lv":
+                argv += ["--eval-only", record, "--anchors",
+                         ",".join(map(str, ANCHORS)),
+                         "--horizon", str(ANCHOR_HORIZON)]
+                line["done"] = f"{stem}/{rec}"
+            else:
+                argv += ["--results", record]
+                line["done"] = line["out"] = (
+                    f"{stem}/{os.path.splitext(rec)[0]}.csv")
+            lines.append({**line, "argv": argv})
+    dup = len(lines) - len({ln["done"] for ln in lines})
+    if dup:
+        raise SystemExit(f"stage eval: {dup} records are listed twice")
+    return lines
 
 
 def arms(cfg):
@@ -312,7 +441,10 @@ def _hpo_fits(cfg, flags):
 
 
 def count(cfg, group=None):
-    """Planned fits (an hpo line: _hpo_fits); no selection needed."""
+    """Planned fits (an hpo line: _hpo_fits); no selection needed. Stage
+    eval: its lines (evaluations, not fits)."""
+    if cfg["stage"] == "eval":
+        return len(expand_eval(cfg)) if group in (None, "default") else 0
     return sum(_hpo_fits(cfg, arm[3]) if seed is None else 1
                for arm, g, seed in jobs(cfg) if group in (None, g))
 
@@ -341,8 +473,11 @@ def _common(cfg):
 
 def expand(cfg, wandb=False):
     """The manifest lines in submission order (see the module docstring)."""
+    if cfg["stage"] == "eval":
+        return expand_eval(cfg)
     task, system = cfg["task"], cfg.get("system")
     refs, common = cfg.get("config_from") or {}, _common(cfg)
+    sel_from = cfg.get("selection_from") or {}
     by_name = {a[0]: a for a in arms(cfg)}
     lines, missing, sels = [], [], {}
     for (name, cell, wiring, flags), group, seed in jobs(cfg):
@@ -358,10 +493,15 @@ def expand(cfg, wandb=False):
                           "outdir": f"hpo/{name}",
                           "done": f"hpo/{name}/hpo_selection.json"})
             continue
-        ref = refs.get(name, name)
-        if ref not in sels:
-            sels[ref] = selection(cfg, ref, *by_name[ref][1:3])
-        sel = sels[ref]
+        if name in sel_from:
+            r = sel_from[name]
+            ref, ref_arm = r["arm"], (r["cell"], r["wiring"])
+        else:
+            ref = refs.get(name, name)
+            ref_arm = tuple(by_name[ref][1:3])
+        if (ref, ref_arm) not in sels:
+            sels[ref, ref_arm] = selection(cfg, ref, *ref_arm)
+        sel = sels[ref, ref_arm]
         if sel is None:
             if ref not in missing:
                 missing.append(ref)
@@ -423,6 +563,13 @@ def write(cfg, lines, outdir):
     return "\n".join(plan)
 
 
+def _out_flag(line, results):
+    """--outdir <results>/<outdir>; a pa eval line: --out <results>/<out>."""
+    if "out" in line:
+        return ["--out", os.path.join(results, line["out"])]
+    return ["--outdir", os.path.join(results, line["outdir"])]
+
+
 def run(manifest, index, results):
     """One SLURM bundle member: skip a done line, else exec its command."""
     with open(manifest) as f:
@@ -430,8 +577,9 @@ def run(manifest, index, results):
     if is_done(line, results):
         print(f"[skip] {line['id']}: {line['done']} exists", flush=True)
         return
-    argv = [*line["argv"], "--outdir",
-            os.path.normpath(os.path.join(results, line["outdir"]))]
+    argv = [*line["argv"], *map(os.path.normpath, _out_flag(line, results))]
+    if "out" in line:       # eval_robustness.py does not create the folder
+        os.makedirs(os.path.dirname(argv[-1]), exist_ok=True)
     print(f"[run ] {line['id']}\n+ {shlex.join(argv)}", flush=True)
     os.execvp(argv[0], argv)
 
@@ -470,8 +618,7 @@ def main(argv=None):
         by_group = {a.group: by_group.get(a.group, [])}
     for g, glines in by_group.items():
         for i, line in enumerate(glines):
-            cmd = shlex.join([*line["argv"], "--outdir",
-                              os.path.join("<results>", line["outdir"])])
+            cmd = shlex.join([*line["argv"], *_out_flag(line, "<results>")])
             print(f"{g}[{i}]\t{line['id']}\t{cmd}")
 
 

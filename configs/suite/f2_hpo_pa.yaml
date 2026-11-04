@@ -1,0 +1,14 @@
+# F2 T2 HPO (protocol F2 section 4; #105): grid HPO of ncp_random (#17) on PA.
+# 11 planned fits, one array task. dense3_w is f2_hpo_pa_w.yaml.
+#   ./cluster/submit_suite.sh configs/suite/f2_hpo_pa.yaml f2-hpo-pa
+task: pa
+stage: hpo
+cells:
+  cfc_lrc: [ncp_random]
+param_budget: 30000
+seeds: [100, 101]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+cluster: {runs_per_gpu: 1, walltime: "12:00:00"}

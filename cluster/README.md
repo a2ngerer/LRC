@@ -552,3 +552,53 @@ uv run python experiments/run_committee_benchmark.py --eval-only \
 uv run python experiments/suite_gate.py --stage s3co \
     --runs results/04_column_voting/<co-k3-final run> --out <scratch folder>/S3_GK.md
 ```
+
+### F2 submit waves (#105)
+
+The F2 follow-up runs (protocol F2 sections 3, 4, 7, 8) are the
+`configs/suite/f2_*.yaml` campaigns, each submitted with
+`./cluster/submit_suite.sh configs/suite/<yaml> <label>` into its own run
+folder (`cluster/suite_array.sbatch`; smokes with `BENCH=00_canary`). Two
+manifest keys serve them: `selection_from` (a final arm without HPO reads the
+`hpo_selection.json` of a reference arm under `hpo_dir`) and `stage: eval`
+(re-evaluation of stored records, no training; see the docstring of
+`experiments/suite_manifest.py`). Array tasks are `ceil(lines / runs_per_gpu)`
+per group (`tests/experiments/test_f2_manifest.py`). At most 50 array tasks
+per user, running ones included: check `squeue` before every submit.
+
+| Wave | YAML (submit order) | label | array tasks |
+|---|---|---|---|
+| SW1 (T1) | `f2_smoke_lv`, `f2_smoke_lv_w`, `f2_smoke_lv_c8`, `f2_smoke_duffing`, `f2_smoke_pa` (default 1 + heavy 1), `f2_smoke_pa_w` | `f2-smoke-<stem>` | 2 + 1 + 1 + 1 + 2 + 1 = 8 |
+| | `f2_guard_lv`, `f2_guard_duffing`, `f2_guard_pa` (retrain seed 0) | `f2-guard-<task>` | 1 + 1 + 1 = 3 |
+| | `f2_guard_eval_lv`, `f2_guard_eval_duffing`, `f2_guard_eval_pa` | `f2-guard-eval-<task>` | 3 + 3 + 3 = 9 |
+| | **SW1** | | **20** |
+| SW2 (T2) | `f2_hpo_lv` (3 chains), `f2_hpo_lv_w`, `f2_hpo_pa`, `f2_hpo_pa_w` | `f2-hpo-<...>` | 3 + 1 + 1 + 1 = 6 |
+| | `f2_budget_lv`, `f2_budget_duffing`, `f2_budget_desc_lv`, `f2_budget_desc_duffing` | `f2-budget-<...>` | 2 + 2 + 6 + 6 = 16 |
+| | `f2_lrc_ncp_lv_s59`, `f2_b1_duffing_init` (after the B1 CPU probe), `f2_b5_p2b_pa`, `f2_c7_lv_lrc`, `f2_c2_eps1_duffing`, `f2_ba2_cncp_random_pa` | stem with `-` | 1 + 2 + 3 + 1 + 1 + 2 = 10 |
+| | **SW2** | | **32** |
+| SW3 (T3) | `f2_rewiring_lv_final`, `f2_width_lv_final`, `f2_b2_lv_final` | stem with `-` | 2 + 2 + 4 |
+| | `f2_rewiring_pa_final`, `f2_width_pa_final` | stem with `-` | 4 + 4 |
+| | `f2_c8_lv_f1sel`, `f2_c8_lv_f2sel`, `f2_c7_lv_lrc_init` (after the LV addendum HPO) | stem with `-` | 2 + 2 + 1 |
+| | **SW3** (17 without C8) | | **21** |
+| SW5 (T5) | `f2_t5_fidelity_lv`, `f2_t5_fidelity_duffing`, `f2_t5_fidelity_pa` | `f2-t5-fidelity-<task>` | 11 + 6 + 4 = 21 |
+
+SW4 is the PPO wave (`cluster/submit_mujoco.sh`, #61) and not part of this
+table. SW3 is staggered: each family final is submitted once its own HPO chain
+is fetched (set its `hpo_dir`) and after the `squeue` check; C8 and C7 on
+`lrc_init` wait for the LV addendum HPO (`f2_hpo_lv`). C8 does not overlap
+with SW2, so the largest overlap is SW2 + SW3 without C8 = 32 + 17 = 49.
+SW1 (20 tasks: the smokes are split into six YAMLs) and SW5 (21 tasks: 10
+eval lines per GPU) differ from the protocol estimates (8 and ~3); SW1 must
+finish before SW2 starts (20 + 32 > 50).
+
+Before a submit, set every placeholder (`<...>`). `hpo_dir` is read locally
+when the manifest is expanded, so it points at the fetched HPO run. `records_dir`
+is only read by the eval lines at run time on the cluster (cwd = the code
+directory), so it is a cluster path: `../benchmarks/<bench>/runs/<run>/results`.
+Expanding an eval YAML only builds paths and reads no record. The dense3_w arms (`*_w.yaml`, `f2_width_*`) are
+`cfc_lrc/dense3` at a fixed `--size` (LV 15, PA 43) without `param_budget`;
+their result names equal those of `cfc_lrc/dense3`, so they live in their own
+YAMLs and run folders. The guard retrains (`f2_guard_*`) and the eval YAMLs
+write only into their own run folders: an eval line writes below
+`results/<source YAML stem>/` of its run and only reads the `records_dir`
+folders (the F1 run folders stay untouched).

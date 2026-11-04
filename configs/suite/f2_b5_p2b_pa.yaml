@@ -1,0 +1,16 @@
+# F2 T2 B5 P2b (protocol F2 sections 4, 5.1 B5; #105, #89): ltc_minel/ncp on
+# PA (LTC with the elapsed-time floor 0.05), seeds 0-2, lr 1e-3 without
+# clipping, one solver fit per GPU. 3 fits.
+#   ./cluster/submit_suite.sh configs/suite/f2_b5_p2b_pa.yaml f2-b5-p2b-pa
+task: pa
+stage: final
+cells:
+  ltc_minel: [ncp]
+param_budget: 30000
+seeds: [0, 1, 2]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 1, walltime: "06:00:00"}

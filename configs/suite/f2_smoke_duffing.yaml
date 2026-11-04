@@ -1,0 +1,21 @@
+# F2 T1 smoke (protocol F2 sections 7, 8.4; #105): 7 Duffing arm-tasks,
+# 3 epochs, seed 0: the 2x arms, B1 (lrc_init, lrc_cal_duffing) and the eps=1
+# arm (cfc_lrc_eps1). 7 lines.
+#   BENCH=00_canary ./cluster/submit_suite.sh configs/suite/f2_smoke_duffing.yaml f2-smoke-duffing
+task: lv
+system: duffing
+stage: final
+cells:
+  cfc_lrc: [ncp, dense3, cncp]
+  gru: [ncp]
+  lrc_init: [ncp]
+  lrc_cal_duffing: [ncp]
+  cfc_lrc_eps1: [ncp]
+param_budget: 4000
+seeds: [0]
+epochs: 3
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 8, walltime: "01:00:00"}

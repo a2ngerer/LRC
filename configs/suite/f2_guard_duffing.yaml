@@ -1,0 +1,19 @@
+# F2 T1 reuse guard b (protocol F2 section 3.3; #105): seed 0 of the reused
+# Duffing arms, each line equal to its duffing_final.yaml line. 3 fits. Set
+# hpo_dir to the F1 Duffing HPO run. Own run folder.
+#   ./cluster/submit_suite.sh configs/suite/f2_guard_duffing.yaml f2-guard-duffing
+task: lv
+system: duffing
+stage: final
+cells:
+  cfc: [ncp]
+  cfc_lrc: [ncp]
+  lrc: [ncp]
+param_budget: 4000
+seeds: [0]
+epochs: 450
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: results/02_duffing/<duffing-hpo run>/results/hpo
+cluster: {runs_per_gpu: 5, walltime: "04:00:00"}

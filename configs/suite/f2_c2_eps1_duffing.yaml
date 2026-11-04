@@ -1,0 +1,21 @@
+# F2 T2 C-2 eps=1 (protocol F2 sections 4, 5.2; #105, #90): cfc_lrc_eps1/ncp
+# on Duffing, seeds 0-4, lr/clip of the F1 Duffing cfc_lrc/ncp selection (set
+# hpo_dir to the F1 Duffing HPO run). param_budget, not a fixed --size: the
+# width search counts the frozen head, so the arm gets the cfc_lrc width.
+# 5 fits.
+#   ./cluster/submit_suite.sh configs/suite/f2_c2_eps1_duffing.yaml f2-c2-eps1-duffing
+task: lv
+system: duffing
+stage: final
+cells:
+  cfc_lrc_eps1: [ncp]
+param_budget: 4000
+seeds: [0, 1, 2, 3, 4]
+epochs: 450
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: results/02_duffing/<duffing-hpo run>/results/hpo
+selection_from:
+  cfc_lrc_eps1_ncp: {arm: cfc_lrc_ncp, cell: cfc_lrc, wiring: ncp}
+cluster: {runs_per_gpu: 5, walltime: "04:00:00"}

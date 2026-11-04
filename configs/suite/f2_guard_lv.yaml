@@ -1,0 +1,17 @@
+# F2 T1 reuse guard b (protocol F2 section 3.3; #105): seed 0 of the reused LV
+# arms retrained on the freeze commit, each line equal to its lv_final.yaml
+# line. 4 fits. Set hpo_dir to the F1 LV HPO run. Own run folder.
+#   ./cluster/submit_suite.sh configs/suite/f2_guard_lv.yaml f2-guard-lv
+task: lv
+stage: final
+cells:
+  cfc_lrc: [dense3, ncp]
+  lrc: [dense, ncp]
+param_budget: 4000
+seeds: [0]
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: results/01_lotka_volterra/<lv-hpo run>/results/hpo
+cluster: {runs_per_gpu: 5, walltime: "04:00:00"}

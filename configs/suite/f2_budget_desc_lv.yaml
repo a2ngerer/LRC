@@ -1,0 +1,18 @@
+# F2 T2 descriptive 2x arms (protocol F2 sections 2.3, A5 d; #105): gru/ncp,
+# cfc_lrc/dense3 and cfc_lrc/cncp at 600 epochs, F1 selection of each arm
+# (set hpo_dir to the F1 HPO run). Each line equals the lv_final.yaml line except
+# --epochs. 30 fits.
+#   ./cluster/submit_suite.sh configs/suite/f2_budget_desc_lv.yaml f2-budget-desc-lv
+task: lv
+stage: final
+cells:
+  cfc_lrc: [dense3, cncp]
+  gru: [ncp]
+param_budget: 4000
+seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+epochs: 600
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: results/01_lotka_volterra/<lv-hpo run>/results/hpo
+cluster: {runs_per_gpu: 5, walltime: "04:00:00"}

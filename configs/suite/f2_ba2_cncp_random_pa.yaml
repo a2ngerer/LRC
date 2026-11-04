@@ -1,0 +1,18 @@
+# F2 T2 BA-2 (protocol F2 sections 4, 5.2, A11 a; #105, #17): cfc_lrc on the
+# cNCP null model cncp_random, PA, seeds 0-4, lr/clip of the F1 PA
+# cfc_lrc/cncp selection (set hpo_dir to the F1 PA HPO run). 5 fits.
+#   ./cluster/submit_suite.sh configs/suite/f2_ba2_cncp_random_pa.yaml f2-ba2-cncp-random-pa
+task: pa
+stage: final
+cells:
+  cfc_lrc: [cncp_random]
+param_budget: 30000
+seeds: [0, 1, 2, 3, 4]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+hpo_dir: results/03_person_activity/<pa-hpo run>/results/hpo
+selection_from:
+  cfc_lrc_cncp_random: {arm: cfc_lrc_cncp, cell: cfc_lrc, wiring: cncp}
+cluster: {runs_per_gpu: 3, walltime: "06:00:00"}

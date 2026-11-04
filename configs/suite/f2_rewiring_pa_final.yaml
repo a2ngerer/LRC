@@ -1,0 +1,16 @@
+# F2 T3 rewiring family (protocol F2 section 2.1; #105): cfc_lrc/ncp_random on
+# PA, seeds 0-9, selection of the F2 HPO (set hpo_dir to the fetched run of
+# f2_hpo_pa.yaml). 10 fits.
+#   ./cluster/submit_suite.sh configs/suite/f2_rewiring_pa_final.yaml f2-rewiring-pa-final
+task: pa
+stage: final
+cells:
+  cfc_lrc: [ncp_random]
+param_budget: 30000
+seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+hpo_dir: results/03_person_activity/<f2-hpo-pa run>/results/hpo
+cluster: {runs_per_gpu: 3, walltime: "06:00:00"}

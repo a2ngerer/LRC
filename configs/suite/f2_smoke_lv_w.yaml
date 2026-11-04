@@ -1,0 +1,15 @@
+# F2 T1 smoke (protocol F2 sections 2.2, 7; #105, #85): dense3_w on LV, i.e.
+# cfc_lrc/dense3 at the fixed width --size 15 without a parameter budget,
+# 3 epochs, seed 0. 1 line. Own YAML: its result name equals cfc_lrc/dense3's.
+#   BENCH=00_canary ./cluster/submit_suite.sh configs/suite/f2_smoke_lv_w.yaml f2-smoke-lv-w
+task: lv
+stage: final
+cells:
+  cfc_lrc: [dense3]
+seeds: [0]
+epochs: 3
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic, --size, 15]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 8, walltime: "01:00:00"}

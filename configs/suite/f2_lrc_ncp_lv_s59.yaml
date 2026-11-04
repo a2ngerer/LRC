@@ -1,0 +1,16 @@
+# F2 T2 lrc/ncp LV seeds 5-9 (protocol F2 sections 4, A8; #105): F1 selection
+# (set hpo_dir to the F1 LV HPO run); each line equals the lv_final.yaml
+# lrc_ncp line with the seed replaced. 5 fits, one array task.
+#   ./cluster/submit_suite.sh configs/suite/f2_lrc_ncp_lv_s59.yaml f2-lrc-ncp-lv-s59
+task: lv
+stage: final
+cells:
+  lrc: [ncp]
+param_budget: 4000
+seeds: [5, 6, 7, 8, 9]
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: results/01_lotka_volterra/<lv-hpo run>/results/hpo
+cluster: {runs_per_gpu: 5, walltime: "04:00:00"}

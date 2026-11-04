@@ -1,0 +1,16 @@
+# F2 T3 C8 (protocol F2 sections 5.1 B3, A10; #105, #88): lrc/ncp and
+# lrc/dense with --lr-schedule linear at 900 epochs (ramp epochs // 2), seeds
+# 0-2, F1 selection (set hpo_dir to the F1 LV HPO run). 6 fits.
+#   ./cluster/submit_suite.sh configs/suite/f2_c8_lv_f1sel.yaml f2-c8-lv-f1sel
+task: lv
+stage: final
+cells:
+  lrc: [ncp, dense]
+param_budget: 4000
+seeds: [0, 1, 2]
+epochs: 900
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic, --lr-schedule, linear]
+hpo_dir: results/01_lotka_volterra/<lv-hpo run>/results/hpo
+cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

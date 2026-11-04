@@ -1,0 +1,14 @@
+# F2 T2 HPO (protocol F2 sections 2.2, 4, A2; #105, #85): grid HPO of dense3_w
+# on PA, cfc_lrc/dense3 at --size 43 without a parameter budget. 11 planned
+# fits, one array task. Own run folder (its arm folder is hpo/cfc_lrc_dense3).
+#   ./cluster/submit_suite.sh configs/suite/f2_hpo_pa_w.yaml f2-hpo-pa-w
+task: pa
+stage: hpo
+cells:
+  cfc_lrc: [dense3]
+seeds: [100, 101]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic, --size, 43]
+cluster: {runs_per_gpu: 1, walltime: "12:00:00"}

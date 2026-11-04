@@ -1,0 +1,18 @@
+# F2 T3 C7 on lrc_init (protocol F2 sections 4, 5.1 B4, A9 c; #105, #87):
+# lrc_init_tau/ncp, seeds 0-2, lr/clip of the F2 LV addendum selection of
+# lrc_init/ncp (set hpo_dir to the fetched run of f2_hpo_lv.yaml). 3 fits.
+#   ./cluster/submit_suite.sh configs/suite/f2_c7_lv_lrc_init.yaml f2-c7-lv-lrc-init
+task: lv
+stage: final
+cells:
+  lrc_init_tau: [ncp]
+param_budget: 4000
+seeds: [0, 1, 2]
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: results/01_lotka_volterra/<f2-hpo-lv run>/results/hpo
+selection_from:
+  lrc_init_tau_ncp: {arm: lrc_init_ncp, cell: lrc_init, wiring: ncp}
+cluster: {runs_per_gpu: 5, walltime: "04:00:00"}
