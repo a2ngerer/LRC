@@ -14,6 +14,9 @@
 # and control YAMLs train the epochs of their task's final YAML.
 # Issue #82: the init diagnostic diag_pa_init.yaml (four fits, outside the
 # frozen counts).
+# Issue #105: _frozen also stubs the selection_from references; the F2 YAMLs
+# (configs/suite/f2_*.yaml) stay out of the frozen matrix, and stage eval
+# (no training) out of the op-determinism check.
 import fnmatch
 import json
 from argparse import Namespace
@@ -317,6 +320,14 @@ def _frozen(name, hpo_dir=None, final_epochs=None):
             'wiring': wiring, 'param_budget': cfg.get('param_budget'),
             'lr': 1e-4 * (i % 97 + 1), 'clipnorm': [None, 1.0][i % 2],
             **({'final_epochs': final_epochs} if final_epochs else {})}))
+    for ref in (cfg.get('selection_from') or {}).values():   # #105
+        d = hpo_dir / ref['arm']
+        d.mkdir(parents=True, exist_ok=True)
+        (d / 'hpo_selection.json').write_text(json.dumps({
+            'task': cfg['task'], 'system': cfg.get('system'),
+            'cell': ref['cell'], 'wiring': ref['wiring'],
+            'param_budget': cfg.get('param_budget'), 'lr': 0.0042,
+            'clipnorm': 1.0}))
     cfg['hpo_dir'] = str(hpo_dir)
     return cfg
 
@@ -355,7 +366,7 @@ def test_frozen_arm_matrix():
     assert set(names['duffing_hpo']) - set(names['lv_hpo']) == {
         'cfc_static_ncp', 'ltc_ncp', 'mm_ltc_ncp', 'cfc_mm_ltc_ncp'}
     for path in SUITE.glob('*.yaml'):
-        if path.stem.startswith(('canary', 'smoke', 'pilot', 'diag')):
+        if path.stem.startswith(('canary', 'smoke', 'pilot', 'diag', 'f2_')):
             continue
         cfg = load(str(path))
         assert cfg['seeds'] == ([100, 101] if cfg['stage'] == 'hpo'
@@ -737,6 +748,8 @@ def test_suite_runs_with_op_determinism(name, tmp_path, capsys):
     (protocol freeze F1-2026-10-26 l after the S0 probe): --list shows it once
     on every line; without it the lines and the fit count are the same."""
     cfg = _frozen(name)
+    if cfg['stage'] == 'eval':      # no training (#105)
+        return
     if cfg.get('hpo_dir'):
         cfg = _frozen(name, tmp_path / 'hpo')
     assert DET in cfg['extra_args']
