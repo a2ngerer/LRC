@@ -19,6 +19,7 @@ class LTC_Cell(BaseCell):
         dt=1,
         epsilon=1e-8,
         initialization_ranges=None,
+        min_elapsed=None,
         **kwargs
     ):
         """
@@ -34,6 +35,13 @@ class LTC_Cell(BaseCell):
 
              >>> cell = LTC_Cell(units)
              >>> rnn = tf.keras.layers.RNN(cell)
+
+            ``min_elapsed`` (default None = off) is a floor on the elapsed
+            time of a step: the fused step divides by it (cm / (t / unfolds)),
+            so a zero gap gives a NaN state. When set, the step integrates
+            over max(elapsed_time, min_elapsed). The floor is in the units the cell
+            receives, i.e. after the runners' dt_scale. The other cells are
+            unaffected.
 
         """
 
@@ -76,6 +84,10 @@ class LTC_Cell(BaseCell):
         self._ode_unfolds = ode_unfolds
         self._dt = dt
         self._epsilon = epsilon
+        if min_elapsed is not None and not 0 < min_elapsed < float('inf'):
+            raise ValueError(
+                "min_elapsed must be > 0 or None, got {}".format(min_elapsed))
+        self._min_elapsed = min_elapsed
 
     @property
     def sensory_size(self):
@@ -225,6 +237,10 @@ class LTC_Cell(BaseCell):
 
     def _ode_solver(self, inputs, state, elapsed_time):
         v_pre = state
+
+        if self._min_elapsed is not None:
+            elapsed_time = tf.maximum(
+                tf.cast(elapsed_time, v_pre.dtype), self._min_elapsed)
 
         # Pre-compute the effects of the sensory neurons (constant per step)
         # NCP wiring: mask the synapse weights exactly like the ncps reference

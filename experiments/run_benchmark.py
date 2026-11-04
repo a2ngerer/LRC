@@ -202,6 +202,9 @@ DEFAULTS = dict(n_iters=2000, batch_size=16, batch_time=16, lr=1e-3,
 # activates the input/state-dependent liquid elastance that defines the LRC model
 # and that RQ2/RQ5 isolate. Other cells take no extra kwargs.
 CELL_KWARGS = {
+    # ltc_minel: LTC_Cell with an elapsed-time floor (issue #89), mirror of
+    # src/benchmark/registry.py.
+    'ltc_minel': dict(min_elapsed=0.05),
     'lrc': dict(elastance_type='asymmetric'),
     'lrc_ar': dict(elastance_type='asymmetric'),
     'mm_lrc': dict(elastance_type='asymmetric'),

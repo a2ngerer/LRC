@@ -11,6 +11,9 @@ _CELL_REGISTRY = {
     "ctrnn": CTRNN_Cell,
     "lstm": LSTM_Cell,
     "ltc": LTC_Cell,
+    # ltc_minel: LTC_Cell with an elapsed-time floor (min_elapsed set via the
+    # cell kwargs in src/benchmark/registry.py; issue #89, protocol F2 P2b).
+    "ltc_minel": LTC_Cell,
     "gru": GRU_Cell,
     "cfc": CfC_Cell,
     # cfc_static: cfc with per-unit time constants instead of the t_a/t_b heads
