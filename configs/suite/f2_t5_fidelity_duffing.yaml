@@ -7,13 +7,13 @@ system: duffing
 stage: eval
 sources:
   - config: configs/suite/f2_guard_duffing.yaml
-    records_dir: results/02_duffing/<f2-guard-duffing run>/results
+    records_dir: ../benchmarks/02_duffing/runs/<f2-guard-duffing run>/results
   - config: configs/suite/f2_budget_duffing.yaml
-    records_dir: results/02_duffing/<f2-budget-duffing run>/results
+    records_dir: ../benchmarks/02_duffing/runs/<f2-budget-duffing run>/results
   - config: configs/suite/f2_budget_desc_duffing.yaml
-    records_dir: results/02_duffing/<f2-budget-desc-duffing run>/results
+    records_dir: ../benchmarks/02_duffing/runs/<f2-budget-desc-duffing run>/results
   - config: configs/suite/f2_b1_duffing_init.yaml
-    records_dir: results/02_duffing/<f2-b1-duffing-init run>/results
+    records_dir: ../benchmarks/02_duffing/runs/<f2-b1-duffing-init run>/results
   - config: configs/suite/f2_c2_eps1_duffing.yaml
-    records_dir: results/02_duffing/<f2-c2-eps1-duffing run>/results
+    records_dir: ../benchmarks/02_duffing/runs/<f2-c2-eps1-duffing run>/results
 cluster: {runs_per_gpu: 10, walltime: "02:00:00"}

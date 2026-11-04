@@ -67,9 +67,10 @@ One line per record, named with result_name from the source YAML: lv runs
 run_lotka_volterra_benchmark.py --eval-only <record> --anchors 8,16,24,32
 --horizon 96 (the updated JSON goes to results/<source stem>/), pa runs
 eval_robustness.py --results <record> --out results/<source stem>/<record
-stem>.csv (the rebuild check; no --outdir). id and done are
-<source stem>/<record>, so equal record names of two sources never collide;
-the records_dir folders are read-only inputs. --count gives the line count.
+stem>.csv (the rebuild check; no --outdir; the line carries that path as
+`out`). id and done are <source stem>/<record>, so equal record names of two
+sources never collide; the records_dir folders are read-only inputs (a cluster
+path, read at run time only). --count gives the line count.
 
 Arms are ordered cell-major in YAML order and named <cell>_<wiring> (or by
 their `arms` key). Stage hpo gives one line per arm: one
@@ -247,6 +248,10 @@ def _load_eval(path, cfg):
             raise SystemExit(f"{path}: source {src['config']} is not a final "
                              "stage of the same task and system")
         have = {(a[0], s) for a, _, s in jobs(scfg)}
+        unknown = set(src.get("arms") or []) - {n for n, _ in have}
+        if unknown:
+            raise SystemExit(f"{path}: source {src['config']} has no arms "
+                             f"{sorted(unknown)}")
         names = src.get("arms") or sorted({n for n, _ in have})
         want = {(n, s) for n in names
                 for s in src.get("seeds") or [t for m, t in have if m == n]}
@@ -289,6 +294,9 @@ def expand_eval(cfg):
                 line["done"] = line["out"] = (
                     f"{stem}/{os.path.splitext(rec)[0]}.csv")
             lines.append({**line, "argv": argv})
+    dup = len(lines) - len({ln["done"] for ln in lines})
+    if dup:
+        raise SystemExit(f"stage eval: {dup} records are listed twice")
     return lines
 
 

@@ -587,9 +587,15 @@ table. SW3 is staggered: each family final is submitted once its own HPO chain
 is fetched (set its `hpo_dir`) and after the `squeue` check; C8 and C7 on
 `lrc_init` wait for the LV addendum HPO (`f2_hpo_lv`). C8 does not overlap
 with SW2, so the largest overlap is SW2 + SW3 without C8 = 32 + 17 = 49.
+SW1 (20 tasks: the smokes are split into six YAMLs) and SW5 (21 tasks: 10
+eval lines per GPU) differ from the protocol estimates (8 and ~3); SW1 must
+finish before SW2 starts (20 + 32 > 50).
 
-Before a submit, set every `hpo_dir` and `records_dir` placeholder (`<...>`)
-to the fetched run. The dense3_w arms (`*_w.yaml`, `f2_width_*`) are
+Before a submit, set every placeholder (`<...>`). `hpo_dir` is read locally
+when the manifest is expanded, so it points at the fetched HPO run. `records_dir`
+is only read by the eval lines at run time on the cluster (cwd = the code
+directory), so it is a cluster path: `../benchmarks/<bench>/runs/<run>/results`.
+Expanding an eval YAML only builds paths and reads no record. The dense3_w arms (`*_w.yaml`, `f2_width_*`) are
 `cfc_lrc/dense3` at a fixed `--size` (LV 15, PA 43) without `param_budget`;
 their result names equal those of `cfc_lrc/dense3`, so they live in their own
 YAMLs and run folders. The guard retrains (`f2_guard_*`) and the eval YAMLs

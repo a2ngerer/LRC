@@ -7,13 +7,13 @@ task: pa
 stage: eval
 sources:
   - config: configs/suite/f2_guard_pa.yaml
-    records_dir: results/03_person_activity/<f2-guard-pa run>/results
+    records_dir: ../benchmarks/03_person_activity/runs/<f2-guard-pa run>/results
   - config: configs/suite/f2_rewiring_pa_final.yaml
-    records_dir: results/03_person_activity/<f2-rewiring-pa-final run>/results
+    records_dir: ../benchmarks/03_person_activity/runs/<f2-rewiring-pa-final run>/results
   - config: configs/suite/f2_width_pa_final.yaml
-    records_dir: results/03_person_activity/<f2-width-pa-final run>/results
+    records_dir: ../benchmarks/03_person_activity/runs/<f2-width-pa-final run>/results
   - config: configs/suite/f2_b5_p2b_pa.yaml
-    records_dir: results/03_person_activity/<f2-b5-p2b-pa run>/results
+    records_dir: ../benchmarks/03_person_activity/runs/<f2-b5-p2b-pa run>/results
   - config: configs/suite/f2_ba2_cncp_random_pa.yaml
-    records_dir: results/03_person_activity/<f2-ba2-cncp-random-pa run>/results
+    records_dir: ../benchmarks/03_person_activity/runs/<f2-ba2-cncp-random-pa run>/results
 cluster: {runs_per_gpu: 10, walltime: "02:00:00"}

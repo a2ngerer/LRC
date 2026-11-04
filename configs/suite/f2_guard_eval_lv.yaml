@@ -6,11 +6,11 @@ task: lv
 stage: eval
 sources:
   - config: configs/suite/lv_final.yaml
-    records_dir: results/01_lotka_volterra/<lv-final run>/results
+    records_dir: ../benchmarks/01_lotka_volterra/runs/<lv-final run>/results
     arms: [cfc_lrc_ncp, cfc_lrc_dense3]
     seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
   - config: configs/suite/lv_final.yaml
-    records_dir: results/01_lotka_volterra/<lv-final run>/results
+    records_dir: ../benchmarks/01_lotka_volterra/runs/<lv-final run>/results
     arms: [lrc_ncp, lrc_dense]
     seeds: [0, 1, 2, 3, 4]
 cluster: {runs_per_gpu: 10, walltime: "02:00:00"}

@@ -4,6 +4,7 @@
 # extensions selection_from and stage eval), the two extensions, and the F2
 # YAMLs pinned to protocol F2 sections 3, 4, 7 and 8.
 import json
+import re
 import tempfile
 from pathlib import Path
 
@@ -220,7 +221,10 @@ def test_eval_pa_lines(tmp_path, monkeypatch):
      'has no fit'),
     ({'sources': [{'config': 'configs/suite/duffing_final.yaml',
                    'records_dir': 'r', 'arms': ['nope_ncp']}]},
-     'has no fit'),
+     r"has no arms \['nope_ncp'\]"),
+    ({'sources': [{'config': 'configs/suite/duffing_final.yaml',
+                   'records_dir': 'r', 'arms': ['lrc_ncp', 'nope_ncp']}]},
+     r"has no arms \['nope_ncp'\]"),
     ({'bogus': 1}, 'unknown keys'),
 ])
 def test_eval_rejections(tmp_path, over, msg):
@@ -229,6 +233,15 @@ def test_eval_rejections(tmp_path, over, msg):
         **over}
     with pytest.raises(SystemExit, match=msg):
         load(_write(tmp_path, cfg))
+
+
+def test_eval_rejects_a_record_listed_twice(tmp_path):
+    src = {'config': 'configs/suite/duffing_final.yaml', 'records_dir': 'r',
+           'arms': ['lrc_ncp'], 'seeds': [0]}
+    cfg = {'task': 'lv', 'system': 'duffing', 'stage': 'eval',
+           'sources': [src, dict(src)]}
+    with pytest.raises(SystemExit, match='listed twice'):
+        expand(load(_write(tmp_path, cfg)))
 
 
 def test_eval_default_takes_every_source_record():
@@ -557,14 +570,34 @@ def test_f2_eval_outputs_stay_in_their_stem_folder(name, tmp_path):
             assert not out.is_relative_to(Path(records).resolve())
         rec = line['argv'][5]
         assert rec.startswith(stems[stem] + '/')
+    bench = {'lv': '01_lotka_volterra', 'duffing': '02_duffing',
+             'pa': '03_person_activity'}[name.rsplit('_', 1)[1]]
+    for records in stems.values():      # a cluster path, read at run time
+        assert re.fullmatch(rf'\.\./benchmarks/{bench}/runs/<[^>]+>/results',
+                            records), records
     if 'guard' in name:
         f1 = {'lv': 'lv_final', 'duffing': 'duffing_final', 'pa': 'pa_final'}[
             name.rsplit('_', 1)[1]]
         assert set(stems) == {f1}
     else:
-        assert all(s.startswith('f2_') and s in F2 for s in stems)
-        assert not set(stems) & {n for n in F2 if F2[n][0] == 'hpo'}
+        assert set(stems) == T5_SOURCES[name]
         assert sum(COUNTS[s] for s in stems) == EVALS[name]
+
+
+# T5 sources (protocol F2 section 7): every non-HPO fit YAML of T1-T3
+T5_SOURCES = {
+    'f2_t5_fidelity_lv': {
+        'f2_guard_lv', 'f2_rewiring_lv_final', 'f2_width_lv_final',
+        'f2_budget_lv', 'f2_budget_desc_lv', 'f2_lrc_ncp_lv_s59',
+        'f2_b2_lv_final', 'f2_c8_lv_f1sel', 'f2_c8_lv_f2sel', 'f2_c7_lv_lrc',
+        'f2_c7_lv_lrc_init'},
+    'f2_t5_fidelity_duffing': {
+        'f2_guard_duffing', 'f2_budget_duffing', 'f2_budget_desc_duffing',
+        'f2_b1_duffing_init', 'f2_c2_eps1_duffing'},
+    'f2_t5_fidelity_pa': {
+        'f2_guard_pa', 'f2_rewiring_pa_final', 'f2_width_pa_final',
+        'f2_b5_p2b_pa', 'f2_ba2_cncp_random_pa'},
+}
 
 
 # --- runner acceptance: one 1-epoch fit per new arm kind ----------------------
