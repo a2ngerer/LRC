@@ -119,14 +119,14 @@ CELL_REGISTRY: dict[str, CellConfig] = {
     'cfc': CellConfig(),
     # --- v3.1 / v3.2 / v4 closed-form + mixed-memory family -----------------
     'cfc_lrc': CellConfig(kwargs=dict(_ASYM)),
-    # cfc_lrc_outer: eps scales the gate output, not its time-rate (M. Farsang
-    # review variant). Same cell/param count as cfc_lrc; head-to-head benchmark.
     # cfc_lrc_eps1: cfc_lrc with the elastance held at exactly 1 (issue #90,
     # protocol F2 C-2, label [eps=1]). The head is built (same init draws as
     # cfc_lrc) and frozen, so it leaves params_effective; the width comes from
     # the cfc_lrc arm. The flag enters config.effective.cell_kwargs.
     'cfc_lrc_eps1': CellConfig(kwargs={'elastance_type': 'asymmetric',
                                        'elastance_one': True}),
+    # cfc_lrc_outer: eps scales the gate output, not its time-rate (M. Farsang
+    # review variant). Same cell/param count as cfc_lrc; head-to-head benchmark.
     'cfc_lrc_outer': CellConfig(kwargs={'elastance_type': 'asymmetric',
                                         'elastance_gate': 'outer'}),
     'cfc_pm': CellConfig(kwargs={'backbone_units': 20}),

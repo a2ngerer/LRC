@@ -167,6 +167,8 @@ class CfC_LRC_Cell(BaseCell):
 
     def _elastance_value(self, raw):
         """Liquid elastance eps in [0,1] from the raw [inputs, state] tensor."""
+        if self._elastance_one:
+            return tf.ones_like(raw[:, :self.units])
         e_pre = self._masked_dense(self._elastance, raw)
         if self._elastance_type == 'symmetric':
             return (tf.nn.sigmoid(e_pre + self._distr_shift)

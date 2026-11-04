@@ -50,7 +50,7 @@ from src.tasks.lotka_volterra.datasets import load_lotka_volterra, reference_fra
 from src.tasks.lotka_volterra.model import build_lotka_volterra_model, LV_WIRINGS
 from src.tasks.active_sensing.model import TBT_MODES
 from src.benchmark.tracking import keras_callbacks, track
-from src.wirings import match_param_budget, param_counts
+from src.wirings import match_param_budget, param_counts, width_cell_kwargs
 from src.benchmark.registry import cell_kwargs as registry_cell_kwargs
 from run_lotka_volterra_benchmark import closed_loop_rollout
 
@@ -242,7 +242,7 @@ def main():
 
     size, param_count = size_for_param_budget(
         args.wiring, args.cell, args.param_budget, data.feature_size,
-        data.loc_dim, cell_kwargs)
+        data.loc_dim, width_cell_kwargs(cell_kwargs))
     dev = abs(param_count - args.param_budget) / args.param_budget
     flag = "  <-- OUT OF TOLERANCE" if dev > args.tol else ""
     print(f"[{args.cell}/{args.wiring}] param-matched size={size} -> "

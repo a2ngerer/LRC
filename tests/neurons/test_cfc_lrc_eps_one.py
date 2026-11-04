@@ -274,16 +274,56 @@ def test_eps1_through_the_lv_runner(wiring, tmp_path, monkeypatch):
         np.testing.assert_array_equal(x, y)
 
 
-def test_eps1_budget_width_is_the_cfc_lrc_width(tmp_path, monkeypatch):
+@pytest.mark.parametrize('wiring', WIRINGS)
+def test_eps1_budget_width_is_the_cfc_lrc_width(wiring, tmp_path, monkeypatch):
     """Under --param-budget the eps1 arm takes the width of cfc_lrc at the same
     budget (the frozen head counts for the width search only), while the
     reported params_effective leaves the head out."""
     budget = '600'
-    lrc, _, _ = _lv_run(tmp_path / 'a', monkeypatch, 'cfc_lrc', 'ncp',
+    lrc, _, _ = _lv_run(tmp_path / 'a', monkeypatch, 'cfc_lrc', wiring,
                         '--param-budget', budget)
-    eps1, _, _ = _lv_run(tmp_path / 'b', monkeypatch, 'cfc_lrc_eps1', 'ncp',
-                         '--param-budget', budget)
+    eps1, _, _ = _lv_run(tmp_path / 'b', monkeypatch, 'cfc_lrc_eps1',
+                         wiring, '--param-budget', budget)
     assert eps1['size'] == lrc['size']
     assert eps1['budget_deviation'] == lrc['budget_deviation']
     assert eps1['params_raw'] == lrc['params_raw']
     assert eps1['params_effective'] < lrc['params_effective']
+
+
+# --- review follow-ups ----------------------------------------------------------
+
+def test_elastance_value_is_one():
+    cell = CfC_LRC_Cell(UNITS, elastance_one=True)
+    rnn, x = _seq(cell)
+    rnn(x)
+    raw = tf.ones((2, IN + UNITS))
+    np.testing.assert_array_equal(cell._elastance_value(raw).numpy(),
+                                  np.ones((2, UNITS), np.float32))
+
+
+@pytest.mark.parametrize('wiring', WIRINGS)
+def test_equals_cfc_under_the_wiring(wiring):
+    """eps1 on the LV builder (NCP masks, cNCP sub-cells, (x, elapsed) inputs)
+    computes the cfc model of the same width once that carries its weights."""
+    eps1 = _build('cfc_lrc_eps1', wiring)
+    cfc = _build('cfc', wiring)
+    rest, _ = _split(eps1)
+    assert [w.shape for w in rest] == [w.shape for w in cfc.get_weights()]
+    cfc.set_weights(rest)
+    x = _lv_inputs(np.random.default_rng(5), 2, 6)
+    np.testing.assert_array_equal(eps1(x).numpy(), cfc(x).numpy())
+
+
+@pytest.mark.parametrize('wiring', ['dense', 'ncp'])
+def test_param_groups_skip_the_frozen_head(wiring):
+    from src.evaluation.param_groups import group_parameters
+    model = _build('cfc_lrc_eps1', wiring)
+    grouped = [v.ref() for vs in group_parameters(model).values() for v in vs]
+    assert sorted(map(id, (r.deref() for r in grouped))) == sorted(
+        id(v) for v in model.trainable_variables)
+
+
+def test_eps1_with_diagnostics_through_the_lv_runner(tmp_path, monkeypatch):
+    record, _, _ = _lv_run(tmp_path, monkeypatch, 'cfc_lrc_eps1', 'ncp',
+                           '--size', '8', '--epochs', '2', '--diagnostics')
+    assert record['training_diverged'] is False

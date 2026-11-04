@@ -63,9 +63,13 @@ def group_parameters(model) -> dict:
     variable lands in exactly one group, empty groups are omitted."""
     groups = {g: [] for g in GROUPS}
     seen = set()
+    # Membership in model.trainable_variables, not var.trainable: a layer frozen
+    # with layer.trainable = False (cfc_lrc_eps1's elastance head, #90;
+    # lrc_frozen) keeps var.trainable True but has no optimizer slot.
+    trainable = {v.ref() for v in model.trainable_variables}
 
     def put(group, var):
-        if var.trainable and var.ref() not in seen:
+        if var.ref() in trainable and var.ref() not in seen:
             seen.add(var.ref())
             groups[group].append(var)
 
