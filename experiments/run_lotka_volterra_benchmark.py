@@ -61,15 +61,15 @@ one replicate share a draw and every replicate gets a fresh one.
 
 Init diagnostic (issue #82): --init-ranges JSON sets the cell's
 initialization_ranges (replaces a registry value of that kwarg);
+--optimizer {rmsprop, rmsprop_legacy, adam} and --opt-epsilon choose the
+optimizer (src/benchmark/optimizers.py). At the defaults neither adds a key to
+config.effective, so the config_hash of a default run is unchanged.
+
 --lr-schedule linear (#88, protocol F2 C8) lowers the learning rate linearly
 from --lr to --lr-end-fraction * --lr (default 0) over the whole --epochs
 budget; the forcing ramp does not shorten it. The default constant adds no key
 to the result or config.effective (lr_schedule, lr_end_fraction, lr_curve
 appear only for linear), so config_hash of every existing arm is unchanged.
-
---optimizer {rmsprop, rmsprop_legacy, adam} and --opt-epsilon choose the
-optimizer (src/benchmark/optimizers.py). At the defaults neither adds a key to
-config.effective, so the config_hash of a default run is unchanged.
 
 De-normalised ground-truth / teacher-forced / closed-loop trajectories for the
 test split are written into the JSON so plot_lotka_volterra.py needs no retrain.
