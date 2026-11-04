@@ -35,6 +35,8 @@ cc_setup_cuda_ld
 cc_setup_tf_env "${RUNS_PER_GPU:?RUNS_PER_GPU not set}"
 # A --wandb (submit_suite.sh --wandb or extra_args) logs offline into the run folder.
 export WANDB_MODE=offline WANDB_DIR="$RUN_DIR/wandb" WANDB_SILENT=true
+# wandb's service start has a 30 s default wait that a loaded node can exceed (#84).
+export WANDB__SERVICE_WAIT="${WANDB__SERVICE_WAIT:-300}"
 # Per-fit logs: <run folder>/logs/run-<array job>_idx<line>.log
 CC_LOG_DIR="$RUN_DIR/logs"
 

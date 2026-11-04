@@ -3,8 +3,9 @@
 wandb is an optional dependency (``uv sync --extra tracking``). Every helper
 here degrades to a no-op when wandb is not installed or tracking was not
 requested, so smoke tests and the pytest suite keep working without a wandb
-install or login. On the cluster set ``WANDB_MODE=offline`` and ``wandb sync``
-the run directories from the login node (compute nodes have no internet).
+install or login; a failing ``wandb.init`` degrades to the same no-op (#84).
+On the cluster set ``WANDB_MODE=offline`` and ``wandb sync`` the run
+directories from the login node (compute nodes have no internet).
 
 Usage (Keras backend)::
 
@@ -29,6 +30,7 @@ of the fit ``log_summary`` writes the primary metric to the run summary.
 from __future__ import annotations
 
 import os
+import sys
 from contextlib import contextmanager
 
 DEFAULT_PROJECT = "thesis-benchmarks"
@@ -54,13 +56,19 @@ def track(enabled, *, group, job_type, name, config, project=DEFAULT_PROJECT,
     via ``track_fit``; the legacy callers run_benchmark.py and
     run_lotka_volterra_hpo.py pass group=cell, job_type=wiring); the seed and
     hyper-parameters belong in ``config`` (tags do not group). The run is always finished on exit -- including on an
-    exception -- so a crashed trial still flushes its offline data.
+    exception -- so a crashed trial still flushes its offline data. A failing
+    ``wandb.init`` (e.g. the wandb service does not come up in time) costs the
+    tracking, not the fit: one warning on stderr, ``None`` is yielded (#84).
     """
     run = None
     if enabled and _wandb_available():
         import wandb
-        run = wandb.init(project=project, group=group, job_type=job_type,
-                         name=name, config=config, tags=tags, reinit=True)
+        try:
+            run = wandb.init(project=project, group=group, job_type=job_type,
+                             name=name, config=config, tags=tags, reinit=True)
+        except Exception as exc:    # KeyboardInterrupt and SystemExit pass
+            print(f"warning: wandb.init failed, this fit runs untracked: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr)
     try:
         yield run
     finally:
