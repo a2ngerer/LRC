@@ -40,5 +40,24 @@ export WANDB__SERVICE_WAIT="${WANDB__SERVICE_WAIT:-300}"
 # Per-fit logs: <run folder>/logs/run-<array job>_idx<line>.log
 CC_LOG_DIR="$RUN_DIR/logs"
 
+# Slice check (#91). The slice of this task is manifest lines [t*K, t*K+K-1].
+# It is non-empty if start < rows (rows = non-empty lines of the manifest file,
+# the truth; N_SPECS is only what the submitter passed). cc_launch_bundle starts
+# one runner per index below N_SPECS, so a non-empty slice must start
+# min(K, rows-start) runners. Fewer (N_SPECS 0 or below rows) = the task would
+# return rc 0 without running its rows: exit 1. An empty slice exits 0. A
+# runner that skips a done line still counts as started (it exits 0 itself).
+manifest="$RUN_DIR/manifest_${SUITE_GROUP}.jsonl"
+[[ -f "$manifest" ]] || { echo "ERROR: manifest $manifest not found" >&2; exit 1; }
+rows="$(grep -c '[^[:space:]]' "$manifest" || true)"
+start=$(( SLURM_ARRAY_TASK_ID * RUNS_PER_GPU ))
+want=$(( rows - start < RUNS_PER_GPU ? rows - start : RUNS_PER_GPU ))
+started=$(( N_SPECS - start < RUNS_PER_GPU ? N_SPECS - start : RUNS_PER_GPU ))
+[[ "$started" -lt 0 ]] && started=0
+if [[ "$start" -lt "$rows" && "$started" -lt "$want" ]]; then
+    echo "ERROR: task ${SLURM_ARRAY_TASK_ID} owns manifest lines from ${start} of ${rows} but N_SPECS=${N_SPECS} starts only ${started} of ${want} runner(s)" >&2
+    exit 1
+fi
+
 cc_launch_bundle uv run python experiments/suite_manifest.py \
     --run "$RUN_DIR/manifest_${SUITE_GROUP}.jsonl" --results "$RUN_DIR/results"
