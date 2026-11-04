@@ -30,10 +30,12 @@ from src.tasks.lotka_volterra.model import build_lotka_volterra_model
 from src.tasks.person_activity.model import (backbone_override,
                                              build_person_activity_model)
 
-# The frozen final-suite protocol (protocol freeze F1-2026-10-26), stamped into
-# every config.effective and wandb run. Every change of the frozen protocol
-# after the smoke stage (S0) is a new version string here.
-PROTOCOL_VERSION = "F1-2026-10-26"
+# The frozen final-suite protocol F2 (planned freeze 2026-11-05), stamped into
+# every config.effective and wandb run. F1 records keep their stamp
+# "F1-2026-10-26". Every change of the frozen protocol after the smoke stage
+# (S0), e.g. an F2 endpoint, threshold or arm, is a new version string with a
+# suffix (e.g. "F2-2026-11-05-b").
+PROTOCOL_VERSION = "F2-2026-11-05"
 
 BUILDERS = {"lotka_volterra": build_lotka_volterra_model,
             "person_activity": build_person_activity_model,

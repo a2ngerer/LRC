@@ -6,6 +6,7 @@
 # and a config_hash that survives the JSON round trip and tells fits apart that
 # differ only in a training or evaluation knob. Synthetic data only.
 import json
+import re
 import sys
 import types
 
@@ -105,7 +106,8 @@ def test_runner_works_without_wandb(runner, tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, 'wandb', None)   # import wandb fails
     path = RUNNERS[runner][0](tmp_path, monkeypatch)
     eff = json.loads(path.read_text())['config']['effective']
-    assert eff['protocol_version'] == PROTOCOL_VERSION == 'F1-2026-10-26'
+    assert eff['protocol_version'] == PROTOCOL_VERSION == 'F2-2026-11-05'
+    assert re.fullmatch(r'F2-\d{4}-\d{2}-\d{2}', PROTOCOL_VERSION)
     # the stored hash is the hash of the stored (round-tripped) config
     assert eff['config_hash'] == config_hash(eff)
 
@@ -126,7 +128,7 @@ def test_runner_tracks_suite_metadata(runner, tmp_path, monkeypatch):
                                      'tags')} == {
         'project': 'thesis-benchmarks', 'group': 'canary_hpo',
         'job_type': f'{task}/hpo', 'name': path.stem,
-        'tags': ['protocol:F1-2026-10-26']}
+        'tags': [f'protocol:{PROTOCOL_VERSION}']}
     config = run.init['config']
     assert set(SUITE_CONFIG_KEYS) <= set(config)
     for k in ('cell', 'wiring', 'seed', 'lr', 'clipnorm', 'param_budget',
@@ -256,3 +258,69 @@ def test_config_hash_tells_training_and_evaluation_knobs_apart(
                                   0.5)['config']['effective']
         assert eff['anchors'] == [2, 3]
         assert eff['config_hash'] == config_hash(eff) == hashes[5]
+
+
+# --- F1 records stay valid under the F2 constant (#106) ----------------------
+F1 = 'F1-2026-10-26'
+_SYNTHETIC = {'task': 'lotka_volterra', 'build': {'lr': 0.001,
+                                                  'wiring': 'ncp'}, 'seed': 3}
+# sha256 of _SYNTHETIC stamped with F1, recorded on main before #106
+_SYNTHETIC_F1_HASH = (
+    '35db0c62122376cc7b2dcadb10564343d0b41fae5f25f75482b4ae8d9c42949e')
+
+
+def _unstamped(eff):
+    return {k: v for k, v in eff.items()
+            if k not in ('protocol_version', 'config_hash')}
+
+
+def test_stamp_protocol_mechanism_is_unchanged_for_f1_and_f2(monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr('src.benchmark.checkpoints.PROTOCOL_VERSION', F1)
+        f1 = stamp_protocol(_SYNTHETIC)
+    f2 = stamp_protocol(_SYNTHETIC)
+    assert f1 == {**_SYNTHETIC, 'protocol_version': F1,
+                  'config_hash': _SYNTHETIC_F1_HASH}
+    assert f2['protocol_version'] == PROTOCOL_VERSION != F1
+    assert _unstamped(f1) == _unstamped(f2) == _SYNTHETIC
+    assert f2['config_hash'] == config_hash(f2) != f1['config_hash']
+
+
+def test_f1_stamped_config_keeps_a_valid_hash_under_the_f2_constant():
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr('src.benchmark.checkpoints.PROTOCOL_VERSION', F1)
+        stored = json.loads(json.dumps(stamp_protocol(_SYNTHETIC)))
+    assert stored['protocol_version'] == F1 != PROTOCOL_VERSION
+    assert config_hash(stored) == stored['config_hash']
+
+
+@pytest.mark.parametrize('runner', sorted(RUNNERS))
+def test_runners_differ_between_f1_and_f2_only_in_the_two_stamped_keys(
+        runner, tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, 'wandb', None)
+    run_fit = RUNNERS[runner][0]
+    with monkeypatch.context() as m:
+        m.setattr('src.benchmark.checkpoints.PROTOCOL_VERSION', F1)
+        f1 = json.loads(run_fit(tmp_path / 'f1', monkeypatch).read_text())
+    f2 = json.loads(run_fit(tmp_path / 'f2', monkeypatch).read_text())
+    e1, e2 = f1['config']['effective'], f2['config']['effective']
+    assert (e1['protocol_version'], e2['protocol_version']) == (
+        F1, PROTOCOL_VERSION)
+    assert _unstamped(e1) == _unstamped(e2)
+    assert e1['config_hash'] == config_hash(e1)
+    assert e2['config_hash'] == config_hash(e2)
+    assert e1['config_hash'] != e2['config_hash']
+
+
+def test_eval_only_keeps_the_f1_stamp_under_the_f2_constant(tmp_path,
+                                                            monkeypatch):
+    monkeypatch.setitem(sys.modules, 'wandb', None)
+    with monkeypatch.context() as m:
+        m.setattr('src.benchmark.checkpoints.PROTOCOL_VERSION', F1)
+        path = _run_lv(tmp_path / 'fit', monkeypatch)
+    lv_runner.eval_only(str(path), str(tmp_path / 'ev'), (2, 3), 4, 0.5)
+    (out,) = (tmp_path / 'ev').glob('*.json')
+    eff = json.loads(out.read_text())['config']['effective']
+    assert eff['anchors'] == [2, 3]
+    assert eff['protocol_version'] == F1 != PROTOCOL_VERSION
+    assert eff['config_hash'] == config_hash(eff)

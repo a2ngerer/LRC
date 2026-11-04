@@ -271,6 +271,8 @@ Exceptions that do not bump the version: a key that records a decision
 pre-registered in F1 and taken at S0 (op-determinism, F1 decision l, #76), and
 a change pre-registered in F1 and decided at S1 (the epochs of the S1 epoch
 gate, F1 decision m, #78, #79); both change `config_hash`.
+F2 records carry an `F2-...` stamp, F1 records keep `F1-2026-10-26`; run folders
+of the two protocols are never read through one glob.
 
 The frozen protocol (F1-2026-10-26, #71) is one hpo and one final YAML per task:
 `configs/suite/{lv,duffing,mt,pa}_{hpo,final}.yaml` and the consensus study
