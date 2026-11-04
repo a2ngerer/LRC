@@ -94,6 +94,10 @@ _LRC_INIT_RANGES = {'vleak': (-1.0, 1.0), 'mu': (-0.2, 0.2),
 CELL_REGISTRY: dict[str, CellConfig] = {
     # --- v1 thesis cells + classical baselines (empty kwargs) ---------------
     'ltc': CellConfig(),
+    # ltc_minel: LTC_Cell with the elapsed-time floor 0.05 (issue #89, protocol
+    # F2 P2b): on Person Activity a zero time gap gives a NaN state in the fused
+    # LTC step. The value enters config.effective.cell_kwargs.min_elapsed.
+    'ltc_minel': CellConfig(kwargs={'min_elapsed': 0.05}),
     'lrc': CellConfig(kwargs=dict(_ASYM)),
     # lrc_ar: autoregressive LRC (class default 'symmetric'), same elastance
     # as lrc for the sequence runners.
