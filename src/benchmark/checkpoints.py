@@ -63,7 +63,8 @@ def rebuild_from_result(json_path, *, untrained=False,
     """Rebuild the compiled model of a result JSON and load its trained weights.
 
     ``untrained=True`` skips the weights: the builder seeds the init from
-    build.seed, so this is the fit's initial model. ``cell_overrides`` replace
+    build.seed, so this is a same-seed draw of the fit's initial model (bitwise
+equal across devices is not guaranteed). ``cell_overrides`` replace
     cell_kwargs entries that create no weights, e.g. ``ode_unfolds=k`` to
     re-run trained solver weights at k substeps."""
     with open(json_path) as f:

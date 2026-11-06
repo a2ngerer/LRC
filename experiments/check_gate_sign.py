@@ -18,8 +18,9 @@ without training, on the test windows of its task:
 Every call of every CfC/CfC-LRC cell's gate heads is recorded, so the count
 covers all units of all cells, all time steps and all test windows. The same
 count on the untrained model of the same seed (the builder seeds the init
-from build.seed; rebuild_from_result(untrained=True)) is the null reference,
-about 0.5 for a sign-symmetric init.
+from build.seed; rebuild_from_result(untrained=True), a same-seed init draw
+on this device) is the null reference, about 0.5 for a sign-symmetric init.
+Rollout fits are read under teacher forcing, not in the closed loop.
 
 --out gets one row per fit: file, task, system, arm, cell, wiring, seed,
 config_effective_sha256, n_values (t_a values per model), neg_share_trained,
@@ -95,9 +96,10 @@ def negative_share(model, inputs, batch_size=BATCH):
     for i in range(0, len(inputs[0]), batch_size):
         model(tuple(a[i:i + batch_size] for a in inputs), training=False)
         for sink in calls.values():
-            if len(sink) < 2 or not np.array_equal(sink[0], sink[1]):
-                raise RuntimeError("the first gate call of a forward pass is "
-                                   "not the step-0 duplicate of backend.rnn")
+            if (len(sink) != inputs[0].shape[1] + 1
+                    or not np.array_equal(sink[0], sink[1])):
+                raise RuntimeError("expected one gate call per time step "
+                                   "plus the step-0 duplicate of backend.rnn")
             a = np.concatenate([c.ravel() for c in sink[1:]])
             neg, total = neg + int((a < 0).sum()), total + a.size
             sink.clear()
