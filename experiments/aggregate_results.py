@@ -505,7 +505,7 @@ def pa_arm_means(pa_dir, units='seed') -> str:
     left out and files without the key are skipped. If any record carries the
     per-recording key and the units are 'seed', a last column holds the
     cross-mean (mean over seeds and recordings) with its crossed interval
-    ('—' for an arm with a seed lacking the key)."""
+    ('—' for an arm whose seeds lack the key or differ in recordings)."""
     by_rec = 'recording' in units
     key = 'test_macro_f1_per_recording' if by_rec else 'test_macro_f1'
     arms, crossed, skipped, tuning = defaultdict(list), defaultdict(list), 0, 0
@@ -516,14 +516,14 @@ def pa_arm_means(pa_dir, units='seed') -> str:
         if not isinstance(r, dict) or key not in r:
             skipped += 1
             continue
-        if r['seed'] not in FINAL_SEEDS:
+        if r.get('seed') not in FINAL_SEEDS:
             tuning += 1
             continue
         v = r[key]
         arm = _rollout_arm(path, r, pa_dir)[0]
         arms[arm].append([v[k] for k in sorted(v)] if isinstance(v, dict) else v)
         rec = r.get('test_macro_f1_per_recording')
-        crossed[arm].append([rec[k] for k in sorted(rec)] if rec else None)
+        crossed[arm].append(rec if isinstance(rec, dict) and rec else None)
     cross = not by_rec and any(None not in c for c in crossed.values())
     lines = [f'## Person Activity arm means (test macro-F1, bootstrap over {units})\n',
              '| Arm | n seeds | mean | 95% CI |'
@@ -533,10 +533,13 @@ def pa_arm_means(pa_dir, units='seed') -> str:
         mean, lo, hi = bootstrap_mean_ci(rows, resample_cols=by_rec)
         line = f'| {arm} | {len(rows)} | {mean:.4f} | [{lo:.4f}, {hi:.4f}] |'
         if cross:
-            if None in crossed[arm]:
-                line += ' — |'
+            recs = crossed[arm]
+            if None in recs or len({tuple(sorted(x)) for x in recs}) > 1:
+                line += ' — |'     # a seed without, or another recording set
             else:
-                m, lo, hi = bootstrap_mean_ci(crossed[arm], resample_cols=True)
+                m, lo, hi = bootstrap_mean_ci(
+                    [[x[k] for k in sorted(x)] for x in recs],
+                    resample_cols=True)
                 line += f' {m:.4f} [{lo:.4f}, {hi:.4f}] |'
         lines.append(line)
     lines.append(f'\nSkipped {skipped} result file(s) without {key}.\n' if skipped else '')

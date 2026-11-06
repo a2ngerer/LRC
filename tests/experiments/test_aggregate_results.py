@@ -282,11 +282,11 @@ def test_pa_arm_means_cross_mean_column_only_with_recordings(tmp_path):
     for seed in range(2):
         _write_pa(mixed, seed, None if seed else {'r0': 0.5, 'r1': 0.7})
         _write_pa(mixed, seed, {'r0': 0.5, 'r1': 0.7}, tag='full')
-    rows = pa_arm_means(mixed).splitlines()
-    assert rows[-2].startswith('| cfc_lrc_dense3 | 2 | 0.6000 |')
-    assert rows[-2].endswith('| [0.6000, 0.6000] | — |')
-    assert rows[-1].startswith('| full | 2 | 0.6000 |')
-    assert '| 0.6000 [' in rows[-1]
+        _write_pa(mixed, seed, {f'r{seed}': 0.5}, tag='ragged')
+    rows = {r.split(' | ')[0]: r for r in pa_arm_means(mixed).splitlines()}
+    assert rows['| cfc_lrc_dense3'].endswith('| [0.6000, 0.6000] | — |')
+    assert rows['| ragged'].endswith('| [0.6000, 0.6000] | — |')
+    assert '| 0.6000 [' in rows['| full']
 
 
 def _write_rollout(d, tag, seed, rates, sens, non_finite, n=16):
