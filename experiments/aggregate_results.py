@@ -58,13 +58,21 @@ Optional sections:
                    exact sign-flip permutation p, floor marking per arm
                    wherever it lives, reading PASS/FAIL/floor-bound/
                    undecidable; <out>/f2_families.csv
+  --descriptive SPEC.yaml  the descriptive F2 blocks (protocol F2 sections 5
+                   and 2.3, DESCRIPTIVE_BLOCKS: B1-B5, BA-2, C-2, the 2x
+                   budget pairs) from explicit path lists per arm (template:
+                   configs/aggregate/descriptive_blocks.yaml): per-arm
+                   median, paired difference with its bootstrap interval,
+                   the reading of each block (three-seed rule, five-seed
+                   direction rule, B5 plateau exit, budget direction), no
+                   test; <out>/descriptive_blocks.csv
 
 Usage:
     uv run python experiments/aggregate_results.py [--runs results/runs] [--out results]
         [--hpo-dir DIR ...] [--pa-runs DIR [--bootstrap-units seed,recording]]
         [--rollout-runs DIR [--floors]] [--co-runs DIR]
         [--contrasts [--floors-json PATH] [--robustness CSV ...]]
-        [--f2-families SPEC.yaml]
+        [--f2-families SPEC.yaml] [--descriptive SPEC.yaml]
 
     # the frozen suite: ROLLOUTS holds the final run folders of every rollout
     # system (searched recursively), PA the Person Activity final run
@@ -140,6 +148,75 @@ BONFERRONI_FAMILIES = {
     'RQ1': 3,              # cfc_lrc/ncp vs gru/ncp per task
     # {ncp, cncp} x {part i, part ii} at K=30 (consensus_family below)
     'H-d': 4,
+}
+
+# Descriptive F2 blocks (protocol F2 sections 5.1 and 5.2 and the
+# descriptive part of 2.3, #109): no test, each reading fixed by the
+# protocol. block -> task (rollout system or 'pa'), final seeds, reading kind
+# and pairings {a, b} with delta = a - b on the paired value of _paired (b
+# None: no reference arm); budget pairings also name the same pair at 1x
+# (a_1x, b_1x, from the F1 path list); note, caveat and config_note are
+# fixed text columns of the row. Arm labels as arm_label returns them.
+B5_EXIT_THRESHOLD = 0.0851   # 0.0751 + 0.01: val macro-F1 leaves the plateau
+B5_EPOCHS = 10               # ... by epoch 10
+ESCAPE_LOSS = 0.5            # escape epoch: first val_loss_curve entry below
+CONVERGED = 0.95             # flag: best_val_epoch >= 0.95 x its own epochs
+C8_NOTE = ('Epochs and learning-rate schedule change together; the result '
+           'is not attributed to either factor.')
+C7_CAVEAT = ('The initial plateau of lrc/ncp can mask a retention effect, '
+             'and the effective gain of the base arm is shifted relative to '
+             'the init arm; a result on lrc/ncp is therefore not attributed '
+             'to the time-scale initialisation alone.')
+DIRECTION_TEXT = 'hint, not a test'
+_LV, _EPS1 = 'periodic_predator_prey', 'cfc_lrc_eps1/ncp'
+
+
+def _budget_pairs(epochs):
+    """RQ1 and both H-c legs at 2x (descriptive part of protocol F2 2.3)
+    next to the same pair at 1x, delta in the direction of the F1 rows."""
+    x2 = f' [epochs={epochs}]'
+    return [{'a': a + x2, 'b': b + x2, 'a_1x': a, 'b_1x': b}
+            for a, b in (('cfc_lrc/ncp', 'gru/ncp'),
+                         ('cfc_lrc/ncp', 'cfc_lrc/dense3'),
+                         ('cfc_lrc/cncp', 'cfc_lrc/dense3'))]
+
+
+DESCRIPTIVE_BLOCKS = {
+    'B1': {'task': 'duffing', 'seeds': range(3), 'reading': 'floor + 2',
+           'pairs': [{'a': 'lrc_init/ncp', 'b': 'lrc/ncp'},
+                     {'a': 'lrc_cal_duffing/ncp', 'b': 'lrc/ncp'}]},
+    'B2': {'task': _LV, 'seeds': range(10), 'reading': 'descriptive',
+           'pairs': [{'a': a, 'b': b}
+                     for a in ('lrc_init/ncp', 'lrc_cal_lv/ncp')
+                     for b in ('lrc/ncp', 'cfc_lrc/ncp')]},
+    'B3': {'task': _LV, 'seeds': range(3), 'reading': 'above reference',
+           'pairs': [{'a': f'{arm} [epochs=900]', 'b': arm, 'note': C8_NOTE}
+                     for arm in ('lrc/ncp', 'lrc/dense', 'lrc_init/ncp',
+                                 'lrc_cal_lv/ncp')]},
+    'B4': {'task': _LV, 'seeds': range(3), 'reading': 'above reference',
+           'pairs': [{'a': 'lrc_tau/ncp', 'b': 'lrc/ncp',
+                      'caveat': C7_CAVEAT},
+                     {'a': 'lrc_init_tau/ncp', 'b': 'lrc_init/ncp'}]},
+    'B5': {'task': 'pa', 'seeds': range(3), 'reading': 'plateau exit',
+           'pairs': [{'a': 'ltc_minel/ncp', 'b': None}]},
+    'BA-2': {'task': 'pa', 'seeds': range(5), 'reading': 'direction',
+             'pairs': [{'a': 'cfc_lrc/cncp', 'b': 'cfc_lrc/cncp_random'}]},
+    'C-2': {'task': 'duffing', 'seeds': range(5), 'reading': 'direction',
+            'pairs': [
+                {'a': 'cfc_lrc/ncp', 'b': _EPS1, 'config_note': (
+                    'same width, isolates the elastance; the eps = 1 arm '
+                    'runs with the cfc_lrc/ncp config (tuning advantage of '
+                    'cfc_lrc/ncp)')},
+                {'a': _EPS1, 'b': 'cfc/ncp', 'config_note': (
+                    'same cell form, width differs; cfc/ncp runs with its '
+                    'own tuned config, the eps = 1 arm with the cfc_lrc/ncp '
+                    'config')}]},
+    'budget_2x_lv': {'task': _LV, 'seeds': range(10),
+                     'reading': 'budget direction',
+                     'pairs': _budget_pairs(600)},
+    'budget_2x_duffing': {'task': 'duffing', 'seeds': range(10),
+                          'reading': 'budget direction',
+                          'pairs': _budget_pairs(900)},
 }
 
 # H-d (protocol freeze F1-2026-10-26, #55), one-sided (consensus better), at
@@ -699,8 +776,11 @@ def arm_label(r):
     return f"{r['cell']}/{r['wiring']}" + (f' [{tag}]' if tag else '')
 
 
-def _sequence_row(path, r, task) -> dict:
-    """The load_sequence_runs row of one runner record of the task."""
+def _sequence_row(path, r, task, curves=False) -> dict:
+    """The load_sequence_runs row of one runner record of the task; with
+    curves also the per-epoch validation curve (val_loss_curve on the
+    rollouts, val_macro_f1_curve on Person Activity) and training_diverged,
+    appended after the other columns."""
     if task == 'lv':
         m = r['rollout_metrics_test']
         if 'vpt_multi_median' not in m:
@@ -720,7 +800,7 @@ def _sequence_row(path, r, task) -> dict:
         extra = {'confusion': (np.array([cms[k] for k in sorted(cms)],
                                         float) if cms else None)}
     metric = float('nan') if metric is None else float(metric)
-    return {
+    row = {
         'cell': r['cell'], 'wiring': r['wiring'], 'task': task,
         'system': system, 'seed': r['seed'],
         'stage': 'final' if r['seed'] in FINAL_SEEDS else 'hpo',
@@ -733,9 +813,14 @@ def _sequence_row(path, r, task) -> dict:
                                  'clipnorm')},
         'budget_above_tolerance': bool(r.get('budget_above_tolerance')),
         **extra, 'file': path}
+    if curves:
+        key = 'val_loss_curve' if task == 'lv' else 'val_macro_f1_curve'
+        row.update({key: r.get(key),
+                    'training_diverged': r.get('training_diverged')})
+    return row
 
 
-def load_sequence_runs(runs_dirs, task) -> pd.DataFrame:
+def load_sequence_runs(runs_dirs, task, curves=False) -> pd.DataFrame:
     """One row per fit of the task's runner JSONs below runs_dirs (searched
     recursively; other runners' JSONs and non-fit files are skipped).
 
@@ -749,8 +834,11 @@ def load_sequence_runs(runs_dirs, task) -> pd.DataFrame:
     budget_above_tolerance, lr, clipnorm, file; lv also the secondary
     columns vpt_anchor_<a>, nrmse_32_anchor_<a>, vpt_theta_<theta> and
     rate_unbounded; pa the test confusion matrices (recordings sorted) for
-    the crossed bootstrap. An old single-step-harness JSON, a pre-#62 rollout
-    JSON and two final fits of one arm and seed raise SystemExit."""
+    the crossed bootstrap. curves=True (main with --descriptive) appends
+    val_loss_curve (lv) or val_macro_f1_curve (pa) and training_diverged;
+    the default frame is the one before #109. An old single-step-harness
+    JSON, a pre-#62 rollout JSON and two final fits of one arm and seed
+    raise SystemExit."""
     rows = []
     for d in [runs_dirs] if isinstance(runs_dirs, str) else runs_dirs:
         for path in sorted(glob(os.path.join(d, '**', '*.json'),
@@ -766,7 +854,7 @@ def load_sequence_runs(runs_dirs, task) -> pd.DataFrame:
                     'Person Activity runner JSONs, load_runs the old harness')
             if _record_task(r) != task:
                 continue
-            rows.append(_sequence_row(path, r, task))
+            rows.append(_sequence_row(path, r, task, curves))
     df = pd.DataFrame(rows)
     if df.empty:
         return df
@@ -860,6 +948,24 @@ def _rate(k, n):
     return f'{k}/{n} [{lo:.2f}, {hi:.2f}]'
 
 
+def _median_diff_ci(p, task):
+    """((lo, hi), units) of the bootstrap interval of the median paired
+    difference v_a - v_b of a _paired frame: crossed over seeds x test
+    recordings on Person Activity when every fit has its confusion matrices
+    (one shape) and none diverged, else over seeds."""
+    crossed = (task == 'pa' and not (p['diverged_a'] | p['diverged_b']).any()
+               and all(isinstance(c, np.ndarray) for c in
+                       (*p['confusion_a'], *p['confusion_b']))
+               and len({c.shape for c in (*p['confusion_a'],
+                                          *p['confusion_b'])}) == 1)
+    if crossed:
+        return (crossed_median_diff_ci(np.stack(p['confusion_a']),
+                                       np.stack(p['confusion_b']), N_BOOT),
+                'seed x recording')
+    return (bootstrap_median_ci(p['v_a'].to_numpy(float)
+                                - p['v_b'].to_numpy(float), N_BOOT), 'seed')
+
+
 def _pair_stats(p, task, m=1, alternative='two-sided') -> dict:
     """Statistics of one paired block (a _paired frame, n >= 1): Wilcoxon
     (exact without ties or zeros; undecidable below MIN_PAIRS pairs), d_z,
@@ -873,14 +979,7 @@ def _pair_stats(p, task, m=1, alternative='two-sided') -> dict:
                           sign * p['metric_b'].to_numpy(float),
                           p['diverged_a'].to_numpy(bool),
                           p['diverged_b'].to_numpy(bool))
-    crossed = (task == 'pa' and not (p['diverged_a'] | p['diverged_b']).any()
-               and all(isinstance(c, np.ndarray) for c in
-                       (*p['confusion_a'], *p['confusion_b']))
-               and len({c.shape for c in (*p['confusion_a'],
-                                          *p['confusion_b'])}) == 1)
-    ci = (crossed_median_diff_ci(np.stack(p['confusion_a']),
-                                 np.stack(p['confusion_b']), N_BOOT)
-          if crossed else bootstrap_median_ci(x - y, N_BOOT))
+    ci, units = _median_diff_ci(p, task)
     n = len(x)
     p_raw, method = wilcoxon_test(x, y, alternative) if n else (None, None)
     p_adj = None if p_raw is None else min(1.0, p_raw * m)
@@ -893,7 +992,7 @@ def _pair_stats(p, task, m=1, alternative='two-sided') -> dict:
             'p_a_gt_b': pw, 'p_a_gt_b_lo': lo, 'p_a_gt_b_hi': hi,
             'median_diff': float(np.median(x - y)),
             'median_diff_lo': ci[0], 'median_diff_hi': ci[1],
-            'ci_units': 'seed x recording' if crossed else 'seed',
+            'ci_units': units,
             'diverged_a': _rate(int(p['diverged_a'].sum()), n),
             'diverged_b': _rate(int(p['diverged_b'].sum()), n)}
 
@@ -1261,6 +1360,40 @@ PPO_FIELDS = ('model', 'seed', 'task', 'profile', 'eval_return_mean',
 EXCLUDED = 'excluded: arm above budget tolerance'   # as core_contrast_blocks
 
 
+def _check_spec_arm(path, where, arm, ppo, empty_ok=False):
+    """Check one arm of a spec in place (keys F2_ARM_KEYS, protocol_version
+    a string or a list of strings, null on PPO, normalised to a list; paths
+    a list of existing run folders or record files without patterns, empty
+    only with empty_ok); SystemExit naming path and where."""
+    if not isinstance(arm, dict) or set(arm) != F2_ARM_KEYS:
+        raise SystemExit(f'{path}: {where} needs exactly the '
+                         f'keys {sorted(F2_ARM_KEYS)}')
+    pv = arm['protocol_version']
+    if ppo:
+        ok = pv is None
+    else:
+        pv = [pv] if isinstance(pv, str) else pv
+        ok = (isinstance(pv, list) and pv
+              and all(isinstance(v, str) for v in pv))
+    if not ok:
+        raise SystemExit(f'{path}: {where}: protocol_version '
+                         'must be a string or a list of strings '
+                         '(null on PPO)')
+    arm['protocol_version'] = pv
+    paths = arm['paths']
+    if (not isinstance(paths, list) or not (paths or empty_ok)
+            or not all(isinstance(p, str) for p in paths)):
+        raise SystemExit(f'{path}: {where}: paths must be a '
+                         'non-empty list of run folders or files')
+    for p in paths:
+        if has_magic(p):
+            raise SystemExit(f'{path}: {where}: pattern in '
+                             f'path {p!r}; list the folders or files')
+        if not os.path.exists(p):
+            raise SystemExit(f'{path}: {where}: no such path '
+                             f'{p!r}')
+
+
 def load_f2_spec(path) -> dict:
     """The --f2-families spec: {test: {'a': arm, 'b': arm}} for exactly the
     tests of F2_FAMILIES, arm = {label (as in F2_FAMILIES), protocol_version
@@ -1282,36 +1415,10 @@ def load_f2_spec(path) -> dict:
             raise SystemExit(f'{path}: {test} needs exactly the keys a, b')
         for side, label in zip('ab', F2_TESTS[test][2:]):
             arm = arms[side]
-            if not isinstance(arm, dict) or set(arm) != F2_ARM_KEYS:
-                raise SystemExit(f'{path}: {test}.{side} needs exactly the '
-                                 f'keys {sorted(F2_ARM_KEYS)}')
+            _check_spec_arm(path, f'{test}.{side}', arm, task in F2_PPO_TASKS)
             if arm['label'] != label:
                 raise SystemExit(f'{path}: {test}.{side}: label '
                                  f'{arm["label"]!r}, expected {label!r}')
-            pv = arm['protocol_version']
-            if task in F2_PPO_TASKS:
-                ok = pv is None
-            else:
-                pv = [pv] if isinstance(pv, str) else pv
-                ok = (isinstance(pv, list) and pv
-                      and all(isinstance(v, str) for v in pv))
-            if not ok:
-                raise SystemExit(f'{path}: {test}.{side}: protocol_version '
-                                 'must be a string or a list of strings '
-                                 '(null on PPO)')
-            arm['protocol_version'] = pv
-            paths = arm['paths']
-            if (not isinstance(paths, list) or not paths
-                    or not all(isinstance(p, str) for p in paths)):
-                raise SystemExit(f'{path}: {test}.{side}: paths must be a '
-                                 'non-empty list of run folders or files')
-            for p in paths:
-                if has_magic(p):
-                    raise SystemExit(f'{path}: {test}.{side}: pattern in '
-                                     f'path {p!r}; list the folders or files')
-                if not os.path.exists(p):
-                    raise SystemExit(f'{path}: {test}.{side}: no such path '
-                                     f'{p!r}')
     return spec
 
 
@@ -1372,11 +1479,15 @@ def _width_matched(r) -> bool:
     return r.get('wiring') == 'dense3' and r.get('param_budget') is None
 
 
-def _f2_arm(test, side, task, arm, draws):
+def _f2_arm(test, side, task, arm, draws, curves=False, empty_ok=False):
     """Final fits of one F2 arm: the records in its paths whose label is the
     arm label, each with the declared protocol_version (else SystemExit
-    naming the file), plus data_key, width_matched and below (the per-fit
-    floor marking; a fit without one raises SystemExit naming the arm)."""
+    naming the file), plus data_key, width_matched, below (the per-fit
+    floor marking; a fit without one raises SystemExit naming the arm),
+    floor (the rollout floor of the fit's data draw, None on Person
+    Activity) and protocol_version. curves: the validation curves of
+    _sequence_row; empty_ok: an arm without a final fit is an empty frame
+    instead of SystemExit (sequence runners only)."""
     label, versions = arm['label'], arm['protocol_version']
     name = f'{test}.{side} ({label})'
     if task in F2_PPO_TASKS:
@@ -1405,7 +1516,8 @@ def _f2_arm(test, side, task, arm, draws):
             raise SystemExit(f'{path}: protocol_version '
                              f'{eff.get("protocol_version")!r}, but {name} '
                              f'lists {versions}')
-        row = _sequence_row(path, r, runner)
+        row = _sequence_row(path, r, runner, curves)
+        floor = None
         if runner == 'lv':
             m = r['rollout_metrics_test']
             fl = (None if any(k not in m for k in (
@@ -1414,7 +1526,7 @@ def _f2_arm(test, side, task, arm, draws):
                 else fit_floor(r, draws))
             if fl is None or fl[1] is None or not np.isfinite(fl[1]):
                 raise SystemExit(f'{name}: no floor marking for {path}')
-            below = not fl[0] >= fl[1]
+            below, floor = not fl[0] >= fl[1], fl[1]
         else:
             if row['confusion'] is None:
                 raise SystemExit(f'{name}: no test confusion matrices (chance '
@@ -1424,8 +1536,11 @@ def _f2_arm(test, side, task, arm, draws):
         rows.append({**row, 'width_matched': _width_matched(r),
                      'data_key': eff.get('split_seed' if runner == 'pa'
                                          else 'data_seed'),
-                     'below': bool(below)})
+                     'below': bool(below), 'floor': floor,
+                     'protocol_version': eff.get('protocol_version')})
     df = pd.DataFrame(rows)
+    if df.empty and empty_ok:
+        return df, []
     if df.empty:
         raise SystemExit(f'{name}: no final fit in its paths')
     dup = df[df.duplicated('seed', keep=False)]
@@ -1623,6 +1738,280 @@ def f2_report(blocks) -> str:
     return '\n'.join(lines)
 
 
+# --- descriptive F2 blocks (protocol F2 sections 5 and 2.3, #109) ----------
+
+DESC_COLUMNS = [
+    'block', 'task', 'reading', 'a', 'b', 'status', 'not_run', 'origin', 'n',
+    'median_a', 'median_a_lo', 'median_a_hi', 'median_b', 'median_b_lo',
+    'median_b_hi', 'median_diff', 'median_diff_lo', 'median_diff_hi',
+    'ci_units', 'n_positive', 'interval_excludes_0', 'per_seed',
+    'n_satisfied', 'summary', 'direction', 'median_sign', 'majority',
+    'median_diff_1x', 'median_sign_1x', 'n_positive_1x', 'n_1x',
+    'majority_1x', 'vpt8_median_a', 'vpt8_median_diff', 'vpt8_n_positive',
+    'seeds_below_floor_a', 'not_learned_a', 'n_flagged_a', 'n_flagged_b',
+    'comparator_flagged', 'best_val_epoch_a', 'best_val_epoch_b',
+    'escape_epoch_a', 'text', 'note', 'caveat', 'config_note']
+THREE_SEED = {3: 'stable', 2: 'mixed'}    # else 'not supported'
+
+
+def _block_labels(block):
+    """The arm labels a block reads, in table order."""
+    out = []
+    for pair in DESCRIPTIVE_BLOCKS[block]['pairs']:
+        for k in ('a', 'b', 'a_1x', 'b_1x'):
+            if pair.get(k) and pair[k] not in out:
+                out.append(pair[k])
+    return out
+
+
+def load_descriptive_spec(path) -> dict:
+    """The --descriptive spec: {block: [arm, ...]} for exactly the blocks of
+    DESCRIPTIVE_BLOCKS, one arm per label the block reads (_block_labels),
+    each checked as in load_f2_spec; paths may be empty (an arm that did not
+    run). SystemExit as in load_f2_spec."""
+    with open(path, encoding='utf-8') as f:
+        spec = yaml.safe_load(f)
+    blocks = set(DESCRIPTIVE_BLOCKS)
+    if not isinstance(spec, dict) or set(spec) != blocks:
+        got = set(spec) if isinstance(spec, dict) else set()
+        raise SystemExit(f'{path}: the spec must hold exactly the blocks '
+                         f'{sorted(blocks)} (missing {sorted(blocks - got)}, '
+                         f'unknown {sorted(got - blocks)})')
+    for block, arms in spec.items():
+        need = _block_labels(block)
+        if not isinstance(arms, list):
+            raise SystemExit(f'{path}: {block} must be a list of arms')
+        for i, arm in enumerate(arms):
+            _check_spec_arm(path, f'{block}[{i}]', arm, False, empty_ok=True)
+        got = [arm['label'] for arm in arms]
+        if sorted(got) != sorted(need):
+            raise SystemExit(f'{path}: {block} needs exactly the arms {need}, '
+                             f'got {got}')
+    return spec
+
+
+def _seed_runs(seeds):
+    """'0-4, 7' for the seeds 0, 1, 2, 3, 4, 7."""
+    seeds, out = sorted(int(s) for s in seeds), []
+    for s in seeds:
+        if out and s == out[-1][1] + 1:
+            out[-1][1] = s
+        else:
+            out.append([s, s])
+    return ', '.join(str(a) if a == b else f'{a}-{b}' for a, b in out)
+
+
+def _by_seed(seeds, values):
+    return '; '.join(f'{int(s)}: {v}' for s, v in zip(seeds, values))
+
+
+def _origin(label, df):
+    """'label: <protocol_version> seeds <runs>[, ...]' of an arm's fits."""
+    parts = [f'{pv} seeds {_seed_runs(g["seed"])}'
+             for pv, g in df.groupby('protocol_version', sort=True)]
+    return f'{label}: ' + ', '.join(parts)
+
+
+def _escape_epoch(curve):
+    """First epoch (1-based) with a validation loss below ESCAPE_LOSS,
+    'none' if it never falls below."""
+    return next((i + 1 for i, v in enumerate(curve or [])
+                 if v is not None and v < ESCAPE_LOSS), 'none')
+
+
+def b5_seed_reading(curve, diverged):
+    """'not readable' | 'satisfied' | 'not satisfied' of one P2b fit
+    (protocol F2 5.1, B5): not readable if training diverged or any value
+    of epochs 1-B5_EPOCHS of val_macro_f1_curve is non-finite (or missing);
+    satisfied if their maximum is strictly above B5_EXIT_THRESHOLD."""
+    c = np.asarray([np.nan if v is None else v
+                    for v in (curve or [])[:B5_EPOCHS]], float)
+    if diverged or c.size < B5_EPOCHS or not np.isfinite(c).all():
+        return 'not readable'
+    return 'satisfied' if c.max() > B5_EXIT_THRESHOLD else 'not satisfied'
+
+
+def b5_verdict(readings) -> str:
+    """Arm verdict of B5 from {seed: b5_seed_reading}."""
+    readable = {s: r for s, r in readings.items() if r != 'not readable'}
+    if len(readable) < 2:
+        return 'not readable'
+    k = sum(r == 'satisfied' for r in readable.values())
+    verdict = ('drive parametrisation discriminates' if k == len(readable)
+               else 'init gain not sufficient' if k == 0
+               else 'mixed, no statement')
+    if len(readable) < 3:
+        verdict += f' (readable seeds {_seed_runs(readable)} only)'
+    return verdict
+
+
+def direction5(d, n_seeds) -> str:
+    """Five-seed direction rule (protocol F2 5.2, BA-2): a direction only if
+    every seed of the block has a complete pair and all differences share
+    one strict sign; 4 of 5 or a zero difference is no direction."""
+    d = np.asarray(d, float)
+    if len(d) == n_seeds and (d > 0).all():
+        return 'delta > 0'
+    if len(d) == n_seeds and (d < 0).all():
+        return 'delta < 0'
+    return 'no direction'
+
+
+def _majority(d):
+    d = np.asarray(d, float)
+    return ('delta > 0' if (d > 0).sum() > len(d) / 2 else 'delta < 0'
+            if (d < 0).sum() > len(d) / 2 else 'none')
+
+
+def _flagged(g):
+    """Fits whose best validation epoch is >= CONVERGED x their epochs."""
+    return int((g['best_val_epoch'].astype(float)
+                >= CONVERGED * g['epochs'].astype(float)).sum())
+
+
+def _valued(g):
+    """g with the paired value v (a diverged fit at the worst value)."""
+    return g.assign(v=np.where(g['diverged'], g['task'].map(WORST),
+                               g['metric'])).sort_values('seed')
+
+
+def _desc_row(block, spec_block, pair, arms) -> dict:
+    """One descriptive_blocks row: block, arm pairing and every column of
+    its reading (DESC_COLUMNS)."""
+    task, reading = spec_block['task'], spec_block['reading']
+    seeds = list(spec_block['seeds'])
+    labels = [pair[k] for k in ('a', 'b', 'a_1x', 'b_1x') if pair.get(k)]
+    row = {'block': block, 'task': task, 'reading': reading,
+           'a': pair['a'], 'b': pair['b'],
+           **{k: pair.get(k) for k in ('note', 'caveat', 'config_note')}}
+    if reading == 'direction':
+        row['text'] = DIRECTION_TEXT
+    missing = [lb for lb in labels if arms[lb].empty]
+    if missing:
+        row.update(status='not run', not_run=', '.join(missing))
+        return row
+    if reading not in ('floor + 2', 'above reference', 'plateau exit'):
+        row['status'] = 'descriptive'   # set below to undecidable if n small
+    row['origin'] = '; '.join(_origin(lb, arms[lb]) for lb in labels)
+    a = _valued(arms[pair['a']])
+    lo, hi = bootstrap_median_ci(a['v'], N_BOOT)
+    row.update(median_a=float(np.median(a['v'])), median_a_lo=lo,
+               median_a_hi=hi, n_flagged_a=_flagged(a),
+               best_val_epoch_a=_by_seed(a['seed'], a['best_val_epoch']),
+               seeds_below_floor_a=_seed_runs(a.loc[a['below'], 'seed'])
+               or 'none',
+               not_learned_a=not_learned(int(a['below'].sum()), len(a)))
+    if task != 'pa':
+        row['escape_epoch_a'] = _by_seed(
+            a['seed'], map(_escape_epoch, a['val_loss_curve']))
+    if reading == 'floor + 2':
+        ok = a['v'] > a['floor'].astype(float) + 2
+        row['per_seed'] = _by_seed(a['seed'], np.where(ok, 'yes', 'no'))
+        row['n_satisfied'] = int(ok.sum())
+        row['summary'] = THREE_SEED.get(int(ok.sum()), 'not supported')
+    if reading == 'plateau exit':
+        r = {s: b5_seed_reading(c, dv) for s, c, dv in zip(
+            a['seed'], a['val_macro_f1_curve'], a['training_diverged'])}
+        row.update(per_seed=_by_seed(r, r.values()),
+                   n_satisfied=sum(v == 'satisfied' for v in r.values()),
+                   summary=b5_verdict(r))
+    if reading == 'descriptive' and 'vpt_anchor_8' in a:
+        row['vpt8_median_a'] = float(np.median(a['vpt_anchor_8']))
+    if pair['b'] is None:
+        return row
+    b = _valued(arms[pair['b']])
+    lo, hi = bootstrap_median_ci(b['v'], N_BOOT)
+    row.update(median_b=float(np.median(b['v'])), median_b_lo=lo,
+               median_b_hi=hi, n_flagged_b=_flagged(b),
+               best_val_epoch_b=_by_seed(b['seed'], b['best_val_epoch']))
+    system = 'pa' if task == 'pa' else task
+    p = _paired(pd.concat([arms[pair['a']], arms[pair['b']]],
+                          ignore_index=True), system, pair['a'], pair['b'])
+    d = (p['v_a'] - p['v_b']).to_numpy(float)
+    row.update(n=len(p), n_positive=int((d > 0).sum()))
+    if row.get('status') == 'descriptive' and len(p) < MIN_PAIRS:
+        row['status'] = 'undecidable'
+    if len(p):
+        (lo, hi), units = _median_diff_ci(p, p['task_a'].iloc[0])
+        row.update(median_diff=float(np.median(d)), median_diff_lo=lo,
+                   median_diff_hi=hi, ci_units=units)
+    if reading == 'descriptive':
+        row['interval_excludes_0'] = (bool(not lo <= 0 <= hi) if len(p)
+                                      else None)
+    if reading == 'above reference':
+        k = int((d > 0).sum())
+        row.update(per_seed=_by_seed(p['seed'], np.where(d > 0, 'yes', 'no')),
+                   n_satisfied=k,
+                   summary=THREE_SEED.get(k, 'not supported'))
+        if 'vpt_anchor_8_a' in p:
+            d8 = (p['vpt_anchor_8_a'] - p['vpt_anchor_8_b']).to_numpy(float)
+            row.update(vpt8_median_diff=float(np.median(d8)) if len(d8)
+                       else None, vpt8_n_positive=int((d8 > 0).sum()))
+    if reading == 'direction':
+        row['direction'] = direction5(d, len(seeds))
+    if reading == 'budget direction':
+        p1 = _paired(pd.concat([arms[pair['a_1x']], arms[pair['b_1x']]],
+                               ignore_index=True), system, pair['a_1x'],
+                     pair['b_1x'])
+        d1 = (p1['v_a'] - p1['v_b']).to_numpy(float)
+        row.update(median_sign=float(np.sign(np.median(d))) if len(d)
+                   else None, majority=_majority(d),
+                   median_diff_1x=float(np.median(d1)) if len(d1) else None,
+                   median_sign_1x=float(np.sign(np.median(d1))) if len(d1)
+                   else None, n_positive_1x=int((d1 > 0).sum()),
+                   n_1x=len(d1), majority_1x=_majority(d1),
+                   comparator_flagged=row['n_flagged_b'] > 0)
+        row['direction'] = ('unchanged' if len(d) and len(d1) and (
+            row['median_sign'], row['majority']) == (
+            row['median_sign_1x'], row['majority_1x']) else 'changed')
+    return row
+
+
+def descriptive_blocks(spec) -> pd.DataFrame:
+    """One row per block, arm and pairing of DESCRIPTIVE_BLOCKS (columns
+    DESC_COLUMNS) from a load_descriptive_spec spec: the final fits of the
+    block's seeds from each arm's own path list (protocol_version and floor
+    checks of _f2_arm), the per-arm median with a seed-bootstrap interval,
+    the paired difference a - b (median, 10,000-resample interval as in
+    _pair_stats, seeds with delta > 0, n) and the reading of the block. An
+    arm without a record makes its rows 'not run'; no test, no p."""
+    draws, rows = {}, []
+    for block, sb in DESCRIPTIVE_BLOCKS.items():
+        arms = {}
+        for i, arm in enumerate(spec[block]):
+            df, _ = _f2_arm(block, i, sb['task'], arm, draws, curves=True,
+                            empty_ok=True)
+            arms[arm['label']] = (df[df['seed'].isin(sb['seeds'])]
+                                  if not df.empty else df)
+        rows += [_desc_row(block, sb, pair, arms) for pair in sb['pairs']]
+    return pd.DataFrame(rows).reindex(columns=DESC_COLUMNS)
+
+
+def descriptive_report(blocks) -> str:
+    """Markdown of descriptive_blocks: one table per block with the columns
+    that carry a value in that block."""
+    lines = ['## Descriptive F2 blocks (protocol F2 sections 5 and 2.3; no '
+             'test, no p; delta = a - b, a diverged fit at the worst value; '
+             'median intervals: 10,000-resample bootstrap)\n']
+    for block, g in blocks.groupby('block', sort=False):
+        cols = [c for c in DESC_COLUMNS if c != 'block' and g[c].notna().any()]
+        lines += [f'### {block}\n', '| ' + ' | '.join(cols) + ' |',
+                  '|' + '---|' * len(cols)]
+        for r in g.to_dict('records'):
+            lines.append('| ' + ' | '.join(
+                _fmt(r[c]) if isinstance(r[c], float) else
+                '—' if r[c] is None else str(r[c]) for c in cols) + ' |')
+        lines.append('')
+    lines.append(f'Three-seed rule: stable 3 of 3, mixed 2 of 3, not '
+                 f'supported at most 1 of 3. B5 exit threshold '
+                 f'{B5_EXIT_THRESHOLD:g} (val macro-F1, epochs '
+                 f'1-{B5_EPOCHS}). '
+                 f'Convergence flag: best validation epoch >= {CONVERGED:g} '
+                 f'x the epochs of the record. Escape epoch: first epoch with '
+                 f'validation loss < {ESCAPE_LOSS:g}.\n')
+    return '\n'.join(lines)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument('--runs', nargs='+', default=['results/runs'])
@@ -1661,6 +2050,11 @@ def main(argv=None) -> int:
                    help='the F2 test families from a spec of explicit path '
                         'lists per arm (configs/aggregate/f2_families.yaml); '
                         'writes <out>/f2_families.csv')
+    p.add_argument('--descriptive', default=None, metavar='SPEC.yaml',
+                   help='the descriptive F2 blocks (DESCRIPTIVE_BLOCKS) from '
+                        'a spec of explicit path lists per arm '
+                        '(configs/aggregate/descriptive_blocks.yaml); writes '
+                        '<out>/descriptive_blocks.csv')
     p.add_argument('--bootstrap-units', default='seed',
                    choices=('seed', 'seed,recording'),
                    help='resampling units for the --pa-runs arm means')
@@ -1676,7 +2070,8 @@ def main(argv=None) -> int:
     if args.cells and not df.empty:
         df = df[df['cell'].isin(args.cells.split(','))]
     if df.empty and not (args.hpo_dir or args.pa_runs or args.rollout_runs
-                         or args.co_runs or args.f2_families):
+                         or args.co_runs or args.f2_families
+                         or args.descriptive):
         print(f'No run JSONs found in {args.runs}', file=sys.stderr)
         return 1
 
@@ -1709,7 +2104,8 @@ def main(argv=None) -> int:
         with open(args.floors_json, encoding='utf-8') as f:
             floors = json.load(f)
     if args.contrasts:
-        seq = pd.concat([load_sequence_runs(d, t) for d, t in (
+        seq = pd.concat([load_sequence_runs(d, t, curves=bool(
+            args.descriptive)) for d, t in (
             (args.rollout_runs, 'lv'), (args.pa_runs, 'pa')) if d],
             ignore_index=True)
         if seq.empty:
@@ -1731,6 +2127,11 @@ def main(argv=None) -> int:
         f2 = f2_family_blocks(load_f2_spec(args.f2_families))
         f2.to_csv(os.path.join(args.out, 'f2_families.csv'), index=False)
         parts.append(f2_report(f2))
+    if args.descriptive:
+        desc = descriptive_blocks(load_descriptive_spec(args.descriptive))
+        desc.to_csv(os.path.join(args.out, 'descriptive_blocks.csv'),
+                    index=False)
+        parts.append(descriptive_report(desc))
     report = '\n'.join(parts)
     md_path = os.path.join(args.out, 'summary.md')
     with open(md_path, 'w', encoding='utf-8') as f:
