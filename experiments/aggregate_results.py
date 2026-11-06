@@ -28,7 +28,12 @@ Optional sections:
                    sensitivity, plus one non-finite label per arm
   --co-runs DIR    H-d consensus-study family (committee runner JSONs, #55):
                    one-sided paired Wilcoxon over seeds at K=30, Bonferroni
-                   over the family of four, plus the attribution flag
+                   over the family of four, plus the attribution flag;
+                   <out>/consensus_family.csv adds per test the median
+                   difference with its crossed seeds x recordings and seed
+                   bootstrap intervals, d_z and P(A>B),
+                   <out>/consensus_arms.csv the grid mean and steps_to_90
+                   per arm with seed intervals (#94)
   --floors         with --rollout-runs: persistence and AR(1) floor lines
                    per task, split and data seed on the multi-anchor endpoint,
                    the floor marking per arm and the floor_bound flag per core
@@ -1259,29 +1264,60 @@ def _co_arm(r):
     return 'lam0' if r['vote_lambda'] == 0 else None
 
 
-def load_consensus_runs(co_dir) -> dict:
-    """{(cell, wiring, arm): {seed: (macro-F1 at HD_M, AUC mean over
-    HD_AUC_M)}} from the K=HD_K committee JSONs with the fault-grid endpoints;
-    the input-averaging monolith (any wiring) is also keyed (cell, None,
-    'avg_in'). An arm with a run sized outside the budget tolerance (#59) is
-    replaced by None (it enters no confirmatory contrast)."""
-    runs, above = defaultdict(dict), set()
+def _co_arm_any(r):
+    """_co_arm plus the descriptive committee arms of the suite: 'med'
+    (median consensus) and 'fault_mean' (fault-aware input mean)."""
+    arm = _co_arm(r)
+    if (arm or r.get('view_mode') != 'identical'
+            or r.get('train_corruption') != 'on'):
+        return arm
+    if r.get('view_average') == 'fault_mean':
+        return 'fault_mean'
+    if (r.get('view_average', 'off') == 'off' and r.get('vote_lambda') is None
+            and r.get('consensus') == 'median'):
+        return 'med'
+    return None
+
+
+def load_consensus_records(co_dir):
+    """({(cell, wiring, arm): {seed: record}}, keys with a run above the
+    budget tolerance) of the K=HD_K committee JSONs with the fault-grid
+    endpoints, every arm of _co_arm_any."""
+    recs, above = defaultdict(dict), set()
     for path in sorted(glob(os.path.join(co_dir, '*.json'))):
         with open(path, encoding='utf-8') as f:
             r = json.load(f)
-        arm = _co_arm(r)
+        arm = _co_arm_any(r)
         if (arm is None or r.get('n_columns') != HD_K
                 or 'test_macro_f1_by_fault' not in r):
             continue
-        m = r['fault_counts']
-        auc = np.mean([r['per_position_macro_f1_auc'][m.index(k)]
-                       for k in HD_AUC_M])
         key = (r['cell'], r['wiring'], arm)
-        runs[key][r['seed']] = (r['test_macro_f1_by_fault'][m.index(HD_M)],
-                                float(auc))
+        recs[key][r['seed']] = r
         if r.get('budget_above_tolerance'):
             above.add(key)
-    runs = {k: (None if k in above else v) for k, v in runs.items()}
+    return recs, above
+
+
+def load_consensus_runs(co_dir) -> dict:
+    """{(cell, wiring, arm): {seed: (macro-F1 at HD_M, AUC mean over
+    HD_AUC_M, record)}} of the three H-d arms (_co_arm) from
+    load_consensus_records; the input-averaging monolith (any wiring) is also
+    keyed (cell, None, 'avg_in'). An arm with a run sized outside the budget
+    tolerance (#59) is replaced by None (it enters no confirmatory
+    contrast)."""
+    recs, above = load_consensus_records(co_dir)
+    runs = {}
+    for key, by_seed in recs.items():
+        if key[2] not in ('cons', 'lam0', 'avg_in'):
+            continue
+        vals = {}
+        for seed, r in by_seed.items():
+            m = r['fault_counts']
+            auc = np.mean([r['per_position_macro_f1_auc'][m.index(k)]
+                           for k in HD_AUC_M])
+            vals[seed] = (r['test_macro_f1_by_fault'][m.index(HD_M)],
+                          float(auc), r)
+        runs[key] = None if key in above else vals
     for cell, wiring, arm in list(runs):
         if arm == 'avg_in':
             runs.setdefault((cell, None, 'avg_in'), runs[(cell, wiring, arm)])
@@ -1301,6 +1337,15 @@ def _one_sided(a, b, j):
     return (len(seeds), med, *wilcoxon_test(x, y, alternative='greater'))
 
 
+def _hd_contrasts(runs, cell, w):
+    """(part, label, arm B runs, component) of the two H-d tests of one cell
+    and wiring; arm A is (cell, w, 'cons')."""
+    avg = runs.get((cell, w, 'avg_in'), runs.get((cell, None, 'avg_in')))
+    return (('i', f'consensus vs avg_in, macro-F1 m={HD_M}', avg, 0),
+            ('ii', 'consensus vs lambda=0, per-position AUC '
+                   f'm in {set(HD_AUC_M)}', runs.get((cell, w, 'lam0')), 1))
+
+
 def consensus_family(co_dir) -> str:
     """The H-d family of four (one-sided, Bonferroni) and the attribution
     flag per wiring and cell."""
@@ -1316,13 +1361,8 @@ def consensus_family(co_dir) -> str:
     for cell in sorted({c for c, _, _ in runs}):
         for w in HD_WIRINGS:
             cons = runs.get((cell, w, 'cons'))
-            avg = runs.get((cell, w, 'avg_in'), runs.get(
-                (cell, None, 'avg_in')))
             lam0 = runs.get((cell, w, 'lam0'))
-            for part, label, b, j in (
-                    ('i', f'consensus vs avg_in, macro-F1 m={HD_M}', avg, 0),
-                    ('ii', 'consensus vs lambda=0, per-position AUC '
-                           f'm in {set(HD_AUC_M)}', lam0, 1)):
+            for part, label, b, j in _hd_contrasts(runs, cell, w):
                 if cons is None or b is None:
                     lines.append(f'| {cell} | {w} | {part} | {label} | 0 '
                                  '| — | — | — | — | missing arm or arm above '
@@ -1352,6 +1392,140 @@ def consensus_family(co_dir) -> str:
               'learned lambda also beats lambda=0 at m=15, one-sided, '
               f'alpha={ALPHA}; no family test):', *flags, '']
     return '\n'.join(lines)
+
+
+def _hd_confusions(r):
+    """(sorted recording names, (recordings, C, C) test confusions at m=HD_M)
+    of a committee record, (None, None) without per-recording confusions."""
+    by_fault = r.get('test_confusion_by_recording_by_fault')
+    if not by_fault:
+        return None, None
+    c = by_fault[r['fault_counts'].index(HD_M)]
+    recs = sorted(c)
+    return tuple(recs), np.array([c[k] for k in recs], float)
+
+
+def _hd_frame(a, b, j):
+    """A _paired-style frame (v, diverged, confusion per side) of the
+    seeds both H-d arms share; confusions only on part i (j = 0), whose
+    endpoint is the pooled macro-F1 at m=HD_M. SystemExit if two fits differ
+    in their test recordings."""
+    rows, names = [], set()
+    for s in sorted(set(a) & set(b)):
+        row = {'seed': s}
+        for side, arm in (('a', a), ('b', b)):
+            r = arm[s][2]
+            recs, conf = _hd_confusions(r) if j == 0 else (None, None)
+            if recs is not None:
+                names.add(recs)
+            row.update({f'v_{side}': arm[s][j],
+                        f'diverged_{side}': bool(r.get('training_diverged'))
+                        or not np.isfinite(arm[s][j]),
+                        f'confusion_{side}': conf})
+        rows.append(row)
+    if len(names) > 1:
+        raise SystemExit('H-d: committee fits differ in their test '
+                         f'recordings: {sorted(names)}')
+    return pd.DataFrame(rows)
+
+
+HD_COLUMNS = ['cell', 'wiring', 'part', 'contrast', 'n_pairs', 'median_diff',
+              'p_one_sided', 'p_bonferroni', 'method', 'significant',
+              'status', 'median_diff_lo', 'median_diff_hi', 'ci_crossed_note',
+              'median_diff_seed_lo', 'median_diff_seed_hi', 'd_z',
+              'p_a_gt_b', 'p_a_gt_b_lo', 'p_a_gt_b_hi', 'n_positive',
+              'n_diverged']
+
+
+def consensus_intervals(co_dir) -> pd.DataFrame:
+    """One row per H-d test of consensus_family (columns HD_COLUMNS): its
+    n pairs, median difference, one-sided p, Bonferroni p, method and
+    significance as there (the same _one_sided), plus the median paired
+    difference A - B with the crossed seeds x test recordings bootstrap
+    interval (median_diff_lo/hi; part i only, from the per-recording
+    confusions at m=HD_M of every paired fit, diverged ones included since
+    H-d pairs the raw values; else empty with ci_crossed_note) and the seed
+    bootstrap interval next to it, d_z, P(A>B) with its Clopper-Pearson
+    interval (a diverged or non-finite fit loses) and the seeds with
+    A - B > 0 (#94)."""
+    runs = load_consensus_runs(co_dir)
+    n_tests, rows = BONFERRONI_FAMILIES['H-d'], []
+    for cell in sorted({c for c, _, _ in runs}):
+        for w in HD_WIRINGS:
+            cons = runs.get((cell, w, 'cons'))
+            for part, label, b, j in _hd_contrasts(runs, cell, w):
+                row = {'cell': cell, 'wiring': w, 'part': part,
+                       'contrast': label, 'n_pairs': 0}
+                rows.append(row)
+                if cons is None or b is None:
+                    row['status'] = ('missing arm or arm above budget '
+                                     'tolerance')
+                    continue
+                n, med, p, method = _one_sided(cons, b, j)
+                row.update(n_pairs=n, median_diff=med)
+                if p is None:
+                    row['status'] = ('undecidable' if n < MIN_PAIRS
+                                     else 'all differences zero')
+                else:
+                    p_adj = min(1.0, p * n_tests)
+                    row.update(p_one_sided=p, p_bonferroni=p_adj,
+                               method=method, significant=p_adj < ALPHA,
+                               status='tested')
+                if not n:
+                    continue
+                f = _hd_frame(cons, b, j)
+                x, y = f['v_a'].to_numpy(float), f['v_b'].to_numpy(float)
+                conf = [*f['confusion_a'], *f['confusion_b']]
+                if j:
+                    row['ci_crossed_note'] = ('no per-recording endpoint '
+                                              '(per-position AUC)')
+                elif (any(c is None for c in conf)
+                      or len({c.shape for c in conf}) > 1):
+                    row['ci_crossed_note'] = ('per-recording confusions '
+                                              'missing or ragged')
+                else:
+                    row['median_diff_lo'], row['median_diff_hi'] = (
+                        crossed_median_diff_ci(np.stack(f['confusion_a']),
+                                               np.stack(f['confusion_b']),
+                                               N_BOOT))
+                lo, hi = bootstrap_median_ci(x - y, N_BOOT)
+                pw, plo, phi = p_a_gt_b(x, y, f['diverged_a'].to_numpy(bool),
+                                        f['diverged_b'].to_numpy(bool))
+                row.update(median_diff_seed_lo=lo, median_diff_seed_hi=hi,
+                           d_z=(_cohens_d_paired(x, y) if n > 1
+                                else float('nan')),
+                           p_a_gt_b=pw, p_a_gt_b_lo=plo, p_a_gt_b_hi=phi,
+                           n_positive=int((x - y > 0).sum()),
+                           n_diverged=int(f['diverged_a'].sum()
+                                          + f['diverged_b'].sum()))
+    return pd.DataFrame(rows).reindex(columns=HD_COLUMNS).astype(
+        {'n_positive': 'Int64', 'n_diverged': 'Int64'})
+
+
+def consensus_arm_endpoints(co_dir) -> pd.DataFrame:
+    """The secondary endpoints of the consensus study (F1 protocol, section
+    4) per K=HD_K arm of load_consensus_records: the test macro-F1 mean over
+    the fault grid (endpoint grid_mean) and steps_to_90 per fault count m,
+    each as the median over seeds with its seed bootstrap interval; an arm
+    above the budget tolerance stays in, flagged (#94)."""
+    recs, above = load_consensus_records(co_dir)
+    rows = []
+    for key in sorted(recs, key=str):
+        by_seed = [recs[key][s] for s in sorted(recs[key])]
+        values = {('grid_mean', None): [float(np.mean(
+            r['test_macro_f1_by_fault'])) for r in by_seed]}
+        for r in by_seed:
+            for m, v in zip(r['fault_counts'], r.get('steps_to_90') or []):
+                values.setdefault(('steps_to_90', m), []).append(float(v))
+        for (endpoint, m), v in values.items():
+            lo, hi = bootstrap_median_ci(v, N_BOOT)
+            rows.append({'cell': key[0], 'wiring': key[1], 'arm': key[2],
+                         'endpoint': endpoint, 'm': m, 'n_seeds': len(v),
+                         'median': float(np.median(v)), 'lo': lo, 'hi': hi,
+                         'budget_above_tolerance': key in above})
+    return pd.DataFrame(rows, columns=[
+        'cell', 'wiring', 'arm', 'endpoint', 'm', 'n_seeds', 'median', 'lo',
+        'hi', 'budget_above_tolerance']).astype({'m': 'Int64'})
 
 
 # --- F2 test families (protocol F2 sections 2.0 to 2.4 and 6, #107) --------
@@ -2168,6 +2342,10 @@ def main(argv=None) -> int:
         parts.append(contrast_report(seq, blocks, descriptive_pairs(seq)))
     if args.co_runs:
         parts.append(consensus_family(args.co_runs))
+        consensus_intervals(args.co_runs).to_csv(
+            os.path.join(args.out, 'consensus_family.csv'), index=False)
+        consensus_arm_endpoints(args.co_runs).to_csv(
+            os.path.join(args.out, 'consensus_arms.csv'), index=False)
     if args.f2_families:
         f2 = f2_family_blocks(load_f2_spec(args.f2_families))
         f2.to_csv(os.path.join(args.out, 'f2_families.csv'), index=False)
