@@ -1,0 +1,148 @@
+# Spec for `experiments/aggregate_results.py --descriptive` (#109): the
+# descriptive F2 blocks (protocol F2 sections 5.1, 5.2 and the descriptive
+# part of 2.3; constant DESCRIPTIVE_BLOCKS in the aggregator, which fixes
+# arms, seeds, reference and reading). Per block one entry per arm label:
+#   label             the arm label as arm_label returns it
+#   protocol_version  the config.effective.protocol_version every record of
+#                     the arm carries (a string, or a list of strings for an
+#                     arm whose seeds come from F1 and F2 records)
+#   paths             run folders (searched recursively, inside the folder
+#                     only) or record files; no patterns; [] for an arm that
+#                     did not run (its rows become 'not run')
+# Only the block's seeds are read. Replace every <...> placeholder before
+# use. F1 arms come from the F1 final run folders only, never from an F2
+# folder; B2 lrc/ncp lists the F1 records of seeds 0-4 and the F2 records of
+# seeds 5-9 (record files where a folder holds more seeds).
+
+B1:
+  - label: lrc_init/ncp
+    protocol_version: F2-2026-11-05
+    paths: [<F2_DUFFING_B1_RUN_DIR>]
+  - label: lrc/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_DUFFING_FINAL_RUN_DIR>]
+  - label: lrc_cal_duffing/ncp
+    protocol_version: F2-2026-11-05
+    paths: [<F2_DUFFING_B1_RUN_DIR>]
+B2:
+  - label: lrc_init/ncp
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_B2_RUN_DIR>]
+  - label: lrc/ncp
+    protocol_version: [F1-2026-10-26, F2-2026-11-05]
+    paths: [<F1_LV_FINAL_RUN_DIR>, <F2_LV_LRC_NCP_SEEDS_5_9_RUN_DIR>]
+  - label: cfc_lrc/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_LV_FINAL_RUN_DIR>]
+  - label: lrc_cal_lv/ncp
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_B2_RUN_DIR>]
+B3:
+  - label: lrc/ncp [epochs=900]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_B3_RUN_DIR>]
+  - label: lrc/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_LV_FINAL_RUN_DIR>]
+  - label: lrc/dense [epochs=900]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_B3_RUN_DIR>]
+  - label: lrc/dense
+    protocol_version: F1-2026-10-26
+    paths: [<F1_LV_FINAL_RUN_DIR>]
+  - label: lrc_init/ncp [epochs=900]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_B3_RUN_DIR>]
+  - label: lrc_init/ncp
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_B2_RUN_DIR>]
+  - label: lrc_cal_lv/ncp [epochs=900]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_B3_RUN_DIR>]
+  - label: lrc_cal_lv/ncp
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_B2_RUN_DIR>]
+B4:
+  - label: lrc_tau/ncp
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_B4_RUN_DIR>]
+  - label: lrc/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_LV_FINAL_RUN_DIR>]
+  - label: lrc_init_tau/ncp
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_B4_RUN_DIR>]
+  - label: lrc_init/ncp
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_B2_RUN_DIR>]
+B5:
+  - label: ltc_minel/ncp
+    protocol_version: F2-2026-11-05
+    paths: [<F2_PA_B5_RUN_DIR>]
+BA-2:
+  - label: cfc_lrc/cncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_PA_FINAL_RUN_DIR>]
+  - label: cfc_lrc/cncp_random
+    protocol_version: F2-2026-11-05
+    paths: [<F2_PA_BA_2_RUN_DIR>]
+C-2:
+  - label: cfc_lrc/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_DUFFING_FINAL_RUN_DIR>]
+  - label: cfc_lrc_eps1/ncp
+    protocol_version: F2-2026-11-05
+    paths: [<F2_DUFFING_C_2_RUN_DIR>]
+  - label: cfc/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_DUFFING_FINAL_RUN_DIR>]
+budget_2x_lv:
+  - label: cfc_lrc/ncp [epochs=600]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_BUDGET_2X_LV_RUN_DIR>]
+  - label: gru/ncp [epochs=600]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_BUDGET_2X_LV_RUN_DIR>]
+  - label: cfc_lrc/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_LV_FINAL_RUN_DIR>]
+  - label: gru/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_LV_FINAL_RUN_DIR>]
+  - label: cfc_lrc/dense3 [epochs=600]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_BUDGET_2X_LV_RUN_DIR>]
+  - label: cfc_lrc/dense3
+    protocol_version: F1-2026-10-26
+    paths: [<F1_LV_FINAL_RUN_DIR>]
+  - label: cfc_lrc/cncp [epochs=600]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_BUDGET_2X_LV_RUN_DIR>]
+  - label: cfc_lrc/cncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_LV_FINAL_RUN_DIR>]
+budget_2x_duffing:
+  - label: cfc_lrc/ncp [epochs=900]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_DUFFING_BUDGET_2X_DUFFING_RUN_DIR>]
+  - label: gru/ncp [epochs=900]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_DUFFING_BUDGET_2X_DUFFING_RUN_DIR>]
+  - label: cfc_lrc/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_DUFFING_FINAL_RUN_DIR>]
+  - label: gru/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_DUFFING_FINAL_RUN_DIR>]
+  - label: cfc_lrc/dense3 [epochs=900]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_DUFFING_BUDGET_2X_DUFFING_RUN_DIR>]
+  - label: cfc_lrc/dense3
+    protocol_version: F1-2026-10-26
+    paths: [<F1_DUFFING_FINAL_RUN_DIR>]
+  - label: cfc_lrc/cncp [epochs=900]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_DUFFING_BUDGET_2X_DUFFING_RUN_DIR>]
+  - label: cfc_lrc/cncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_DUFFING_FINAL_RUN_DIR>]
