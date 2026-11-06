@@ -150,6 +150,10 @@ ROBUST_DESCRIPTIVE = ('metric_robust', 'f1_sigma_0', 'f1_sigma_0.1',
                       'ood_nrmse_128_median', 'ood_rate_unbounded',
                       'long_vpt_multi_median', 'long_nrmse_128_median',
                       'long_rate_unbounded')
+# The per-recording, per-noise-draw test confusions of the decision sigma
+# (eval_robustness.py --per-recording-confusions, #96), the input of the
+# crossed bootstrap of the PA robustness rows.
+ROBUST_CONFUSIONS = 'confusions_sigma_0.3'
 # Bonferroni family sizes, the one place they are defined.
 BONFERRONI_FAMILIES = {
     'H-a': 3,              # multitimescale_lib/ncp, duffing/ncp, pa/dense
@@ -912,9 +916,12 @@ def merge_robustness(df, csv_paths) -> pd.DataFrame:
     the clean one in the robustness family), rebuild_rel_dev and the
     descriptive f1_sigma_* / ood_* / long_* columns, matched on (system,
     arm, seed) of the final fits; a fit without a row stays NaN and is left
-    out of the robustness family. A CSV without diverged_robust, two rows of
-    one final fit and a row whose config_effective_sha256 is not that of the
-    loaded fit's config.effective raise SystemExit."""
+    out of the robustness family. A confusions_sigma_0.3 column (#96) becomes
+    the column confusion_robust: (recordings sorted, draws, C, C) per fit,
+    None for a fit without. A CSV without diverged_robust, two rows of one
+    final fit, a row whose config_effective_sha256 is not that of the loaded
+    fit's config.effective and fits with different test recordings raise
+    SystemExit."""
     from src.benchmark.checkpoints import config_hash   # imports TensorFlow
     rob = pd.concat([pd.read_csv(p) for p in csv_paths], ignore_index=True)
     if 'diverged_robust' not in rob:
@@ -923,7 +930,8 @@ def merge_robustness(df, csv_paths) -> pd.DataFrame:
     key = ['system', 'arm', 'seed']
     cols = ['metric_robust', 'diverged_robust', 'config_effective_sha256',
             *(c for c in rob if c.startswith(('f1_sigma_', 'ood_', 'long_',
-                                              'rebuild_rel_dev')))]
+                                              'rebuild_rel_dev'))
+              or c == ROBUST_CONFUSIONS)]
     rob = rob.loc[rob['seed'].isin(FINAL_SEEDS), key + cols]
     dup = rob[rob.duplicated(key, keep=False)]
     if not dup.empty:
@@ -937,6 +945,16 @@ def merge_robustness(df, csv_paths) -> pd.DataFrame:
                 raise SystemExit(f'{path}: its robustness row has another '
                                  'config_effective_sha256 (a CSV of another '
                                  'run folder?)')
+    if ROBUST_CONFUSIONS in df:
+        by_rec = [json.loads(v) if isinstance(v, str) else None
+                  for v in df.pop(ROBUST_CONFUSIONS)]
+        names = {tuple(sorted(c)) for c in by_rec if c}
+        if len(names) > 1:
+            raise SystemExit('robustness CSV: fits differ in their test '
+                             f'recordings: {sorted(names)}')
+        df['confusion_robust'] = pd.Series(
+            [np.array([c[k] for k in sorted(c)], float) if c else None
+             for c in by_rec], index=df.index, dtype=object)
     return df.drop(columns='config_effective_sha256')
 
 
@@ -1056,8 +1074,11 @@ def core_contrast_blocks(df, floors=None, hpo=None) -> pd.DataFrame:
     Bonferroni over its family size (BONFERRONI_FAMILIES), two-sided. The
     H-c entries run once more as ROBUSTNESS_FAMILY on the column
     'metric_robust' when df carries it (#34, merge_robustness): fits
-    without an eval-only row are left out, the interval is over seeds (the
-    test confusion matrices belong to the clean metric) and the divergence
+    without an eval-only row are left out, the interval is over seeds, or
+    on Person Activity crossed over seeds x test recordings when every fit
+    has its per-recording noisy confusions (confusion_robust, #96; the clean
+    test confusions belong to the clean metric) and none diverged, with the
+    seed interval next to it (median_diff_seed_lo/hi), and the divergence
     flag is diverged_robust (or a non-finite metric_robust), not the clean
     one: a fit diverged on the robustness set enters at the worst value.
 
@@ -1092,7 +1113,8 @@ def core_contrast_blocks(df, floors=None, hpo=None) -> pd.DataFrame:
             d = df
             if col != 'metric':     # the fits with an eval-only row
                 d = df[df['diverged_robust'].notna()]
-                d = d.assign(metric=d[col], confusion=None, diverged=(
+                d = d.assign(metric=d[col], confusion=d.get(
+                    'confusion_robust'), diverged=(
                     d['diverged_robust'].astype(bool)
                     | ~np.isfinite(d[col].astype(float))))
             p = (_paired(d, task, arm_a, arm_b)
@@ -1105,6 +1127,11 @@ def core_contrast_blocks(df, floors=None, hpo=None) -> pd.DataFrame:
                            status='excluded: arm above budget tolerance')
             else:
                 row.update(_pair_stats(p, p['task_a'].iloc[0], m))
+                if family == ROBUSTNESS_FAMILY:
+                    row['median_diff_seed_lo'], row['median_diff_seed_hi'] = (
+                        bootstrap_median_ci(p['v_a'].to_numpy(float)
+                                            - p['v_b'].to_numpy(float),
+                                            N_BOOT))
             rows.append(row)
     return pd.DataFrame(rows)
 
@@ -1234,8 +1261,12 @@ def contrast_report(df, blocks, desc) -> str:
                      f"| {b['p_a_gt_b']:.2f} [{b['p_a_gt_b_lo']:.3f}, "
                      f"{b['p_a_gt_b_hi']:.3f}] "
                      f"| {b['median_diff']:+.4g} [{b['median_diff_lo']:+.4g}, "
-                     f"{b['median_diff_hi']:+.4g}] ({b['ci_units']}) "
-                     f"| {b['diverged_a']} | {b['diverged_b']} ")
+                     f"{b['median_diff_hi']:+.4g}] ({b['ci_units']})"
+                     + (f"; seed [{b['median_diff_seed_lo']:+.4g}, "
+                        f"{b['median_diff_seed_hi']:+.4g}]"
+                        if b['ci_units'] != 'seed'
+                        and pd.notna(b.get('median_diff_seed_lo')) else '')
+                     + f" | {b['diverged_a']} | {b['diverged_b']} ")
         else:
             stats = (f"| {b['n_pairs']} | {b['status']} | — | — | — | — | — "
                      "| — | — | — | — ")
@@ -2403,7 +2434,8 @@ def main(argv=None) -> int:
             seq, floors, load_hpo_selections(args.hpo_dir)
             if args.hpo_dir else None)
         blocks.to_csv(os.path.join(args.out, 'contrasts.csv'), index=False)
-        seq.drop(columns='confusion', errors='ignore').to_csv(
+        seq.drop(columns=['confusion', 'confusion_robust'],
+                 errors='ignore').to_csv(
             os.path.join(args.out, 'sequence_runs.csv'), index=False)
         parts.append(contrast_report(seq, blocks, descriptive_pairs(seq)))
         rq5_paired(seq).to_csv(os.path.join(args.out, 'rq5_paired.csv'),

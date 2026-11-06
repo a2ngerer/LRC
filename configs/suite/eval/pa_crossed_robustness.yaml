@@ -1,0 +1,26 @@
+# PA robustness, crossed seeds x recordings (#96): eval-only of the PA final fits
+# of the H-c arms (cfc_lrc dense3 / ncp / cncp, seeds 0-9), no training. 30
+# lines. Each call adds the per-recording, per-noise-draw confusion matrices
+# (--per-recording-confusions) and fails unless its f1_sigma_* and metric_robust
+# equal the stored robustness CSVs bit for bit (--verify-against); the
+# seed streams (#101) are written out as v1, the old streams (Person Activity has
+# no rollout draw, so the scalars are the same either way).
+# records_dir: the F1 PA final run (read only); verify glob: the stored
+# robustness CSVs of these records (the run of f2_guard_eval_pa). One CSV per
+# record in this run's results/pa_final/; pass them to
+# aggregate_results.py --contrasts --robustness.
+#   ./cluster/submit_suite.sh configs/suite/eval/pa_crossed_robustness.yaml pa-crossed-robustness
+task: pa
+stage: eval
+robustness: true
+seed_streams: v1
+sources:
+  - config: configs/suite/pa_final.yaml
+    records_dir: ../benchmarks/03_person_activity/runs/<pa-final run>/results
+    arms: [cfc_lrc_ncp, cfc_lrc_dense3, cfc_lrc_cncp]
+    seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+extra_args:
+  - --per-recording-confusions
+  - --verify-against
+  - ../benchmarks/03_person_activity/runs/<f2-guard-eval-pa run>/results/pa_final/*.csv
+cluster: {runs_per_gpu: 10, walltime: "02:00:00"}

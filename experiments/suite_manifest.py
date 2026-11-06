@@ -64,6 +64,9 @@ Stage eval (#105) trains nothing: it re-evaluates stored result JSONs.
     robustness: true            # optional (the control evals, #99): lv gets a
     seed_streams: v1            # second line per record, see below; the rollout
                                 # draw seeds (#101) are written out, no default
+    extra_args: []              # pa only: appended to every eval_robustness.py
+                                # call (#96: --per-recording-confusions,
+                                # --verify-against <stored CSVs>)
     cluster: {runs_per_gpu: 10}
 
 One line per record, named with result_name from the source YAML: lv runs
@@ -138,7 +141,7 @@ KEYS = {"task", "system", "stage", "cells", "wirings", "arms", "param_budget",
         "heavy", "description", "selection_from", "sources", "robustness",
         "seed_streams"}
 EVAL_KEYS = {"task", "system", "stage", "sources", "cluster", "description",
-             "robustness", "seed_streams"}
+             "robustness", "seed_streams", "extra_args"}
 # eval_robustness.SEED_STREAMS (#101), not imported: that module loads
 # TensorFlow; a test pins the equality
 SEED_STREAMS = ("v1", "v2")
@@ -252,6 +255,8 @@ def _load_eval(path, cfg):
         raise SystemExit(f"{path}: stage eval needs task lv or pa")
     if cfg.get("system") and cfg["task"] != "lv":
         raise SystemExit(f"{path}: system applies to task lv only")
+    if cfg.get("extra_args") and cfg["task"] != "pa":
+        raise SystemExit(f"{path}: extra_args applies to task pa only")
     if not cfg.get("sources"):
         raise SystemExit(f"{path}: 'sources' is required")
     if cfg.get("robustness") not in (None, True, False):
@@ -317,7 +322,8 @@ def expand_eval(cfg):
                          "--horizon", str(ANCHOR_HORIZON)]
                 line["done"] = f"{stem}/{rec}"
             else:
-                argv += ["--results", record, *streams]
+                argv += ["--results", record, *streams,
+                         *map(str, cfg.get("extra_args") or [])]
                 line["done"] = line["out"] = csv
             lines.append({**line, "argv": argv})
             if task == "lv" and cfg.get("robustness"):

@@ -11,7 +11,8 @@
   - bootstrap_median_ci: percentile bootstrap of a median over seeds (the
                        median paired difference of a contrast)
   - crossed_median_diff_ci: its crossed seeds x test recordings version on
-                       pooled Person Activity confusion matrices
+                       pooled Person Activity confusion matrices (optionally
+                       one per fixed noise draw, #96)
 """
 import numpy as np
 from scipy.stats import beta, kendalltau
@@ -99,25 +100,30 @@ def crossed_median_diff_ci(conf_a, conf_b, n_boot=10_000, alpha=0.05, seed=0):
     difference A - B over seeds.
 
     conf_a, conf_b: (seeds, recordings, C, C) test confusion matrices of the
-    paired fits, recordings in the same order. Each resample draws the seeds
-    and, independently, the test recordings (every seed sees the same
-    recordings), pools the drawn recordings' matrices per fit, scores its
-    macro-F1 (classes absent from labels and predictions left out, as
+    paired fits, recordings in the same order; or (seeds, recordings, draws,
+    C, C) with one matrix per fixed noise draw (#96), whose macro-F1 values
+    are averaged over the draws (the draws are not resampled). Each resample
+    draws the seeds and, independently, the test recordings (every seed sees
+    the same recordings), pools the drawn recordings' matrices per fit, scores
+    its macro-F1 (classes absent from labels and predictions left out, as
     src/evaluation/metrics.macro_f1) and takes the median over the drawn
     seeds of the paired difference."""
-    a, b = np.asarray(conf_a, float), np.asarray(conf_b, float)
+    a, b = (np.asarray(c, float) for c in (conf_a, conf_b))
+    a, b = (c if c.ndim == 5 else c[:, :, None] for c in (a, b))
     s, r = a.shape[:2]
     rng = np.random.default_rng(seed)
     rows = rng.integers(0, s, (n_boot, s))
     w = rng.multinomial(r, np.full(r, 1 / r), n_boot).astype(float)
 
-    def f1(c):                                     # (n_boot, s)
-        pooled = np.einsum('br,srij->bsij', w, c)
-        tp = np.diagonal(pooled, axis1=2, axis2=3)
-        denom = pooled.sum(axis=2) + pooled.sum(axis=3)
+    def f1(c, w):                                  # (n_boot, s)
+        pooled = np.einsum('br,srdij->bsdij', w, c)
+        tp = np.diagonal(pooled, axis1=3, axis2=4)
+        denom = pooled.sum(axis=3) + pooled.sum(axis=4)
         with np.errstate(invalid='ignore', divide='ignore'):
             return np.nanmean(np.where(denom > 0, 2 * tp / denom, np.nan),
-                              axis=2)
-    d = f1(a) - f1(b)
+                              axis=3).mean(axis=2)
+    # chunked: n_boot x seeds x draws x C x C doubles can reach gigabytes
+    d = np.concatenate([f1(a, c) - f1(b, c) for c in np.array_split(
+        w, max(1, n_boot // 1000))])
     return _percentiles(np.median(np.take_along_axis(d, rows, axis=1),
                                   axis=1), alpha)

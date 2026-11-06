@@ -619,3 +619,12 @@ YAMLs and run folders. The guard retrains (`f2_guard_*`) and the eval YAMLs
 write only into their own run folders: an eval line writes below
 `results/<source YAML stem>/` of its run and only reads the `records_dir`
 folders (the F1 run folders stay untouched).
+
+Crossed PA robustness (#96): `configs/suite/eval/pa_crossed_robustness.yaml`
+(stage eval, 30 lines = 3 array tasks, no training) reruns
+`eval_robustness.py --per-recording-confusions` on the H-c final fits and
+fails on any bit difference to the stored `f1_sigma_*` (`--verify-against`,
+set both placeholders). Its CSVs go to `aggregate_results.py --contrasts
+--robustness`, which then reports the seeds x recordings interval next to the
+seed interval. The YAML names the old seed streams (`seed_streams: v1`, #101);
+Person Activity has no rollout draw.
