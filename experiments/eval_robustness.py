@@ -147,7 +147,7 @@ def rollout_set(model, data, trajs, anchors, horizon, theta, tau_orb):
 
 def rollout_seeds(data_seed, streams="v1"):
     """(ood, long) draw seeds of a fit with ``data_seed`` (#101)."""
-    long = LONG_SEED_OFFSET if streams == "v1" else LONG_SEED_OFFSET_V2
+    long = {"v1": LONG_SEED_OFFSET, "v2": LONG_SEED_OFFSET_V2}[streams]
     return data_seed + SEED_OFFSET, data_seed + long
 
 
@@ -244,7 +244,8 @@ def main(argv=None):
     ap.add_argument("--seed-streams", choices=SEED_STREAMS, default="v1",
                     help="rollout draw seeds (#101): v1 = the streams of the "
                          "evaluated records (long of replicate s = ood of "
-                         "s + 1), v2 = disjoint ood and long streams")
+                         "s + 1), v2 = disjoint ood and long streams; "
+                         "Person Activity ignores it")
     args = ap.parse_args(argv)
     paths = sorted(glob.glob(args.results, recursive=True))
     rows = [r for r in (evaluate(p, args.data_path, args.seed_streams)
