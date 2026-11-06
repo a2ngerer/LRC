@@ -18,9 +18,13 @@ Rollouts (run_lotka_volterra_benchmark.py JSONs of SYSTEMS on
 FORCEABLE_WIRINGS): two fresh sets of N_ROLLOUT trajectories, drawn through
 sample_ood_trajectories (the code path of the runner's --ic-spread) at the
 fit's dt and normalised with the fit's training statistics. Each set has its
-own seed, data_seed + SEED_OFFSET (ood) and data_seed + LONG_SEED_OFFSET
-(long): shared by every arm of a replicate, disjoint from every training
-draw and from each other.
+own seed (rollout_seeds), shared by every arm of a replicate and disjoint
+from every training draw. --seed-streams picks the version (#101): v1
+(default, the streams of the evaluated F1/F2 records) seeds ood with
+data_seed + SEED_OFFSET and long with data_seed + LONG_SEED_OFFSET, so the
+long seed of data_seed d is the ood seed of d + 1, i.e. of the next
+replicate; v2 keeps the ood seed and moves long to data_seed +
+LONG_SEED_OFFSET_V2, disjoint from every ood seed.
   * ood:  initial-condition spread OOD_SPREAD (0.8 instead of 0.4), the fit's
           seq_len, anchors, horizon and theta;
   * long: the fit's spread and anchors, LONG_HORIZON (256) free-run steps
@@ -88,6 +92,10 @@ OOD_SPREAD = 0.8
 LONG_HORIZON = 256
 SEED_OFFSET = 10 ** 6
 LONG_SEED_OFFSET = SEED_OFFSET + 1
+# ponytail: v2 is disjoint while data seeds span < SEED_OFFSET (in use:
+# offsets 0/1000 plus seeds < 1000); widen the offsets if that ever changes
+LONG_SEED_OFFSET_V2 = 2 * SEED_OFFSET
+SEED_STREAMS = ("v1", "v2")
 SYSTEMS = ("periodic_predator_prey", "duffing")
 REBUILD_TOL = 1e-3
 
@@ -137,7 +145,13 @@ def rollout_set(model, data, trajs, anchors, horizon, theta, tau_orb):
                              norm_stats, theta)}
 
 
-def rollout_columns(path, record):
+def rollout_seeds(data_seed, streams="v1"):
+    """(ood, long) draw seeds of a fit with ``data_seed`` (#101)."""
+    long = {"v1": LONG_SEED_OFFSET, "v2": LONG_SEED_OFFSET_V2}[streams]
+    return data_seed + SEED_OFFSET, data_seed + long
+
+
+def rollout_columns(path, record, streams="v1"):
     """ood_* / long_* columns, metric_robust, diverged_robust and
     rebuild_rel_dev of a rollout fit."""
     eff = record["config"]["effective"]
@@ -148,17 +162,19 @@ def rollout_columns(path, record):
                                m["anchor_theta"])
     t0, t1 = data.t_span
 
-    def draw(offset, spread, steps):    # the fit's dt over `steps` steps
+    ood_seed, long_seed = rollout_seeds(eff["data_seed"], streams)
+
+    def draw(seed, spread, steps):    # the fit's dt over `steps` steps
         return sample_ood_trajectories(
-            N_ROLLOUT, eff["data_seed"] + offset, spread, steps,
+            N_ROLLOUT, seed, spread, steps,
             data.system, (t0, t0 + (t1 - t0) * steps / data.seq_len))
 
     tau_orb = eff.get("tau_orb", TAU_ORB)
     sets = {"ood": rollout_set(model, data,
-                               draw(SEED_OFFSET, OOD_SPREAD, data.seq_len),
+                               draw(ood_seed, OOD_SPREAD, data.seq_len),
                                anchors, horizon, theta, tau_orb),
             "long": rollout_set(model, data,
-                                draw(LONG_SEED_OFFSET, data.spread,
+                                draw(long_seed, data.spread,
                                      max(anchors) + LONG_HORIZON),
                                 anchors, LONG_HORIZON, theta, tau_orb)}
     clean = rollout_set(model, data, data.test_traj, anchors, horizon, theta,
@@ -190,7 +206,7 @@ def pa_columns(path, record, data_path=None):
                                            record["test_macro_f1"])}
 
 
-def evaluate(path, data_path=None):
+def evaluate(path, data_path=None, streams="v1"):
     """The CSV row of the result JSON at ``path``, or None if unsupported."""
     with open(path) as f:
         record = json.load(f)
@@ -206,7 +222,7 @@ def evaluate(path, data_path=None):
     if not record.get("weights_path"):
         raise SystemExit(f"{path}: no weights_path, cannot rebuild the fit")
     cols = (pa_columns(path, record, data_path) if task == "pa"
-            else rollout_columns(path, record))
+            else rollout_columns(path, record, streams))
     print(f"robustness {path}: metric_robust {cols['metric_robust']:.4g}")
     return {"file": path, "task": task, "system": system,
             "arm": arm_label(record), "cell": record["cell"],
@@ -225,9 +241,15 @@ def main(argv=None):
     ap.add_argument("--data-path", default=None,
                     help="Person Activity: ConfLongDemo_JSI.txt (default: "
                          "the loader's data/person path)")
+    ap.add_argument("--seed-streams", choices=SEED_STREAMS, default="v1",
+                    help="rollout draw seeds (#101): v1 = the streams of the "
+                         "evaluated records (long of replicate s = ood of "
+                         "s + 1), v2 = disjoint ood and long streams; "
+                         "Person Activity ignores it")
     args = ap.parse_args(argv)
     paths = sorted(glob.glob(args.results, recursive=True))
-    rows = [r for r in (evaluate(p, args.data_path) for p in paths) if r]
+    rows = [r for r in (evaluate(p, args.data_path, args.seed_streams)
+                           for p in paths) if r]
     if not rows:
         raise SystemExit(f"no supported result JSON matches {args.results!r}")
     pd.DataFrame(rows).to_csv(args.out, index=False)

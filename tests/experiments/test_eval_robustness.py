@@ -188,3 +188,28 @@ def test_script_runs_on_two_epoch_fits_of_each_task(tmp_path, monkeypatch):
                          4 + er.LONG_HORIZON)
     assert ood[5] == (0.0, 10.0)              # the fit's dt: 10 / 8 per step
     assert long[5] == (0.0, 10.0 * (4 + er.LONG_HORIZON) / 8)
+
+    # #101: --seed-streams v2 keeps the ood draw and moves the long one
+    draws.clear()
+    lv_json = sorted((tmp_path / 'lv').glob('cfc_lrc_ncp_seed0*.json'))[0]
+    er.main(['--results', str(lv_json), '--out', str(tmp_path / 'v2.csv'),
+             '--seed-streams', 'v2'])
+    assert [d[1] for d in draws] == [20260702 + er.SEED_OFFSET,
+                                     20260702 + er.LONG_SEED_OFFSET_V2]
+
+
+def test_seed_streams_v1_pin_and_v2_disjoint():
+    """#101: v1 (default) is the stream of the evaluated records, whose long
+    seed of replicate s is the ood seed of s + 1; v2 separates ood, long and
+    training seeds for every data seed in use (offsets 0 / 1000, seeds <
+    1000, campaign seeds go up to 101)."""
+    d = 20260702
+    assert er.rollout_seeds(d) == (d + 10 ** 6, d + 10 ** 6 + 1)
+    assert er.rollout_seeds(d)[1] == er.rollout_seeds(d + 1)[0]
+    train = {20260702 + off + s for off in (0, 1000) for s in range(1000)}
+    for streams, disjoint in (('v1', False), ('v2', True)):
+        ood, long = map(set, zip(*(er.rollout_seeds(t, streams)
+                                   for t in train)))
+        assert len(ood) == len(long) == len(train)
+        assert not (ood | long) & train
+        assert (not ood & long) is disjoint, streams
