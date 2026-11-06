@@ -193,8 +193,6 @@ def load(path):
         raise SystemExit(f"{path}: sources applies to stage eval only")
     if cfg.get("system") and cfg["task"] != "lv":
         raise SystemExit(f"{path}: system applies to task lv only")
-    if cfg.get("extra_args") and cfg["task"] != "pa":
-        raise SystemExit(f"{path}: extra_args applies to task pa only")
     if cfg["stage"] == "hpo" and (len(cfg["seeds"]) > 2 or len(
             set(cfg["seeds"])) != len(cfg["seeds"])):
         raise SystemExit(f"{path}: stage hpo takes one tuning seed or two "
