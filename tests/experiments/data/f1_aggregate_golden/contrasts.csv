@@ -1,0 +1,15 @@
+family,task,a,b,m,endpoint,n_pairs,significant,floor_bound,sign_stable_tuning,status,method,p_raw,p_adj,d_z,p_a_gt_b,p_a_gt_b_lo,p_a_gt_b_hi,median_diff,median_diff_lo,median_diff_hi,ci_units,diverged_a,diverged_b
+H-a,multitimescale_lib,cfc/ncp,cfc_static/ncp,3,metric,0,False,,,missing,,,,,,,,,,,,,
+H-a,duffing,cfc/ncp,cfc_static/ncp,3,metric,10,False,False,,tested,approx,0.025347318677468256,0.07604195603240477,0.9486832980505138,0.75,0.3941816818513287,0.9559405864473692,0.5,0.0,1.0,seed,"0/10 [0.00, 0.31]","0/10 [0.00, 0.31]"
+H-a,pa,cfc/dense,cfc_static/dense,3,metric,0,False,,,missing,,,,,,,,,,,,,
+H-b,duffing,cfc_lrc/ncp,lrc/ncp,2,metric,10,True,True,,tested,exact,0.001953125,0.00390625,4.952851331973733,1.0,0.6915028921812392,1.0,9.375,8.625,10.0,seed,"0/10 [0.00, 0.31]","1/10 [0.00, 0.45]"
+H-b,pa,cfc_lrc/ncp,lrc/ncp,2,metric,10,True,False,,tested,approx,0.004808563078561356,0.009617126157122713,1.4663783623910422,1.0,0.6915028921812392,1.0,0.1552579365079365,0.14040850453893938,0.3323051948051948,seed x recording,"0/10 [0.00, 0.31]","0/10 [0.00, 0.31]"
+H-c,periodic_predator_prey,cfc_lrc/ncp,cfc_lrc/dense3,2,metric,10,True,True,False,tested,exact,0.001953125,0.00390625,2.2179154483817034,1.0,0.6915028921812392,1.0,5.75,4.5,10.0,seed,"0/10 [0.00, 0.31]","0/10 [0.00, 0.31]"
+H-c,periodic_predator_prey,cfc_lrc/cncp,cfc_lrc/dense3,2,metric,10,False,True,,tested,approx,0.9591410100221092,1.0,0.32212529531589557,0.3,0.06673951117773447,0.6524528500599973,-0.5,-2.0,9.0,seed,"0/10 [0.00, 0.31]","0/10 [0.00, 0.31]"
+H-c,duffing,cfc_lrc/ncp,cfc_lrc/dense3,2,metric,0,False,,,missing,,,,,,,,,,,,,
+H-c,duffing,cfc_lrc/cncp,cfc_lrc/dense3,2,metric,0,False,,,missing,,,,,,,,,,,,,
+H-c,pa,cfc_lrc/ncp,cfc_lrc/dense3,2,metric,10,True,True,,tested,approx,0.004892240901835026,0.009784481803670052,1.4692691333597696,1.0,0.6915028921812392,1.0,0.1552579365079365,0.14040850453893938,0.5084627329192546,seed x recording,"0/10 [0.00, 0.31]","0/10 [0.00, 0.31]"
+H-c,pa,cfc_lrc/cncp,cfc_lrc/dense3,2,metric,10,False,True,,tested,approx,0.08326451666355039,0.16652903332710078,0.6210590034081187,0.65,0.3036794856004882,0.9073054060618468,0.0,0.0,0.3642857142857143,seed x recording,"0/10 [0.00, 0.31]","0/10 [0.00, 0.31]"
+RQ1,periodic_predator_prey,cfc_lrc/ncp,gru/ncp,3,metric,10,True,False,,tested,approx,0.004643645257632884,0.013930935772898652,1.568331906714055,1.0,0.6915028921812392,1.0,6.5,2.5,10.5,seed,"0/10 [0.00, 0.31]","1/10 [0.00, 0.45]"
+RQ1,duffing,cfc_lrc/ncp,gru/ncp,3,metric,0,False,,,missing,,,,,,,,,,,,,
+RQ1,pa,cfc_lrc/ncp,gru/ncp,3,metric,10,False,False,True,tested,approx,0.04122683333716368,0.12368050001149106,0.9465868913167665,0.75,0.3941816818513287,0.9559405864473692,0.0714285714285714,0.0,0.15575871496924126,seed x recording,"0/10 [0.00, 0.31]","0/10 [0.00, 0.31]"

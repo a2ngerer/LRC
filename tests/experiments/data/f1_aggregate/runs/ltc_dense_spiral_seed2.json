@@ -1,0 +1,1 @@
+{"config": {"clip_norm": 0.0}, "evaluation": {"mse": 0.24000000000000002, "nrmse": 0.52}, "run": {"cell": "ltc", "clip_norm": 0.0, "seed": 2, "system": "spiral", "wiring": "dense"}, "schema_version": 2, "training": {"duration_s": 1.0, "final_loss": 0.1}}

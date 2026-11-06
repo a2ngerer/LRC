@@ -1,0 +1,11 @@
+cell,wiring,system,seed,clip_norm,stress,ncp_wiring_seed,stress_level,ode_unfolds,batch_time,final_loss,mse,nrmse,duration_s,budget_above_tolerance,file
+cfc,dense,spiral,0,0.0,,,,,16,0.1,0.2,0.4,1.0,False,cfc_dense_spiral_seed0.json
+cfc,dense,spiral,1,0.0,,,,,16,0.1,0.22,0.41000000000000003,1.0,False,cfc_dense_spiral_seed1.json
+cfc,dense,spiral,2,0.0,,,,,16,0.1,0.24000000000000002,0.42000000000000004,1.0,False,cfc_dense_spiral_seed2.json
+cfc,dense,spiral,3,0.0,,,,,16,0.1,0.26,0.43000000000000005,1.0,False,cfc_dense_spiral_seed3.json
+cfc,dense,spiral,4,0.0,,,,,16,0.1,0.28,0.44,1.0,False,cfc_dense_spiral_seed4.json
+ltc,dense,spiral,0,0.0,,,,,16,0.1,0.2,0.5,1.0,False,ltc_dense_spiral_seed0.json
+ltc,dense,spiral,1,0.0,,,,,16,0.1,0.22,0.51,1.0,False,ltc_dense_spiral_seed1.json
+ltc,dense,spiral,2,0.0,,,,,16,0.1,0.24000000000000002,0.52,1.0,False,ltc_dense_spiral_seed2.json
+ltc,dense,spiral,3,0.0,,,,,16,0.1,0.26,0.53,1.0,False,ltc_dense_spiral_seed3.json
+ltc,dense,spiral,4,0.0,,,,,16,0.1,0.28,0.54,1.0,False,ltc_dense_spiral_seed4.json

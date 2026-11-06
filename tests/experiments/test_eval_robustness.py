@@ -121,8 +121,9 @@ def test_sigma_zero_reproduces_the_clean_metric(tmp_path, monkeypatch,
     assert row['f1_sigma_0'] == record['test_macro_f1']
     assert row['metric_robust'] == row['f1_sigma_0.3']
     assert row['rebuild_rel_dev'] == 0 and row['diverged_robust'] is False
+    # an F2 record off the F1 epoch count carries the epochs tag (#107)
     assert (row['task'], row['system'], row['arm']) == (
-        'pa', 'pa', 'cfc_lrc/ncp [dt_scale=1, fixed width]')
+        'pa', 'pa', 'cfc_lrc/ncp [dt_scale=1, fixed width, epochs=3]')
     assert er.evaluate(str(path))['f1_sigma_0.3'] == row['f1_sigma_0.3']
     assert 'WARNING' not in capsys.readouterr().out
     record['test_macro_f1'] += 0.1      # e.g. a JSON of last-epoch weights
