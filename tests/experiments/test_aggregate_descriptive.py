@@ -422,6 +422,32 @@ def test_f2_record_in_an_f1_path_list_is_rejected(tmp_path):
         descriptive_blocks(s)
 
 
+def test_listed_paths_without_a_block_seed_are_an_error(tmp_path):
+    s = load_descriptive_spec(_world(tmp_path))
+    arm = [a for a in s['B1'] if a['label'] == 'lrc_init/ncp'][0]
+    folder = str(tmp_path / 'wrong')
+    _write(folder, 'duffing', 'lrc_init/ncp', 7, 20.0, F2)
+    arm['paths'] = [folder]
+    with pytest.raises(SystemExit, match=r'B1\[\d\] \(lrc_init/ncp\): no '
+                       r'final fit on the block seeds 0-2'):
+        descriptive_blocks(s)
+
+
+@pytest.mark.parametrize('block,label', [('B1', 'lrc_init/ncp'),
+                                         ('budget_2x_lv', 'gru/ncp')])
+def test_pairs_on_different_data_keys_are_an_error(tmp_path, block, label):
+    s = load_descriptive_spec(_world(tmp_path))
+    arm = [a for a in s[block] if a['label'] == label][0]
+    path = os.path.join(arm['paths'][0], sorted(os.listdir(
+        arm['paths'][0]))[0])
+    with open(path, encoding='utf-8') as f:
+        rec = json.load(f)
+    rec['config']['effective']['data_seed'] = DS + 1
+    _dump(path, rec)
+    with pytest.raises(SystemExit, match=f'{block} .*differ in the data key'):
+        descriptive_blocks(s)
+
+
 def test_block_csv_has_no_test_columns(tmp_path):
     df = _rows(_world(tmp_path))
     assert list(df.columns) == DESC_COLUMNS

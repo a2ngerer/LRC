@@ -1573,6 +1573,16 @@ def permutation_p(x, y) -> float:
     return float(np.mean(np.abs(flips @ ranks - mu) >= dev - 1e-9))
 
 
+def _check_data_key(p, name):
+    """SystemExit unless both fits of every pair of a merged frame share the
+    data key of config.effective (data_seed, Person Activity split_seed)."""
+    bad = p[p['data_key_a'].isna() | (p['data_key_a'] != p['data_key_b'])]
+    if not bad.empty:
+        raise SystemExit(f'{name}: arms A and B differ in the data key of '
+                         f'config.effective on seed(s) '
+                         f'{bad["seed"].tolist()}')
+
+
 def _f2_test(family, test, task, m, a, b) -> dict:
     """One F2 test row from the final fits of arm A and arm B."""
     row = {'family': family, 'test': test, 'task': task,
@@ -1595,11 +1605,7 @@ def _f2_test(family, test, task, m, a, b) -> dict:
             for d in (a, b))
     p = a.merge(b, on='seed', suffixes=('_a', '_b')).sort_values('seed')
     if kind != 'ppo':
-        bad = p[p['data_key_a'].isna() | (p['data_key_a'] != p['data_key_b'])]
-        if not bad.empty:
-            raise SystemExit(f'{test}: arms A and B differ in the data key of '
-                             f'config.effective on seed(s) '
-                             f'{bad["seed"].tolist()}')
+        _check_data_key(p, test)
     above = any((d['budget_above_tolerance'] & ~d['width_matched']).any()
                 for d in (a, b))
     n = len(p)
@@ -1768,7 +1774,7 @@ def load_descriptive_spec(path) -> dict:
     """The --descriptive spec: {block: [arm, ...]} for exactly the blocks of
     DESCRIPTIVE_BLOCKS, one arm per label the block reads (_block_labels),
     each checked as in load_f2_spec; paths may be empty (an arm that did not
-    run). SystemExit as in load_f2_spec."""
+    run, its rows become 'not run'). SystemExit as in load_f2_spec."""
     with open(path, encoding='utf-8') as f:
         spec = yaml.safe_load(f)
     blocks = set(DESCRIPTIVE_BLOCKS)
@@ -1891,7 +1897,9 @@ def _desc_row(block, spec_block, pair, arms) -> dict:
         row.update(status='not run', not_run=', '.join(missing))
         return row
     if reading not in ('floor + 2', 'above reference', 'plateau exit'):
-        row['status'] = 'descriptive'   # set below to undecidable if n small
+        # five-seed blocks: fewer than MIN_PAIRS pairs by design
+        row['status'] = ('undecidable' if len(seeds) < MIN_PAIRS
+                         else 'descriptive')
     row['origin'] = '; '.join(_origin(lb, arms[lb]) for lb in labels)
     a = _valued(arms[pair['a']])
     lo, hi = bootstrap_median_ci(a['v'], N_BOOT)
@@ -1924,13 +1932,11 @@ def _desc_row(block, spec_block, pair, arms) -> dict:
     row.update(median_b=float(np.median(b['v'])), median_b_lo=lo,
                median_b_hi=hi, n_flagged_b=_flagged(b),
                best_val_epoch_b=_by_seed(b['seed'], b['best_val_epoch']))
-    system = 'pa' if task == 'pa' else task
     p = _paired(pd.concat([arms[pair['a']], arms[pair['b']]],
-                          ignore_index=True), system, pair['a'], pair['b'])
+                          ignore_index=True), task, pair['a'], pair['b'])
+    _check_data_key(p, f"{block} {pair['a']} - {pair['b']}")
     d = (p['v_a'] - p['v_b']).to_numpy(float)
     row.update(n=len(p), n_positive=int((d > 0).sum()))
-    if row.get('status') == 'descriptive' and len(p) < MIN_PAIRS:
-        row['status'] = 'undecidable'
     if len(p):
         (lo, hi), units = _median_diff_ci(p, p['task_a'].iloc[0])
         row.update(median_diff=float(np.median(d)), median_diff_lo=lo,
@@ -1951,8 +1957,9 @@ def _desc_row(block, spec_block, pair, arms) -> dict:
         row['direction'] = direction5(d, len(seeds))
     if reading == 'budget direction':
         p1 = _paired(pd.concat([arms[pair['a_1x']], arms[pair['b_1x']]],
-                               ignore_index=True), system, pair['a_1x'],
+                               ignore_index=True), task, pair['a_1x'],
                      pair['b_1x'])
+        _check_data_key(p1, f"{block} {pair['a_1x']} - {pair['b_1x']}")
         d1 = (p1['v_a'] - p1['v_b']).to_numpy(float)
         row.update(median_sign=float(np.sign(np.median(d))) if len(d)
                    else None, majority=_majority(d),
@@ -1961,9 +1968,11 @@ def _desc_row(block, spec_block, pair, arms) -> dict:
                    else None, n_positive_1x=int((d1 > 0).sum()),
                    n_1x=len(d1), majority_1x=_majority(d1),
                    comparator_flagged=row['n_flagged_b'] > 0)
-        row['direction'] = ('unchanged' if len(d) and len(d1) and (
-            row['median_sign'], row['majority']) == (
-            row['median_sign_1x'], row['majority_1x']) else 'changed')
+        row['direction'] = (None if not (len(d) and len(d1)) else
+                            'unchanged' if (row['median_sign'],
+                                            row['majority']) == (
+                                row['median_sign_1x'], row['majority_1x'])
+                            else 'changed')
     return row
 
 
@@ -1973,16 +1982,23 @@ def descriptive_blocks(spec) -> pd.DataFrame:
     block's seeds from each arm's own path list (protocol_version and floor
     checks of _f2_arm), the per-arm median with a seed-bootstrap interval,
     the paired difference a - b (median, 10,000-resample interval as in
-    _pair_stats, seeds with delta > 0, n) and the reading of the block. An
-    arm without a record makes its rows 'not run'; no test, no p."""
+    _pair_stats, seeds with delta > 0, n; both fits of a pair on one data
+    key) and the reading of the block. An arm listed with paths [] makes
+    its rows 'not run'; listed paths without a final fit of the arm on the
+    block seeds raise SystemExit. No test, no p."""
     draws, rows = {}, []
     for block, sb in DESCRIPTIVE_BLOCKS.items():
         arms = {}
         for i, arm in enumerate(spec[block]):
             df, _ = _f2_arm(block, i, sb['task'], arm, draws, curves=True,
-                            empty_ok=True)
-            arms[arm['label']] = (df[df['seed'].isin(sb['seeds'])]
-                                  if not df.empty else df)
+                            empty_ok=not arm['paths'])
+            if not df.empty:
+                df = df[df['seed'].isin(sb['seeds'])]
+                if df.empty:
+                    raise SystemExit(
+                        f"{block}[{i}] ({arm['label']}): no final fit on the "
+                        f"block seeds {_seed_runs(sb['seeds'])} in its paths")
+            arms[arm['label']] = df
         rows += [_desc_row(block, sb, pair, arms) for pair in sb['pairs']]
     return pd.DataFrame(rows).reindex(columns=DESC_COLUMNS)
 
