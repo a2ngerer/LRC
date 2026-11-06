@@ -1,0 +1,58 @@
+{
+  "best_val_epoch": 40,
+  "budget_above_tolerance": false,
+  "budget_deviation": 0.02,
+  "cell": "gru",
+  "clipnorm": 1.0,
+  "config": {
+    "effective": {
+      "dt_scale": 3.7,
+      "epochs": 50,
+      "ode_unfolds": 6,
+      "param_budget": 30000,
+      "protocol_version": "F1-2026-10-26",
+      "split_seed": 0,
+      "task": "person_activity"
+    }
+  },
+  "dt_scale": 3.7,
+  "epochs": 50,
+  "lr": 0.003,
+  "param_budget": 30000,
+  "params_effective": 29500,
+  "seed": 7,
+  "test_confusion_by_recording": {
+    "r0": [
+      [
+        6,
+        1
+      ],
+      [
+        1,
+        6
+      ]
+    ],
+    "r1": [
+      [
+        6,
+        1
+      ],
+      [
+        1,
+        7
+      ]
+    ],
+    "r2": [
+      [
+        6,
+        1
+      ],
+      [
+        1,
+        8
+      ]
+    ]
+  },
+  "test_macro_f1": 0.8660714285714286,
+  "wiring": "ncp"
+}

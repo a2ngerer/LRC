@@ -1,0 +1,1 @@
+{"cell": "cfc_lrc", "grid_extended": true, "lr_at_grid_edge": true, "ranking": [{"clipnorm": null, "lr": 0.001, "score": 0.9, "scores": {"100": 0.9, "101": 0.8}}, {"clipnorm": null, "lr": 0.003, "score": 0.5}], "system": "periodic_predator_prey", "task": "lv", "wiring": "ncp"}

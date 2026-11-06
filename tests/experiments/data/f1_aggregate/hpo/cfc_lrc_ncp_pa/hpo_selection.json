@@ -1,0 +1,1 @@
+{"cell": "cfc_lrc", "grid_extended": false, "lr_at_grid_edge": false, "ranking": [{"clipnorm": null, "lr": 0.001, "score": 0.8, "scores": {"100": 0.8, "101": 0.7}}, {"clipnorm": null, "lr": 0.003, "score": 0.7}], "task": "pa", "wiring": "ncp"}

@@ -1,0 +1,1 @@
+{"cell": "gru", "grid_extended": false, "lr_at_grid_edge": false, "ranking": [{"clipnorm": null, "lr": 0.001, "score": 0.75, "scores": {"100": 0.7, "101": 0.6}}, {"clipnorm": null, "lr": 0.003, "score": 0.72}], "task": "pa", "wiring": "ncp"}

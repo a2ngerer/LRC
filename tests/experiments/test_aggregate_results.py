@@ -812,3 +812,46 @@ def test_median_bootstrap_intervals():
     lo, hi = crossed_median_diff_ci(a, b)
     assert 0.0 <= lo < hi <= 0.4
     assert crossed_median_diff_ci(a, a) == (0.0, 0.0)
+
+
+# --- F1 pin (#107): outputs on a committed F1 fixture equal golden files ----
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
+    __file__))))
+F1_FIXTURE = 'tests/experiments/data/f1_aggregate'          # repo-relative
+F1_GOLDEN = os.path.join(REPO, 'tests/experiments/data/f1_aggregate_golden')
+F1_OUTPUTS = ('summary.md', 'contrasts.csv', 'sequence_runs.csv',
+              'floors.json', 'summary.csv')
+
+
+def _tree_sha256(root):
+    import hashlib
+    out = {}
+    for d, _, files in os.walk(root):
+        for name in files:
+            path = os.path.join(d, name)
+            with open(path, 'rb') as f:
+                out[os.path.relpath(path, root)] = hashlib.sha256(
+                    f.read()).hexdigest()
+    return out
+
+
+def test_f1_outputs_equal_the_golden_files_and_inputs_stay_untouched(
+        tmp_path, monkeypatch):
+    """main() with the existing flags on the committed F1 fixture writes the
+    files generated on main before #107 (the fixture directory in the file
+    column of sequence_runs.csv is a fixed token on both sides); the
+    aggregator only reads, so the fixture's sha256 is unchanged."""
+    monkeypatch.chdir(REPO)
+    before = _tree_sha256(F1_FIXTURE)
+    out = str(tmp_path / 'out')
+    assert main(['--runs', f'{F1_FIXTURE}/runs', '--out', out,
+                 '--rollout-runs', f'{F1_FIXTURE}/rollouts',
+                 '--pa-runs', f'{F1_FIXTURE}/pa', '--floors', '--contrasts',
+                 '--hpo-dir', f'{F1_FIXTURE}/hpo']) == 0
+    assert _tree_sha256(F1_FIXTURE) == before
+    for name in F1_OUTPUTS:
+        with open(os.path.join(out, name), encoding='utf-8') as f:
+            got = f.read().replace(F1_FIXTURE, '<FIXTURE>')
+        with open(os.path.join(F1_GOLDEN, name), encoding='utf-8') as f:
+            assert got == f.read(), name
