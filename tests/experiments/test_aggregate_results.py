@@ -464,6 +464,7 @@ def _hd_fixture(d):
         e = 0.01 * s
         good = {'r0': GOOD, 'r1': GOOD if s % 2 else FLAT}
         flat = {'r0': FLAT, 'r1': FLAT}
+        mixed = {'r1': GOOD, 'r0': FLAT}     # recording order: sorted on load
         common = dict(training_diverged=False,
                       steps_to_90=[4, 5, 6, 7 + s % 2, 9])
         _write_co(d, 'ncp', s, 0.6 + e, 0.8 + e, 0.6 + 2 * e,
@@ -472,7 +473,7 @@ def _hd_fixture(d):
         _write_co(d, 'ncp', s, 0.55 + e / 2, 0.75, 0.55, vote_lambda=0.0,
                   test_confusion_by_recording_by_fault=[flat] * 5, **common)
         _write_co(d, 'ncp', s, 0.5, 0.7, 0.5, view_average='mean',
-                  test_confusion_by_recording_by_fault=[flat] * 5, **common)
+                  test_confusion_by_recording_by_fault=[mixed] * 5, **common)
         _write_co(d, 'ncp', s, 0.45, 0.7, 0.5, view_average='fault_mean',
                   **common)
         if s < 5:
@@ -573,14 +574,16 @@ def test_hd_intervals_known_values(tmp_path):
     assert (r['p_a_gt_b'], r['n_positive'], r['n_diverged']) == (0.9, 10, 1)
     assert (r['p_a_gt_b_lo'], r['p_a_gt_b_hi']) == pytest.approx(
         (0.5550, 0.9975), abs=1e-4)
-    # crossed over seeds x recordings from the confusions at m=15: avg_in
-    # scores 0.5 on both recordings; consensus 0.9 on both (odd seeds) or
-    # on one (even seeds, pooled macro-F1 0.7)
+    # crossed over seeds x recordings from the confusions at m=15, both
+    # arms stacked in the same recording order (r0, r1): avg_in 0.5 on r0,
+    # 0.9 on r1; consensus 0.9 on r0 and 0.9 (odd seeds) or 0.5 on r1
     good = [np.array([GOOD, GOOD if s % 2 else FLAT]) for s in range(10)]
-    flat = [np.array([FLAT, FLAT])] * 10
-    expected = crossed_median_diff_ci(np.stack(good), np.stack(flat))
+    avg = [np.array([FLAT, GOOD])] * 10
+    expected = crossed_median_diff_ci(np.stack(good), np.stack(avg))
     assert (r['median_diff_lo'], r['median_diff_hi']) == expected
-    assert 0.0 <= expected[0] < expected[1] <= 0.4   # per-seed diff 0-0.4
+    assert expected != crossed_median_diff_ci(np.stack(good),
+                                              np.stack(avg)[:, ::-1])
+    assert -0.4 <= expected[0] < expected[1] <= 0.4
     assert pd.isna(r['ci_crossed_note'])
     assert (r['status'], r['significant']) == ('tested', True)
     # part ii: AUC has no per-recording breakdown, seed interval only

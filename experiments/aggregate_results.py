@@ -1498,7 +1498,8 @@ def consensus_intervals(co_dir) -> pd.DataFrame:
                            n_positive=int((x - y > 0).sum()),
                            n_diverged=int(f['diverged_a'].sum()
                                           + f['diverged_b'].sum()))
-    return pd.DataFrame(rows).reindex(columns=HD_COLUMNS)
+    return pd.DataFrame(rows).reindex(columns=HD_COLUMNS).astype(
+        {'n_positive': 'Int64', 'n_diverged': 'Int64'})
 
 
 def consensus_arm_endpoints(co_dir) -> pd.DataFrame:
