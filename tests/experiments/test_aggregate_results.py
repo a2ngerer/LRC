@@ -237,6 +237,58 @@ def test_pa_arm_means_hierarchical_bootstrap(tmp_path):
     assert '| cfc_lrc_dense3 | 5 | 0.6000 |' in row and lo < 0.6 < hi
 
 
+def _write_pa(d, seed, per_rec=None, tag='cfc_lrc_dense3'):
+    os.makedirs(d, exist_ok=True)
+    rec = {'test_macro_f1': 0.6, 'cell': 'cfc_lrc', 'wiring': 'dense3',
+           'seed': seed}
+    if per_rec is not None:
+        rec['test_macro_f1_per_recording'] = per_rec
+    with open(os.path.join(d, f'{tag}_seed{seed}.json'), 'w',
+              encoding='utf-8') as f:
+        json.dump(rec, f)
+
+
+def test_pa_arm_means_nested_and_cross_mean_column(tmp_path):
+    """Nested result files are found and labelled '<folder>/<tag>' (flat
+    labels unchanged), tuning seeds and non-fit JSONs are left out, and the
+    last column carries the cross-mean with its crossed interval."""
+    per_rec = {f'rec{i}': v for i, v in enumerate((0.2, 0.4, 0.6, 0.8, 1.0))}
+    d = str(tmp_path / 'pa')
+    for seed in range(5):
+        _write_pa(d, seed, per_rec)
+        _write_pa(os.path.join(d, 'ctrl', 'k1'), seed, per_rec)
+    _write_pa(d, 100, per_rec)               # tuning seed
+    with open(os.path.join(d, 'hpo_selection.json'), 'w',
+              encoding='utf-8') as f:
+        json.dump({'task': 'pa'}, f)         # non-fit JSON
+    rows = pa_arm_means(d).splitlines()
+    for arm in ('cfc_lrc_dense3', 'ctrl/k1/cfc_lrc_dense3'):
+        row = next(r for r in rows if r.startswith(f'| {arm} |'))
+        assert '| 5 | 0.6000 | [0.6000, 0.6000] | 0.6000 [' in row
+        lo, hi = (float(v) for v in row.split('| 0.6000 [')[1].rstrip('] |').split(','))
+        assert lo < 0.6 < hi
+    assert 'Left out 1 tuning-seed' in '\n'.join(rows)
+
+
+def test_pa_arm_means_cross_mean_column_only_with_recordings(tmp_path):
+    flat = str(tmp_path / 'flat')
+    for seed in range(2):
+        _write_pa(flat, seed)
+    flat_table = pa_arm_means(flat)
+    assert 'cross-mean' not in flat_table
+    assert flat_table.splitlines()[-1] == (
+        '| cfc_lrc_dense3 | 2 | 0.6000 | [0.6000, 0.6000] |')
+    mixed = str(tmp_path / 'mixed')
+    for seed in range(2):
+        _write_pa(mixed, seed, None if seed else {'r0': 0.5, 'r1': 0.7})
+        _write_pa(mixed, seed, {'r0': 0.5, 'r1': 0.7}, tag='full')
+    rows = pa_arm_means(mixed).splitlines()
+    assert rows[-2].startswith('| cfc_lrc_dense3 | 2 | 0.6000 |')
+    assert rows[-2].endswith('| [0.6000, 0.6000] | — |')
+    assert rows[-1].startswith('| full | 2 | 0.6000 |')
+    assert '| 0.6000 [' in rows[-1]
+
+
 def _write_rollout(d, tag, seed, rates, sens, non_finite, n=16):
     m = {'n_trajectories': n, 'tau_orb': 0.15, 'non_finite': non_finite,
          **{f'rate_{c}': v for c, v in zip(('ok', 'bounded_wrong', 'unbounded'), rates)},
