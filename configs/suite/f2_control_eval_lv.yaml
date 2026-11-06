@@ -1,0 +1,15 @@
+# F2 control eval (protocol F2 section 7 checks on the F1 controls; #99):
+# eval-only rebuild of the dt_scale=1 control fits (3 records) and their
+# robustness rows on OOD initial states, no training. 6 lines (per record
+# --eval-only and eval_robustness.py). records_dir: the run folder of the
+# control (read only); outputs go to this run's results/control_lv_dt_scale1/.
+# seed_streams v1 is the stream of the evaluated records, like the final fits.
+#   ./cluster/submit_suite.sh configs/suite/f2_control_eval_lv.yaml f2-control-eval-lv
+task: lv
+stage: eval
+robustness: true
+seed_streams: v1
+sources:
+  - config: configs/suite/control_lv_dt_scale1.yaml
+    records_dir: ../benchmarks/01_lotka_volterra/runs/<lv-dt1 run>/results
+cluster: {runs_per_gpu: 6, walltime: "02:00:00"}

@@ -1,0 +1,15 @@
+# F2 control eval (protocol F2 section 7 checks on the F1 controls; #99):
+# rebuild check and noise robustness (eval_robustness.py) of the k = 1 control
+# fits on Person Activity (5 records), no training. 5 lines. records_dir: the
+# run folder of the control (read only); one CSV per record in
+# results/control_pa_k1/. seed_streams v1 as for the final fits (Person
+# Activity ignores it).
+#   ./cluster/submit_suite.sh configs/suite/f2_control_eval_pa.yaml f2-control-eval-pa
+task: pa
+stage: eval
+robustness: true
+seed_streams: v1
+sources:
+  - config: configs/suite/control_pa_k1.yaml
+    records_dir: ../benchmarks/03_person_activity/runs/<pa-k1 run>/results
+cluster: {runs_per_gpu: 5, walltime: "02:00:00"}

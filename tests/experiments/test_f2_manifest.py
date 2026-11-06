@@ -323,7 +323,10 @@ F2 = {
 }
 EVALS = {'f2_guard_eval_lv': 30, 'f2_guard_eval_duffing': 30, 'f2_guard_eval_pa': 30,
          'f2_t5_fidelity_lv': 107, 'f2_t5_fidelity_duffing': 54,
-         'f2_t5_fidelity_pa': 31}
+         'f2_t5_fidelity_pa': 31,
+         # the F1 controls (#99): lv and duffing two lines per record
+         'f2_control_eval_lv': 6, 'f2_control_eval_duffing': 10,
+         'f2_control_eval_pa': 5}
 # --count per YAML (protocol F2 section 8.2; smoke and eval: lines)
 COUNTS = {'f2_smoke_lv': 9, 'f2_smoke_lv_w': 1, 'f2_smoke_lv_c8': 4,
           'f2_smoke_duffing': 7, 'f2_smoke_pa': 3, 'f2_smoke_pa_w': 1,
@@ -579,9 +582,16 @@ def test_f2_eval_outputs_stay_in_their_stem_folder(name, tmp_path):
         f1 = {'lv': 'lv_final', 'duffing': 'duffing_final', 'pa': 'pa_final'}[
             name.rsplit('_', 1)[1]]
         assert set(stems) == {f1}
+    elif 'control' in name:
+        assert set(stems) == {CONTROL_SOURCE[name]}
     else:
         assert set(stems) == T5_SOURCES[name]
         assert sum(COUNTS[s] for s in stems) == EVALS[name]
+
+
+CONTROL_SOURCE = {'f2_control_eval_lv': 'control_lv_dt_scale1',
+                  'f2_control_eval_duffing': 'control_duffing_k1',
+                  'f2_control_eval_pa': 'control_pa_k1'}
 
 
 # T5 sources (protocol F2 section 7): every non-HPO fit YAML of T1-T3
@@ -657,3 +667,73 @@ def test_runner_accepts_every_new_arm_kind(name, arm_id, want, tmp_path,
     assert _markers(eff) == want
     if arm_id == 'cfc_lrc_eps1_ncp_seed0':
         assert eff['build']['size'] == 23          # the cfc_lrc/ncp width
+
+
+# --- control eval with robustness rows (#99) ----------------------------------
+
+import yaml  # noqa: E402
+
+from experiments.suite_manifest import ROBUSTNESS_RUNNER, SEED_STREAMS, load  # noqa: E402
+
+
+def test_seed_streams_equal_the_robustness_script():
+    from experiments import eval_robustness
+    assert SEED_STREAMS == eval_robustness.SEED_STREAMS
+    assert ROBUSTNESS_RUNNER.endswith('eval_robustness.py')
+
+
+@pytest.mark.parametrize('name, n_records', [
+    ('f2_control_eval_lv', 3), ('f2_control_eval_duffing', 5),
+    ('f2_control_eval_pa', 5)])
+def test_control_eval_lines(name, n_records):
+    """Every control record gets the rebuild check and the robustness row,
+    v1 written into each eval_robustness.py call, no training, outputs below
+    results/<control stem>/; the seeds are those of the control YAML."""
+    cfg = load(str(SUITE / f'{name}.yaml'))
+    src = CONTROL_SOURCE[name]
+    assert (cfg['robustness'], cfg['seed_streams']) == (True, 'v1')
+    lines = expand(cfg)
+    rob = [x for x in lines if ROBUSTNESS_RUNNER in x['argv']]
+    assert len(rob) == n_records
+    assert len(lines) == EVALS[name] == n_records * (1 if name.endswith('pa')
+                                                     else 2)
+    for x in rob:
+        a = x['argv']
+        assert a[a.index('--seed-streams') + 1] == 'v1'
+        assert '--eval-only' not in a and x['outdir'] == src
+        assert x['out'] == x['done'] and x['out'].endswith('.csv')
+    if not name.endswith('pa'):
+        for x in (y for y in lines if y not in rob):
+            assert '--eval-only' in x['argv'] and x['done'].endswith('.json')
+            assert '--seed-streams' not in x['argv']
+    seeds = load(str(SUITE / f'{src}.yaml'))['seeds']
+    assert len(seeds) == n_records
+    assert [x['done'].split('seed')[1][0] for x in rob] == list(map(str, seeds))
+
+
+def _control_eval_cfg(tmp_path, **over):
+    src = tmp_path / 'src.yaml'
+    src.write_text((SUITE / 'control_pa_k1.yaml').read_text())
+    cfg = {'task': 'pa', 'stage': 'eval', 'sources': [
+        {'config': str(src), 'records_dir': 'r'}], **over}
+    p = tmp_path / 'ev.yaml'
+    p.write_text(yaml.safe_dump(cfg))
+    return str(p)
+
+
+@pytest.mark.parametrize('over, msg', [
+    ({'robustness': True}, 'needs seed_streams'),
+    ({'robustness': True, 'seed_streams': 'v3'}, 'needs seed_streams'),
+    ({'seed_streams': 'v1'}, 'applies with robustness'),
+    ({'robustness': 'yes'}, 'true or false')])
+def test_control_eval_rejections(tmp_path, over, msg):
+    with pytest.raises(SystemExit, match=msg):
+        load(_control_eval_cfg(tmp_path, **over))
+
+
+def test_eval_without_robustness_is_unchanged(tmp_path):
+    """No robustness key: the pa line has no --seed-streams, an lv source no
+    second line (the T5 YAMLs keep their lines)."""
+    lines = expand(load(_control_eval_cfg(tmp_path)))
+    assert len(lines) == 5
+    assert all('--seed-streams' not in x['argv'] for x in lines)

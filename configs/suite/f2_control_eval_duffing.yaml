@@ -1,0 +1,16 @@
+# F2 control eval (protocol F2 section 7 checks on the F1 controls; #99):
+# eval-only rebuild of the k = 1 control fits on Duffing (5 records) and their
+# robustness rows on OOD initial states, no training. 10 lines (per record
+# --eval-only and eval_robustness.py). records_dir: the run folder of the
+# control (read only); outputs go to this run's results/control_duffing_k1/.
+# seed_streams v1 is the stream of the evaluated records, like the final fits.
+#   ./cluster/submit_suite.sh configs/suite/f2_control_eval_duffing.yaml f2-control-eval-duffing
+task: lv
+system: duffing
+stage: eval
+robustness: true
+seed_streams: v1
+sources:
+  - config: configs/suite/control_duffing_k1.yaml
+    records_dir: ../benchmarks/02_duffing/runs/<duffing-k1 run>/results
+cluster: {runs_per_gpu: 5, walltime: "02:00:00"}
