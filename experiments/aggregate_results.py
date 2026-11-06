@@ -1327,22 +1327,27 @@ def _record_files(paths):
 
 
 def load_ppo_runs(paths, task='HalfCheetah-v5'):
-    """(DataFrame, n skipped) of the run_mujoco_benchmark.py records (#61)
-    below paths: one row per record with profile 'final' and the task, the
-    PPO_FIELDS plus arm (= model), metric (eval_return_mean), diverged (a
-    non-finite metric) and file; records of another profile or task are
-    skipped and counted. Two kept records of one (model, seed) or a kept
-    record without one of the PPO_FIELDS raise SystemExit."""
-    rows, skipped = [], 0
+    """(DataFrame, skipped files) of the run_mujoco_benchmark.py records
+    (#61) below paths: one row per record with profile 'final', the task
+    and a final seed, the PPO_FIELDS plus arm (= model), metric
+    (eval_return_mean), diverged (a non-finite metric) and file; records of
+    another profile or task are skipped and listed. Two kept records of one
+    (model, seed) or a kept record without one of the PPO_FIELDS (or with
+    null untrained values) raise SystemExit."""
+    rows, skipped = [], []
     for path in _record_files(paths):
         with open(path, encoding='utf-8') as f:
             r = json.load(f)
         if not isinstance(r, dict) or 'model' not in r:
             continue
         if r.get('profile') != 'final' or r.get('task') != task:
-            skipped += 1
+            skipped.append(path)
             continue
-        missing = [k for k in PPO_FIELDS if k not in r]
+        if r.get('seed') not in FINAL_SEEDS:
+            continue
+        missing = [k for k in PPO_FIELDS if k not in r] + [
+            k for k in ('untrained_return_mean', 'untrained_return_std')
+            if k in r and r[k] is None]
         if missing:
             raise SystemExit(f'{path}: PPO record of arm {r["model"]} '
                              f'without {missing}')
@@ -1427,7 +1432,7 @@ def _f2_arm(test, side, task, arm, draws):
     if not dup.empty:
         raise SystemExit(f'two final fits of {name} and one seed: '
                          + ', '.join(dup['file']))
-    return df, 0
+    return df, []
 
 
 def _signed_ranks(x, y):
@@ -1554,7 +1559,7 @@ def f2_family_blocks(spec) -> pd.DataFrame:
                 for side in 'ab')
             row = _f2_test(family, test, task, len(tests), a, b)
             if task in F2_PPO_TASKS:
-                row['n_skipped_records'] = skip_a + skip_b
+                row['n_skipped_records'] = len(set(skip_a) | set(skip_b))
             rows.append(row)
     return pd.DataFrame(rows).reindex(columns=F2_COLUMNS)
 

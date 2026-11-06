@@ -1,0 +1,177 @@
+cell,wiring,task,system,seed,stage,arm,control,metric,diverged,best_val_epoch,epochs,params_effective,budget_deviation,lr,clipnorm,budget_above_tolerance,nrmse_32_anchor_8,vpt_anchor_8,vpt_theta_0.3,vpt_theta_1.0,rate_unbounded,file
+cfc_lrc,ncp,lv,duffing,0,final,cfc_lrc/ncp,False,14.0,False,445,450,3960,0.01,0.001,,False,0.4,14.5,13.0,15.0,0.0,<FIXTURE>/rollouts/duffing/cfc_lrc_ncp_seed0_mixed.json
+cfc_lrc,ncp,lv,duffing,1,final,cfc_lrc/ncp,False,14.5,False,445,450,3960,0.01,0.001,,False,0.41000000000000003,15.0,13.5,15.5,0.0,<FIXTURE>/rollouts/duffing/cfc_lrc_ncp_seed1_mixed.json
+cfc_lrc,ncp,lv,duffing,2,final,cfc_lrc/ncp,False,15.0,False,445,450,3960,0.01,0.001,,False,0.42000000000000004,15.5,14.0,16.0,0.0,<FIXTURE>/rollouts/duffing/cfc_lrc_ncp_seed2_mixed.json
+cfc_lrc,ncp,lv,duffing,3,final,cfc_lrc/ncp,False,15.5,False,445,450,3960,0.01,0.001,,False,0.43000000000000005,16.0,14.5,16.5,0.0,<FIXTURE>/rollouts/duffing/cfc_lrc_ncp_seed3_mixed.json
+cfc_lrc,ncp,lv,duffing,4,final,cfc_lrc/ncp,False,16.0,False,445,450,3960,0.01,0.001,,False,0.44,16.5,15.0,17.0,0.0,<FIXTURE>/rollouts/duffing/cfc_lrc_ncp_seed4_mixed.json
+cfc_lrc,ncp,lv,duffing,5,final,cfc_lrc/ncp,False,16.5,False,445,450,3960,0.01,0.001,,False,0.45,17.0,15.5,17.5,0.0,<FIXTURE>/rollouts/duffing/cfc_lrc_ncp_seed5_mixed.json
+cfc_lrc,ncp,lv,duffing,6,final,cfc_lrc/ncp,False,17.0,False,445,450,3960,0.01,0.001,,False,0.46,17.5,16.0,18.0,0.0,<FIXTURE>/rollouts/duffing/cfc_lrc_ncp_seed6_mixed.json
+cfc_lrc,ncp,lv,duffing,7,final,cfc_lrc/ncp,False,17.5,False,445,450,3960,0.01,0.001,,False,0.47000000000000003,18.0,16.5,18.5,0.0,<FIXTURE>/rollouts/duffing/cfc_lrc_ncp_seed7_mixed.json
+cfc_lrc,ncp,lv,duffing,8,final,cfc_lrc/ncp,False,18.0,False,445,450,3960,0.01,0.001,,False,0.48000000000000004,18.5,17.0,19.0,0.0,<FIXTURE>/rollouts/duffing/cfc_lrc_ncp_seed8_mixed.json
+cfc_lrc,ncp,lv,duffing,9,final,cfc_lrc/ncp,False,18.5,False,445,450,3960,0.01,0.001,,False,0.49,19.0,17.5,19.5,0.0,<FIXTURE>/rollouts/duffing/cfc_lrc_ncp_seed9_mixed.json
+cfc,ncp,lv,duffing,0,final,cfc/ncp,False,12.0,False,445,450,3960,0.01,0.001,,False,0.4,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/duffing/cfc_ncp_seed0_mixed.json
+cfc,ncp,lv,duffing,1,final,cfc/ncp,False,13.0,False,445,450,3960,0.01,0.001,,False,0.41000000000000003,13.5,12.0,14.0,0.0,<FIXTURE>/rollouts/duffing/cfc_ncp_seed1_mixed.json
+cfc,ncp,lv,duffing,2,final,cfc/ncp,False,12.0,False,445,450,3960,0.01,0.001,,False,0.42000000000000004,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/duffing/cfc_ncp_seed2_mixed.json
+cfc,ncp,lv,duffing,3,final,cfc/ncp,False,13.0,False,445,450,3960,0.01,0.001,,False,0.43000000000000005,13.5,12.0,14.0,0.0,<FIXTURE>/rollouts/duffing/cfc_ncp_seed3_mixed.json
+cfc,ncp,lv,duffing,4,final,cfc/ncp,False,12.0,False,445,450,3960,0.01,0.001,,False,0.44,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/duffing/cfc_ncp_seed4_mixed.json
+cfc,ncp,lv,duffing,5,final,cfc/ncp,False,13.0,False,445,450,3960,0.01,0.001,,False,0.45,13.5,12.0,14.0,0.0,<FIXTURE>/rollouts/duffing/cfc_ncp_seed5_mixed.json
+cfc,ncp,lv,duffing,6,final,cfc/ncp,False,12.0,False,445,450,3960,0.01,0.001,,False,0.46,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/duffing/cfc_ncp_seed6_mixed.json
+cfc,ncp,lv,duffing,7,final,cfc/ncp,False,13.0,False,445,450,3960,0.01,0.001,,False,0.47000000000000003,13.5,12.0,14.0,0.0,<FIXTURE>/rollouts/duffing/cfc_ncp_seed7_mixed.json
+cfc,ncp,lv,duffing,8,final,cfc/ncp,False,12.0,False,445,450,3960,0.01,0.001,,False,0.48000000000000004,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/duffing/cfc_ncp_seed8_mixed.json
+cfc,ncp,lv,duffing,9,final,cfc/ncp,False,13.0,False,445,450,3960,0.01,0.001,,False,0.49,13.5,12.0,14.0,0.0,<FIXTURE>/rollouts/duffing/cfc_ncp_seed9_mixed.json
+cfc_static,ncp,lv,duffing,0,final,cfc_static/ncp,False,12.0,False,445,450,3960,0.01,0.001,,False,0.4,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/duffing/cfc_static_ncp_seed0_mixed.json
+cfc_static,ncp,lv,duffing,1,final,cfc_static/ncp,False,12.0,False,445,450,3960,0.01,0.001,,False,0.41000000000000003,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/duffing/cfc_static_ncp_seed1_mixed.json
+cfc_static,ncp,lv,duffing,2,final,cfc_static/ncp,False,12.0,False,445,450,3960,0.01,0.001,,False,0.42000000000000004,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/duffing/cfc_static_ncp_seed2_mixed.json
+cfc_static,ncp,lv,duffing,3,final,cfc_static/ncp,False,12.0,False,445,450,3960,0.01,0.001,,False,0.43000000000000005,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/duffing/cfc_static_ncp_seed3_mixed.json
+cfc_static,ncp,lv,duffing,4,final,cfc_static/ncp,False,12.0,False,445,450,3960,0.01,0.001,,False,0.44,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/duffing/cfc_static_ncp_seed4_mixed.json
+cfc_static,ncp,lv,duffing,5,final,cfc_static/ncp,False,12.0,False,445,450,3960,0.01,0.001,,False,0.45,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/duffing/cfc_static_ncp_seed5_mixed.json
+cfc_static,ncp,lv,duffing,6,final,cfc_static/ncp,False,12.0,False,445,450,3960,0.01,0.001,,False,0.46,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/duffing/cfc_static_ncp_seed6_mixed.json
+cfc_static,ncp,lv,duffing,7,final,cfc_static/ncp,False,12.0,False,445,450,3960,0.01,0.001,,False,0.47000000000000003,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/duffing/cfc_static_ncp_seed7_mixed.json
+cfc_static,ncp,lv,duffing,8,final,cfc_static/ncp,False,12.0,False,445,450,3960,0.01,0.001,,False,0.48000000000000004,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/duffing/cfc_static_ncp_seed8_mixed.json
+cfc_static,ncp,lv,duffing,9,final,cfc_static/ncp,False,12.0,False,445,450,3960,0.01,0.001,,False,0.49,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/duffing/cfc_static_ncp_seed9_mixed.json
+cfc_static,ncp,lv,duffing,0,final,"cfc_static/ncp [k=1, dt_scale=1, fixed width, forcing=free]",True,3.0,False,445,450,3960,0.01,0.001,,False,0.4,3.5,2.0,4.0,0.0,<FIXTURE>/rollouts/duffing/ctrl_combo/cfc_static_ncp_seed0_free.json
+cfc_static,ncp,lv,duffing,1,final,"cfc_static/ncp [k=1, dt_scale=1, fixed width, forcing=free]",True,3.0,False,445,450,3960,0.01,0.001,,False,0.41000000000000003,3.5,2.0,4.0,0.0,<FIXTURE>/rollouts/duffing/ctrl_combo/cfc_static_ncp_seed1_free.json
+cfc_static,ncp,lv,duffing,2,final,"cfc_static/ncp [k=1, dt_scale=1, fixed width, forcing=free]",True,3.0,False,445,450,3960,0.01,0.001,,False,0.42000000000000004,3.5,2.0,4.0,0.0,<FIXTURE>/rollouts/duffing/ctrl_combo/cfc_static_ncp_seed2_free.json
+cfc_static,ncp,lv,duffing,3,final,"cfc_static/ncp [k=1, dt_scale=1, fixed width, forcing=free]",True,3.0,False,445,450,3960,0.01,0.001,,False,0.43000000000000005,3.5,2.0,4.0,0.0,<FIXTURE>/rollouts/duffing/ctrl_combo/cfc_static_ncp_seed3_free.json
+cfc_static,ncp,lv,duffing,4,final,"cfc_static/ncp [k=1, dt_scale=1, fixed width, forcing=free]",True,3.0,False,445,450,3960,0.01,0.001,,False,0.44,3.5,2.0,4.0,0.0,<FIXTURE>/rollouts/duffing/ctrl_combo/cfc_static_ncp_seed4_free.json
+lrc,ncp,lv,duffing,0,final,lrc/ncp [k=1],True,5.0,False,445,450,3960,0.01,0.001,,False,0.4,5.5,4.0,6.0,0.0,<FIXTURE>/rollouts/duffing/ctrl_k1/lrc_ncp_seed0_mixed.json
+lrc,ncp,lv,duffing,1,final,lrc/ncp [k=1],True,6.0,False,445,450,3960,0.01,0.001,,False,0.41000000000000003,6.5,5.0,7.0,0.0,<FIXTURE>/rollouts/duffing/ctrl_k1/lrc_ncp_seed1_mixed.json
+lrc,ncp,lv,duffing,2,final,lrc/ncp [k=1],True,7.0,False,445,450,3960,0.01,0.001,,False,0.42000000000000004,7.5,6.0,8.0,0.0,<FIXTURE>/rollouts/duffing/ctrl_k1/lrc_ncp_seed2_mixed.json
+lrc,ncp,lv,duffing,3,final,lrc/ncp [k=1],True,8.0,False,445,450,3960,0.01,0.001,,False,0.43000000000000005,8.5,7.0,9.0,0.0,<FIXTURE>/rollouts/duffing/ctrl_k1/lrc_ncp_seed3_mixed.json
+lrc,ncp,lv,duffing,4,final,lrc/ncp [k=1],True,9.0,False,445,450,3960,0.01,0.001,,False,0.44,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/duffing/ctrl_k1/lrc_ncp_seed4_mixed.json
+gru,dense3,lv,duffing,0,final,gru/dense3,False,9.0,False,445,450,3960,0.01,0.001,,True,0.4,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/duffing/gru_dense3_seed0_mixed.json
+gru,dense3,lv,duffing,1,final,gru/dense3,False,9.0,False,445,450,3960,0.01,0.001,,True,0.41000000000000003,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/duffing/gru_dense3_seed1_mixed.json
+gru,dense3,lv,duffing,2,final,gru/dense3,False,9.0,False,445,450,3960,0.01,0.001,,True,0.42000000000000004,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/duffing/gru_dense3_seed2_mixed.json
+gru,dense3,lv,duffing,3,final,gru/dense3,False,9.0,False,445,450,3960,0.01,0.001,,True,0.43000000000000005,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/duffing/gru_dense3_seed3_mixed.json
+gru,dense3,lv,duffing,4,final,gru/dense3,False,9.0,False,445,450,3960,0.01,0.001,,True,0.44,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/duffing/gru_dense3_seed4_mixed.json
+gru,dense3,lv,duffing,5,final,gru/dense3,False,9.0,False,445,450,3960,0.01,0.001,,True,0.45,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/duffing/gru_dense3_seed5_mixed.json
+gru,dense3,lv,duffing,6,final,gru/dense3,False,9.0,False,445,450,3960,0.01,0.001,,True,0.46,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/duffing/gru_dense3_seed6_mixed.json
+gru,dense3,lv,duffing,7,final,gru/dense3,False,9.0,False,445,450,3960,0.01,0.001,,True,0.47000000000000003,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/duffing/gru_dense3_seed7_mixed.json
+gru,dense3,lv,duffing,8,final,gru/dense3,False,9.0,False,445,450,3960,0.01,0.001,,True,0.48000000000000004,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/duffing/gru_dense3_seed8_mixed.json
+gru,dense3,lv,duffing,9,final,gru/dense3,False,9.0,False,445,450,3960,0.01,0.001,,True,0.49,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/duffing/gru_dense3_seed9_mixed.json
+lrc,ncp,lv,duffing,0,final,lrc/ncp,False,6.0,False,445,450,3960,0.01,0.001,,False,0.4,6.5,5.0,7.0,0.0,<FIXTURE>/rollouts/duffing/lrc_ncp_seed0_mixed.json
+lrc,ncp,lv,duffing,1,final,lrc/ncp,False,6.25,False,445,450,3960,0.01,0.001,,False,0.41000000000000003,6.75,5.25,7.25,0.0,<FIXTURE>/rollouts/duffing/lrc_ncp_seed1_mixed.json
+lrc,ncp,lv,duffing,2,final,lrc/ncp,False,6.5,True,445,450,3960,0.01,0.001,,False,0.42000000000000004,7.0,5.5,7.5,1.0,<FIXTURE>/rollouts/duffing/lrc_ncp_seed2_mixed.json
+lrc,ncp,lv,duffing,3,final,lrc/ncp,False,6.75,False,445,450,3960,0.01,0.001,,False,0.43000000000000005,7.25,5.75,7.75,0.0,<FIXTURE>/rollouts/duffing/lrc_ncp_seed3_mixed.json
+lrc,ncp,lv,duffing,4,final,lrc/ncp,False,7.0,False,445,450,3960,0.01,0.001,,False,0.44,7.5,6.0,8.0,0.0,<FIXTURE>/rollouts/duffing/lrc_ncp_seed4_mixed.json
+lrc,ncp,lv,duffing,5,final,lrc/ncp,False,7.25,False,445,450,3960,0.01,0.001,,False,0.45,7.75,6.25,8.25,0.0,<FIXTURE>/rollouts/duffing/lrc_ncp_seed5_mixed.json
+lrc,ncp,lv,duffing,6,final,lrc/ncp,False,7.5,False,445,450,3960,0.01,0.001,,False,0.46,8.0,6.5,8.5,0.0,<FIXTURE>/rollouts/duffing/lrc_ncp_seed6_mixed.json
+lrc,ncp,lv,duffing,7,final,lrc/ncp,False,7.75,False,445,450,3960,0.01,0.001,,False,0.47000000000000003,8.25,6.75,8.75,0.0,<FIXTURE>/rollouts/duffing/lrc_ncp_seed7_mixed.json
+lrc,ncp,lv,duffing,8,final,lrc/ncp,False,8.0,False,445,450,3960,0.01,0.001,,False,0.48000000000000004,8.5,7.0,9.0,0.0,<FIXTURE>/rollouts/duffing/lrc_ncp_seed8_mixed.json
+lrc,ncp,lv,duffing,9,final,lrc/ncp,False,8.25,False,445,450,3960,0.01,0.001,,False,0.49,8.75,7.25,9.25,0.0,<FIXTURE>/rollouts/duffing/lrc_ncp_seed9_mixed.json
+cfc_lrc,cncp,lv,periodic_predator_prey,0,final,cfc_lrc/cncp,False,9.0,False,295,300,3960,0.01,0.001,,False,0.4,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_cncp_seed0_mixed.json
+cfc_lrc,cncp,lv,periodic_predator_prey,1,final,cfc_lrc/cncp,False,9.5,False,295,300,3960,0.01,0.001,,False,0.41000000000000003,10.0,8.5,10.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_cncp_seed1_mixed.json
+cfc_lrc,cncp,lv,periodic_predator_prey,2,final,cfc_lrc/cncp,False,10.0,False,295,300,3960,0.01,0.001,,False,0.42000000000000004,10.5,9.0,11.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_cncp_seed2_mixed.json
+cfc_lrc,cncp,lv,periodic_predator_prey,3,final,cfc_lrc/cncp,False,9.0,False,295,300,3960,0.01,0.001,,False,0.43000000000000005,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_cncp_seed3_mixed.json
+cfc_lrc,cncp,lv,periodic_predator_prey,4,final,cfc_lrc/cncp,False,9.5,False,295,300,3960,0.01,0.001,,False,0.44,10.0,8.5,10.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_cncp_seed4_mixed.json
+cfc_lrc,cncp,lv,periodic_predator_prey,5,final,cfc_lrc/cncp,False,10.0,False,295,300,3960,0.01,0.001,,False,0.45,10.5,9.0,11.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_cncp_seed5_mixed.json
+cfc_lrc,cncp,lv,periodic_predator_prey,6,final,cfc_lrc/cncp,False,9.0,False,295,300,3960,0.01,0.001,,False,0.46,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_cncp_seed6_mixed.json
+cfc_lrc,cncp,lv,periodic_predator_prey,7,final,cfc_lrc/cncp,False,9.5,False,295,300,3960,0.01,0.001,,False,0.47000000000000003,10.0,8.5,10.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_cncp_seed7_mixed.json
+cfc_lrc,cncp,lv,periodic_predator_prey,8,final,cfc_lrc/cncp,False,10.0,False,295,300,3960,0.01,0.001,,False,0.48000000000000004,10.5,9.0,11.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_cncp_seed8_mixed.json
+cfc_lrc,cncp,lv,periodic_predator_prey,9,final,cfc_lrc/cncp,False,9.0,False,295,300,3960,0.01,0.001,,False,0.49,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_cncp_seed9_mixed.json
+cfc_lrc,dense3,lv,periodic_predator_prey,0,final,cfc_lrc/dense3,False,0.0,False,295,300,3960,0.01,0.001,,False,0.4,0.5,-1.0,1.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_dense3_seed0_mixed.json
+cfc_lrc,dense3,lv,periodic_predator_prey,1,final,cfc_lrc/dense3,False,0.0,False,295,300,3960,0.01,0.001,,False,0.41000000000000003,0.5,-1.0,1.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_dense3_seed1_mixed.json
+cfc_lrc,dense3,lv,periodic_predator_prey,2,final,cfc_lrc/dense3,False,0.0,False,295,300,3960,0.01,0.001,,False,0.42000000000000004,0.5,-1.0,1.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_dense3_seed2_mixed.json
+cfc_lrc,dense3,lv,periodic_predator_prey,3,final,cfc_lrc/dense3,False,9.5,False,295,300,3960,0.01,0.001,,False,0.43000000000000005,10.0,8.5,10.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_dense3_seed3_mixed.json
+cfc_lrc,dense3,lv,periodic_predator_prey,4,final,cfc_lrc/dense3,False,10.0,False,295,300,3960,0.01,0.001,,False,0.44,10.5,9.0,11.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_dense3_seed4_mixed.json
+cfc_lrc,dense3,lv,periodic_predator_prey,5,final,cfc_lrc/dense3,False,10.5,False,295,300,3960,0.01,0.001,,False,0.45,11.0,9.5,11.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_dense3_seed5_mixed.json
+cfc_lrc,dense3,lv,periodic_predator_prey,6,final,cfc_lrc/dense3,False,11.0,False,295,300,3960,0.01,0.001,,False,0.46,11.5,10.0,12.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_dense3_seed6_mixed.json
+cfc_lrc,dense3,lv,periodic_predator_prey,7,final,cfc_lrc/dense3,False,11.5,False,295,300,3960,0.01,0.001,,False,0.47000000000000003,12.0,10.5,12.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_dense3_seed7_mixed.json
+cfc_lrc,dense3,lv,periodic_predator_prey,8,final,cfc_lrc/dense3,False,12.0,False,295,300,3960,0.01,0.001,,False,0.48000000000000004,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_dense3_seed8_mixed.json
+cfc_lrc,dense3,lv,periodic_predator_prey,9,final,cfc_lrc/dense3,False,12.5,False,295,300,3960,0.01,0.001,,False,0.49,13.0,11.5,13.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_dense3_seed9_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,0,final,cfc_lrc/ncp,False,10.0,False,295,300,3960,0.01,0.001,,False,0.4,10.5,9.0,11.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_ncp_seed0_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,1,final,cfc_lrc/ncp,False,11.0,False,295,300,3960,0.01,0.001,,False,0.41000000000000003,11.5,10.0,12.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_ncp_seed1_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,2,final,cfc_lrc/ncp,False,12.0,False,295,300,3960,0.01,0.001,,False,0.42000000000000004,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_ncp_seed2_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,3,final,cfc_lrc/ncp,False,13.0,False,295,300,3960,0.01,0.001,,False,0.43000000000000005,13.5,12.0,14.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_ncp_seed3_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,4,final,cfc_lrc/ncp,False,14.0,False,295,300,3960,0.01,0.001,,False,0.44,14.5,13.0,15.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_ncp_seed4_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,5,final,cfc_lrc/ncp,False,15.0,False,295,300,3960,0.01,0.001,,False,0.45,15.5,14.0,16.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_ncp_seed5_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,6,final,cfc_lrc/ncp,False,16.0,False,295,300,3960,0.01,0.001,,False,0.46,16.5,15.0,17.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_ncp_seed6_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,7,final,cfc_lrc/ncp,False,17.0,False,295,300,3960,0.01,0.001,,False,0.47000000000000003,17.5,16.0,18.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_ncp_seed7_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,8,final,cfc_lrc/ncp,False,18.0,False,295,300,3960,0.01,0.001,,False,0.48000000000000004,18.5,17.0,19.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_ncp_seed8_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,9,final,cfc_lrc/ncp,False,19.0,False,295,300,3960,0.01,0.001,,False,0.49,19.5,18.0,20.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/cfc_lrc_ncp_seed9_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,0,final,cfc_lrc/ncp [dt_scale=1],True,9.0,False,295,300,3960,0.01,0.001,,False,0.4,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/ctrl_dt1/cfc_lrc_ncp_seed0_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,1,final,cfc_lrc/ncp [dt_scale=1],True,10.0,False,295,300,3960,0.01,0.001,,False,0.41000000000000003,10.5,9.0,11.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/ctrl_dt1/cfc_lrc_ncp_seed1_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,2,final,cfc_lrc/ncp [dt_scale=1],True,11.0,False,295,300,3960,0.01,0.001,,False,0.42000000000000004,11.5,10.0,12.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/ctrl_dt1/cfc_lrc_ncp_seed2_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,3,final,cfc_lrc/ncp [dt_scale=1],True,12.0,False,295,300,3960,0.01,0.001,,False,0.43000000000000005,12.5,11.0,13.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/ctrl_dt1/cfc_lrc_ncp_seed3_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,4,final,cfc_lrc/ncp [dt_scale=1],True,13.0,False,295,300,3960,0.01,0.001,,False,0.44,13.5,12.0,14.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/ctrl_dt1/cfc_lrc_ncp_seed4_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,0,final,cfc_lrc/ncp [forcing=teacher],True,6.0,False,295,300,3960,0.01,0.001,,False,0.4,6.5,5.0,7.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/ctrl_tf/cfc_lrc_ncp_seed0_teacher.json
+cfc_lrc,ncp,lv,periodic_predator_prey,1,final,cfc_lrc/ncp [forcing=teacher],True,7.0,False,295,300,3960,0.01,0.001,,False,0.41000000000000003,7.5,6.0,8.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/ctrl_tf/cfc_lrc_ncp_seed1_teacher.json
+cfc_lrc,ncp,lv,periodic_predator_prey,2,final,cfc_lrc/ncp [forcing=teacher],True,8.0,False,295,300,3960,0.01,0.001,,False,0.42000000000000004,8.5,7.0,9.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/ctrl_tf/cfc_lrc_ncp_seed2_teacher.json
+cfc_lrc,ncp,lv,periodic_predator_prey,3,final,cfc_lrc/ncp [forcing=teacher],True,9.0,False,295,300,3960,0.01,0.001,,False,0.43000000000000005,9.5,8.0,10.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/ctrl_tf/cfc_lrc_ncp_seed3_teacher.json
+cfc_lrc,ncp,lv,periodic_predator_prey,4,final,cfc_lrc/ncp [forcing=teacher],True,10.0,False,295,300,3960,0.01,0.001,,False,0.44,10.5,9.0,11.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/ctrl_tf/cfc_lrc_ncp_seed4_teacher.json
+cfc_static,ncp,lv,periodic_predator_prey,0,final,cfc_static/ncp [fixed width],True,4.0,False,295,300,3960,0.01,0.001,,False,0.4,4.5,3.0,5.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/ctrl_w/cfc_static_ncp_seed0_mixed.json
+cfc_static,ncp,lv,periodic_predator_prey,1,final,cfc_static/ncp [fixed width],True,5.0,False,295,300,3960,0.01,0.001,,False,0.41000000000000003,5.5,4.0,6.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/ctrl_w/cfc_static_ncp_seed1_mixed.json
+cfc_static,ncp,lv,periodic_predator_prey,2,final,cfc_static/ncp [fixed width],True,6.0,False,295,300,3960,0.01,0.001,,False,0.42000000000000004,6.5,5.0,7.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/ctrl_w/cfc_static_ncp_seed2_mixed.json
+cfc_static,ncp,lv,periodic_predator_prey,3,final,cfc_static/ncp [fixed width],True,7.0,False,295,300,3960,0.01,0.001,,False,0.43000000000000005,7.5,6.0,8.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/ctrl_w/cfc_static_ncp_seed3_mixed.json
+cfc_static,ncp,lv,periodic_predator_prey,4,final,cfc_static/ncp [fixed width],True,8.0,False,295,300,3960,0.01,0.001,,False,0.44,8.5,7.0,9.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/ctrl_w/cfc_static_ncp_seed4_mixed.json
+gru,ncp,lv,periodic_predator_prey,0,final,gru/ncp,False,7.5,False,295,300,3960,0.01,0.001,,False,0.4,8.0,6.5,8.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/gru_ncp_seed0_mixed.json
+gru,ncp,lv,periodic_predator_prey,1,final,gru/ncp,False,8.5,False,295,300,3960,0.01,0.001,,False,0.41000000000000003,9.0,7.5,9.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/gru_ncp_seed1_mixed.json
+gru,ncp,lv,periodic_predator_prey,2,final,gru/ncp,False,9.5,False,295,300,3960,0.01,0.001,,False,0.42000000000000004,10.0,8.5,10.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/gru_ncp_seed2_mixed.json
+gru,ncp,lv,periodic_predator_prey,3,final,gru/ncp,False,10.5,False,295,300,3960,0.01,0.001,,False,0.43000000000000005,11.0,9.5,11.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/gru_ncp_seed3_mixed.json
+gru,ncp,lv,periodic_predator_prey,4,final,gru/ncp,False,7.5,True,295,300,3960,0.01,0.001,,False,0.44,8.0,6.5,8.5,1.0,<FIXTURE>/rollouts/periodic_predator_prey/gru_ncp_seed4_mixed.json
+gru,ncp,lv,periodic_predator_prey,5,final,gru/ncp,False,8.5,False,295,300,3960,0.01,0.001,,False,0.45,9.0,7.5,9.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/gru_ncp_seed5_mixed.json
+gru,ncp,lv,periodic_predator_prey,6,final,gru/ncp,False,9.5,False,295,300,3960,0.01,0.001,,False,0.46,10.0,8.5,10.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/gru_ncp_seed6_mixed.json
+gru,ncp,lv,periodic_predator_prey,7,final,gru/ncp,False,10.5,False,295,300,3960,0.01,0.001,,False,0.47000000000000003,11.0,9.5,11.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/gru_ncp_seed7_mixed.json
+gru,ncp,lv,periodic_predator_prey,8,final,gru/ncp,False,7.5,False,295,300,3960,0.01,0.001,,False,0.48000000000000004,8.0,6.5,8.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/gru_ncp_seed8_mixed.json
+gru,ncp,lv,periodic_predator_prey,9,final,gru/ncp,False,8.5,False,295,300,3960,0.01,0.001,,False,0.49,9.0,7.5,9.5,0.0,<FIXTURE>/rollouts/periodic_predator_prey/gru_ncp_seed9_mixed.json
+cfc_lrc,ncp,lv,periodic_predator_prey,100,hpo,cfc_lrc/ncp,False,11.0,False,295,300,3960,0.01,0.001,,False,1.4,11.5,10.0,12.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/hpo/cfc_lrc_ncp/lr0.001_clipoff_seed100/cfc_lrc_ncp_seed100_mixed.json
+gru,dense3,lv,periodic_predator_prey,0,final,gru/dense3,False,5.0,False,115,120,3960,0.01,0.001,,False,0.4,5.5,4.0,6.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/pilot/gru_dense3_seed0_mixed.json
+gru,dense3,lv,periodic_predator_prey,1,final,gru/dense3,False,5.0,False,115,120,3960,0.01,0.001,,False,0.41000000000000003,5.5,4.0,6.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/pilot/gru_dense3_seed1_mixed.json
+gru,dense3,lv,periodic_predator_prey,2,final,gru/dense3,False,5.0,False,115,120,3960,0.01,0.001,,False,0.42000000000000004,5.5,4.0,6.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/pilot/gru_dense3_seed2_mixed.json
+gru,dense3,lv,periodic_predator_prey,3,final,gru/dense3,False,5.0,False,115,120,3960,0.01,0.001,,False,0.43000000000000005,5.5,4.0,6.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/pilot/gru_dense3_seed3_mixed.json
+gru,dense3,lv,periodic_predator_prey,4,final,gru/dense3,False,5.0,False,115,120,3960,0.01,0.001,,False,0.44,5.5,4.0,6.0,0.0,<FIXTURE>/rollouts/periodic_predator_prey/pilot/gru_dense3_seed4_mixed.json
+cfc_lrc,cncp,pa,pa,0,final,cfc_lrc/cncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_cncp_seed0.json
+cfc_lrc,cncp,pa,pa,1,final,cfc_lrc/cncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_cncp_seed1.json
+cfc_lrc,cncp,pa,pa,2,final,cfc_lrc/cncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_cncp_seed2.json
+cfc_lrc,cncp,pa,pa,3,final,cfc_lrc/cncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_cncp_seed3.json
+cfc_lrc,cncp,pa,pa,4,final,cfc_lrc/cncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_cncp_seed4.json
+cfc_lrc,cncp,pa,pa,5,final,cfc_lrc/cncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_cncp_seed5.json
+cfc_lrc,cncp,pa,pa,6,final,cfc_lrc/cncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_cncp_seed6.json
+cfc_lrc,cncp,pa,pa,7,final,cfc_lrc/cncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_cncp_seed7.json
+cfc_lrc,cncp,pa,pa,8,final,cfc_lrc/cncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_cncp_seed8.json
+cfc_lrc,cncp,pa,pa,9,final,cfc_lrc/cncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_cncp_seed9.json
+cfc_lrc,dense3,pa,pa,0,final,cfc_lrc/dense3,False,0.35,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_dense3_seed0.json
+cfc_lrc,dense3,pa,pa,1,final,cfc_lrc/dense3,False,0.35,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_dense3_seed1.json
+cfc_lrc,dense3,pa,pa,2,final,cfc_lrc/dense3,False,0.35,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_dense3_seed2.json
+cfc_lrc,dense3,pa,pa,3,final,cfc_lrc/dense3,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_dense3_seed3.json
+cfc_lrc,dense3,pa,pa,4,final,cfc_lrc/dense3,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_dense3_seed4.json
+cfc_lrc,dense3,pa,pa,5,final,cfc_lrc/dense3,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_dense3_seed5.json
+cfc_lrc,dense3,pa,pa,6,final,cfc_lrc/dense3,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_dense3_seed6.json
+cfc_lrc,dense3,pa,pa,7,final,cfc_lrc/dense3,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_dense3_seed7.json
+cfc_lrc,dense3,pa,pa,8,final,cfc_lrc/dense3,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_dense3_seed8.json
+cfc_lrc,dense3,pa,pa,9,final,cfc_lrc/dense3,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_dense3_seed9.json
+cfc_lrc,ncp,pa,pa,0,final,cfc_lrc/ncp,False,0.8571428571428571,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_ncp_seed0.json
+cfc_lrc,ncp,pa,pa,1,final,cfc_lrc/ncp,False,0.8660714285714286,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_ncp_seed1.json
+cfc_lrc,ncp,pa,pa,2,final,cfc_lrc/ncp,False,0.873015873015873,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_ncp_seed2.json
+cfc_lrc,ncp,pa,pa,3,final,cfc_lrc/ncp,False,0.8571428571428571,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_ncp_seed3.json
+cfc_lrc,ncp,pa,pa,4,final,cfc_lrc/ncp,False,0.8660714285714286,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_ncp_seed4.json
+cfc_lrc,ncp,pa,pa,5,final,cfc_lrc/ncp,False,0.873015873015873,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_ncp_seed5.json
+cfc_lrc,ncp,pa,pa,6,final,cfc_lrc/ncp,False,0.8571428571428571,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_ncp_seed6.json
+cfc_lrc,ncp,pa,pa,7,final,cfc_lrc/ncp,False,0.8660714285714286,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_ncp_seed7.json
+cfc_lrc,ncp,pa,pa,8,final,cfc_lrc/ncp,False,0.873015873015873,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_ncp_seed8.json
+cfc_lrc,ncp,pa,pa,9,final,cfc_lrc/ncp,False,0.8571428571428571,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/cfc_lrc_ncp_seed9.json
+cfc_lrc,dense,pa,pa,0,final,cfc_lrc/dense,False,0.8,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/ctrl_k1/cfc_lrc_dense_seed0.json
+cfc_lrc,dense,pa,pa,1,final,cfc_lrc/dense,False,0.8,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/ctrl_k1/cfc_lrc_dense_seed1.json
+cfc_lrc,dense,pa,pa,2,final,cfc_lrc/dense,False,0.8,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/ctrl_k1/cfc_lrc_dense_seed2.json
+cfc_lrc,dense,pa,pa,3,final,cfc_lrc/dense,False,0.8,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/ctrl_k1/cfc_lrc_dense_seed3.json
+cfc_lrc,dense,pa,pa,4,final,cfc_lrc/dense,False,0.8,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/ctrl_k1/cfc_lrc_dense_seed4.json
+gru,ncp,pa,pa,0,final,gru/ncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/gru_ncp_seed0.json
+gru,ncp,pa,pa,1,final,gru/ncp,False,0.8660714285714286,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/gru_ncp_seed1.json
+gru,ncp,pa,pa,2,final,gru/ncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/gru_ncp_seed2.json
+gru,ncp,pa,pa,3,final,gru/ncp,False,0.8571428571428571,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/gru_ncp_seed3.json
+gru,ncp,pa,pa,4,final,gru/ncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/gru_ncp_seed4.json
+gru,ncp,pa,pa,5,final,gru/ncp,False,0.873015873015873,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/gru_ncp_seed5.json
+gru,ncp,pa,pa,6,final,gru/ncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/gru_ncp_seed6.json
+gru,ncp,pa,pa,7,final,gru/ncp,False,0.8660714285714286,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/gru_ncp_seed7.json
+gru,ncp,pa,pa,8,final,gru/ncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/gru_ncp_seed8.json
+gru,ncp,pa,pa,9,final,gru/ncp,False,0.8571428571428571,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/gru_ncp_seed9.json
+lrc,ncp,pa,pa,0,final,lrc/ncp,False,0.35,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/lrc_ncp_seed0.json
+lrc,ncp,pa,pa,1,final,lrc/ncp,False,0.35,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/lrc_ncp_seed1.json
+lrc,ncp,pa,pa,2,final,lrc/ncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/lrc_ncp_seed2.json
+lrc,ncp,pa,pa,3,final,lrc/ncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/lrc_ncp_seed3.json
+lrc,ncp,pa,pa,4,final,lrc/ncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/lrc_ncp_seed4.json
+lrc,ncp,pa,pa,5,final,lrc/ncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/lrc_ncp_seed5.json
+lrc,ncp,pa,pa,6,final,lrc/ncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/lrc_ncp_seed6.json
+lrc,ncp,pa,pa,7,final,lrc/ncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/lrc_ncp_seed7.json
+lrc,ncp,pa,pa,8,final,lrc/ncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/lrc_ncp_seed8.json
+lrc,ncp,pa,pa,9,final,lrc/ncp,False,0.7142857142857143,False,40,50,29500,0.02,0.003,1.0,False,,,,,,<FIXTURE>/pa/lrc_ncp_seed9.json

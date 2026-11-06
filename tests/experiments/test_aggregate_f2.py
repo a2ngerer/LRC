@@ -315,7 +315,13 @@ def test_pa_chance_marking_and_interval_flag(tmp_path):
         'width_pa': ([0.61 + s / 100 for s in range(10)], vb)}))
     r = b.loc['width_pa']
     assert (r['floor_b'], r['reading']) == ('3/10', 'floor-bound')
-    assert r['ci_includes_zero'] in (True, False)
+    # a non-finite fit forces the seed bootstrap; all differences are > 0
+    assert r['ci_includes_zero'] is False
+    # equal arms, identical confusions: the crossed interval is [0, 0]
+    r = _blocks(_world(tmp_path / 'eq', values={
+        'width_pa': ([0.6] * 10, [0.6] * 10)})).loc['width_pa']
+    assert r['ci_units'] == 'seed x recording'
+    assert r['ci_includes_zero'] is True
     assert pd.isna(b.loc['width_lv', 'ci_includes_zero'])
 
 
@@ -359,8 +365,9 @@ def test_load_ppo_runs_keeps_final_records_and_counts_the_rest(tmp_path):
     _ppo(d, 'gru', 0, 10.0, profile='smoke')
     _ppo(d, 'gru', 0, 10.0, profile='final_numeric')
     _ppo(d, 'gru', 5, 10.0, task='Hopper-v5')
+    _ppo(d, 'gru', 12, 10.0)                 # not a final seed
     df, skipped = load_ppo_runs([d])
-    assert len(df) == 3 and skipped == 3
+    assert len(df) == 3 and len(skipped) == 3
     assert set(df['arm']) == {'gru'} and df['metric'].tolist() == [10.0] * 3
     _ppo(str(tmp_path / 'ppo' / 'again'), 'gru', 0, 11.0)
     with pytest.raises(SystemExit, match='two PPO records'):
@@ -508,6 +515,9 @@ def test_missing_floor_marking_is_an_error_naming_the_arm(tmp_path):
         _blocks(_world(tmp_path / 'ppo', opts={
             ('ppo_halfcheetah', 'b'): {
                 0: {'drop': ('untrained_return_std',)}}}))
+    with pytest.raises(SystemExit, match='arm cfc_lrc without'):
+        _blocks(_world(tmp_path / 'ppo_null', opts={
+            ('ppo_halfcheetah', 'a'): {1: {'um': None}}}))
 
 
 def test_data_key_mismatch_names_the_seed(tmp_path):
