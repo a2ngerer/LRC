@@ -7,9 +7,12 @@ import pandas as pd
 import pytest
 
 from experiments.aggregate_results import (BONFERRONI_FAMILIES, _test_block,
-                                           consensus_family, load_runs, main,
-                                           not_learned, pa_arm_means)
-from src.evaluation.stats import kendall_tau_b, p_a_gt_b
+                                           consensus_arm_endpoints,
+                                           consensus_family,
+                                           consensus_intervals, load_runs,
+                                           main, not_learned, pa_arm_means)
+from src.evaluation.stats import (bootstrap_median_ci, crossed_median_diff_ci,
+                                  kendall_tau_b, p_a_gt_b)
 
 
 def _write_run(dirpath, cell, clip_norm, seed=0, nrmse=0.5, **top):
@@ -432,18 +435,58 @@ def test_floors_needs_rollout_runs(tmp_path):
 
 
 def _write_co(dirpath, wiring, seed, f1_m15, auc_m0, auc_m15, view_average='off',
-              vote_lambda=None, n_columns=30, above=False):
+              vote_lambda=None, n_columns=30, above=False, consensus='mean',
+              **extra):
     """A committee runner JSON with the fault-grid endpoints (#55)."""
     grid = [0, 3, 9, 15, 20]
-    tag = f'{wiring}_{view_average}_{vote_lambda}_K{n_columns}_seed{seed}'
+    tag = (f'{wiring}_{view_average}_{vote_lambda}_{consensus}_K{n_columns}'
+           f'_seed{seed}')
     with open(os.path.join(dirpath, f'{tag}.json'), 'w') as f:
         json.dump({'cell': 'cfc_lrc', 'wiring': wiring, 'seed': seed,
                    'n_columns': n_columns, 'view_mode': 'identical',
                    'train_corruption': 'on', 'view_average': view_average,
-                   'vote_lambda': vote_lambda, 'consensus': 'mean',
+                   'vote_lambda': vote_lambda, 'consensus': consensus,
                    'budget_above_tolerance': above, 'fault_counts': grid,
                    'test_macro_f1_by_fault': [0.7, 0.6, 0.5, f1_m15, 0.3],
-                   'per_position_macro_f1_auc': [auc_m0, 0, 0, auc_m15, 0]}, f)
+                   'per_position_macro_f1_auc': [auc_m0, 0, 0, auc_m15, 0],
+                   **extra}, f)
+
+
+GOOD, FLAT = [[9, 1], [1, 9]], [[5, 5], [5, 5]]   # macro-F1 0.9 and 0.5
+
+
+def _hd_fixture(d):
+    """K=30 committee JSONs of every suite arm with the #94 keys: per-recording
+    confusions at every fault count, steps_to_90, training_diverged. ncp:
+    consensus beats avg_in by 0.1 + 0.01 s at m=15 and lambda=0 on the AUC;
+    cncp: five seeds only (undecidable); one ncp_cons fit diverged."""
+    for s in range(10):
+        e = 0.01 * s
+        good = {'r0': GOOD, 'r1': GOOD if s % 2 else FLAT}
+        flat = {'r0': FLAT, 'r1': FLAT}
+        common = dict(training_diverged=False,
+                      steps_to_90=[4, 5, 6, 7 + s % 2, 9])
+        _write_co(d, 'ncp', s, 0.6 + e, 0.8 + e, 0.6 + 2 * e,
+                  **{**common, 'training_diverged': s == 9},
+                  test_confusion_by_recording_by_fault=[good] * 5)
+        _write_co(d, 'ncp', s, 0.55 + e / 2, 0.75, 0.55, vote_lambda=0.0,
+                  test_confusion_by_recording_by_fault=[flat] * 5, **common)
+        _write_co(d, 'ncp', s, 0.5, 0.7, 0.5, view_average='mean',
+                  test_confusion_by_recording_by_fault=[flat] * 5, **common)
+        _write_co(d, 'ncp', s, 0.45, 0.7, 0.5, view_average='fault_mean',
+                  **common)
+        if s < 5:
+            _write_co(d, 'ncp', s, 0.4, 0.6, 0.4, consensus='median',
+                      **common)
+            _write_co(d, 'cncp', s, 0.6 - e, 0.7, 0.5,
+                      test_confusion_by_recording_by_fault=[good] * 5,
+                      **common)
+            _write_co(d, 'cncp', s, 0.6, 0.7, 0.6, vote_lambda=0.0,
+                      **common)
+
+
+HD_GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data',
+                         'hd_consensus_golden.md')
 
 
 def test_consensus_family_one_sided_bonferroni_and_attribution(tmp_path):
@@ -478,6 +521,112 @@ def test_consensus_family_excludes_arm_above_budget(tmp_path):
     assert 'missing arm or arm above budget tolerance' in report
     assert main(['--runs', str(tmp_path / 'none'), '--co-runs', d,
                  '--out', str(tmp_path / 'out')]) == 0
+    hd = pd.read_csv(tmp_path / 'out' / 'consensus_family.csv')
+    assert (hd['status'] == 'missing arm or arm above budget tolerance').all()
+    arms = pd.read_csv(tmp_path / 'out' / 'consensus_arms.csv')
+    assert arms['budget_above_tolerance'].any()
+
+
+# --- H-d intervals and secondary endpoints (#94) ----------------------------
+
+def test_hd_table_unchanged_and_csv_carries_its_p_values(tmp_path):
+    """The H-d markdown equals the golden file generated on main before #94
+    on a fixture with the new record keys and the median / fault_mean arms;
+    consensus_family.csv repeats its n, median difference and p values."""
+    d = str(tmp_path / 'co')
+    os.makedirs(d)
+    _hd_fixture(d)
+    out = tmp_path / 'out'
+    assert main(['--runs', str(tmp_path / 'none'), '--co-runs', d,
+                 '--out', str(out)]) == 0
+    with open(HD_GOLDEN, encoding='utf-8') as f:
+        golden = f.read()
+    assert consensus_family(d) == golden
+    assert golden in (out / 'summary.md').read_text(encoding='utf-8')
+    hd = pd.read_csv(out / 'consensus_family.csv')
+    md = [r for r in golden.splitlines() if r.startswith('| cfc_lrc')]
+    assert len(hd) == len(md) == 4
+    for (_, r), line in zip(hd.iterrows(), md):
+        cells = [c.strip() for c in line.strip('|').split('|')]
+        assert cells[:5] == [r['cell'], r['wiring'], r['part'],
+                             r['contrast'], str(r['n_pairs'])]
+        assert cells[5] == f"{r['median_diff']:+.4f}"
+        if r['status'] == 'tested':
+            assert cells[6:10] == [f"{r['p_one_sided']:.4g}",
+                                   f"{r['p_bonferroni']:.4g}", r['method'],
+                                   'YES' if r['significant'] else 'no']
+        else:
+            assert cells[9] == r['status'] and pd.isna(r['p_one_sided'])
+
+
+def test_hd_intervals_known_values(tmp_path):
+    _hd_fixture(str(tmp_path))
+    hd = consensus_intervals(str(tmp_path)).set_index(['wiring', 'part'])
+    d = 0.1 + 0.01 * np.arange(10)          # ncp part i: cons - avg_in
+    r = hd.loc[('ncp', 'i')]
+    assert r['median_diff'] == pytest.approx(0.145)
+    assert (r['median_diff_seed_lo'], r['median_diff_seed_hi']) == \
+        pytest.approx(bootstrap_median_ci(d))
+    assert 0.1 <= r['median_diff_seed_lo'] < 0.145 < r['median_diff_seed_hi']
+    assert r['d_z'] == pytest.approx(d.mean() / d.std(ddof=1))
+    # seed 9 of ncp_cons diverged: it loses its pair, 9 of 10
+    assert (r['p_a_gt_b'], r['n_positive'], r['n_diverged']) == (0.9, 10, 1)
+    assert (r['p_a_gt_b_lo'], r['p_a_gt_b_hi']) == pytest.approx(
+        (0.5550, 0.9975), abs=1e-4)
+    # crossed over seeds x recordings from the confusions at m=15: avg_in
+    # scores 0.5 on both recordings; consensus 0.9 on both (odd seeds) or
+    # on one (even seeds, pooled macro-F1 0.7)
+    good = [np.array([GOOD, GOOD if s % 2 else FLAT]) for s in range(10)]
+    flat = [np.array([FLAT, FLAT])] * 10
+    expected = crossed_median_diff_ci(np.stack(good), np.stack(flat))
+    assert (r['median_diff_lo'], r['median_diff_hi']) == expected
+    assert 0.0 <= expected[0] < expected[1] <= 0.4   # per-seed diff 0-0.4
+    assert pd.isna(r['ci_crossed_note'])
+    assert (r['status'], r['significant']) == ('tested', True)
+    # part ii: AUC has no per-recording breakdown, seed interval only
+    r = hd.loc[('ncp', 'ii')]
+    assert pd.isna(r['median_diff_lo']) and 'per-recording' in \
+        r['ci_crossed_note']
+    assert r['median_diff'] == pytest.approx(0.1175)
+    assert r['median_diff_seed_lo'] < r['median_diff'] < \
+        r['median_diff_seed_hi']
+    # cncp: five seeds, undecidable, no p, intervals still reported
+    r = hd.loc[('cncp', 'i')]
+    assert (r['status'], r['n_pairs']) == ('undecidable', 5)
+    assert pd.isna(r['p_one_sided']) and np.isfinite(r['median_diff_lo'])
+    r = hd.loc[('cncp', 'ii')]
+    assert (r['p_a_gt_b'], r['n_positive']) == (0.0, 0)
+    assert np.isnan(r['d_z'])                # constant difference
+
+
+def test_hd_arm_endpoints_known_values(tmp_path):
+    _hd_fixture(str(tmp_path))
+    arms = consensus_arm_endpoints(str(tmp_path))
+    ncp = arms[arms['wiring'] == 'ncp']
+    assert set(ncp['arm']) == {'cons', 'lam0', 'avg_in', 'fault_mean', 'med'}
+    g = ncp[(ncp['arm'] == 'cons') & (ncp['endpoint'] == 'grid_mean')].iloc[0]
+    # per seed mean of [0.7, 0.6, 0.5, 0.6 + 0.01 s, 0.3]
+    v = (2.7 + 0.01 * np.arange(10)) / 5
+    assert (g['n_seeds'], g['median']) == (10, pytest.approx(0.549))
+    assert (g['lo'], g['hi']) == pytest.approx(bootstrap_median_ci(v))
+    st = ncp[(ncp['arm'] == 'cons') & (ncp['endpoint'] == 'steps_to_90')]
+    assert list(st['m']) == [0, 3, 9, 15, 20]
+    m15 = st[st['m'] == 15].iloc[0]
+    assert (m15['median'], m15['lo'], m15['hi']) == (7.5, 7.0, 8.0)
+    med = arms[(arms['arm'] == 'med') & (arms['endpoint'] == 'grid_mean')]
+    assert list(med['n_seeds']) == [5] and med['median'].iloc[0] == \
+        pytest.approx(0.5)
+
+
+def test_hd_intervals_reject_fits_on_different_recordings(tmp_path):
+    d = str(tmp_path)
+    for s in range(8):
+        _write_co(d, 'ncp', s, 0.6, 0.8, 0.6,
+                  test_confusion_by_recording_by_fault=[{'r0': GOOD}] * 5)
+        _write_co(d, 'ncp', s, 0.5, 0.7, 0.5, view_average='mean',
+                  test_confusion_by_recording_by_fault=[{'r9': GOOD}] * 5)
+    with pytest.raises(SystemExit, match='test recordings'):
+        consensus_intervals(d)
 
 
 # --- sequence-runner suite (#57) -------------------------------------------
