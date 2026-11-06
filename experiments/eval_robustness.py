@@ -14,6 +14,19 @@ averaged. sigma 0 is the clean reference: the runner saves the weights of
 the best validation epoch, at which it reads test_macro_f1, so f1_sigma_0
 reproduces it. Columns f1_sigma_<sigma>.
 
+--per-recording-confusions (#96, default off, existing columns unchanged)
+adds the columns confusions_sigma_<sigma>: a JSON object {recording id:
+[N_DRAWS confusion matrices of that recording's windows, rows = true]} per
+sigma (one matrix at sigma 0), the input of the crossed seeds x recordings
+bootstrap of the robustness family in aggregate_results.py. The scalar
+f1_sigma_* come from the same predictions through the same code path and
+equal the macro-F1 of the summed per-recording matrices (checked).
+--verify-against CSV [CSV ...] compares f1_sigma_* and metric_robust of every
+PA row bit-identically with the stored rows of earlier robustness CSVs
+(matched on system, arm, seed; a row without a stored match or with any
+difference raises SystemExit). Person Activity ignores --seed-streams, so a
+rerun with either value reproduces the stored scalars.
+
 Rollouts (run_lotka_volterra_benchmark.py JSONs of SYSTEMS on
 FORCEABLE_WIRINGS): two fresh sets of N_ROLLOUT trajectories, drawn through
 sample_ood_trajectories (the code path of the runner's --ic-spread) at the
@@ -100,9 +113,11 @@ SYSTEMS = ("periodic_predator_prey", "duffing")
 REBUILD_TOL = 1e-3
 
 
-def noisy_macro_f1(model, data, sigma, batch_size=128):
+def noisy_macro_f1(model, data, sigma, batch_size=128, by_recording=None):
     """Pooled test macro-F1 under coordinate noise ``sigma`` (x the
-    training std), mean over N_DRAWS draws (one draw at sigma 0)."""
+    training std), mean over N_DRAWS draws (one draw at sigma 0). A dict as
+    ``by_recording`` is filled with {recording id: [confusion matrix per
+    draw]} (lists) of the same predictions."""
     scale = noise_sigma(data.train_x, sigma)
     f1 = []
     for d in range(N_DRAWS if sigma else 1):
@@ -112,6 +127,11 @@ def noisy_macro_f1(model, data, sigma, batch_size=128):
                              verbose=0).argmax(-1)
         f1.append(macro_f1(confusion_matrix(data.test_y, pred,
                                             data.num_classes)))
+        if by_recording is not None:
+            for r in np.unique(data.test_rec):
+                m = data.test_rec == r
+                by_recording.setdefault(str(r), []).append(confusion_matrix(
+                    data.test_y[m], pred[m], data.num_classes).tolist())
     return float(np.mean(f1))
 
 
@@ -188,25 +208,37 @@ def rollout_columns(path, record, streams="v1"):
                                            m["vpt_multi_median"])}
 
 
-def pa_columns(path, record, data_path=None):
+def pa_columns(path, record, data_path=None, confusions=False):
     """f1_sigma_* columns, metric_robust, diverged_robust and
-    rebuild_rel_dev of a Person Activity fit."""
+    rebuild_rel_dev of a Person Activity fit; confusions=True adds the
+    confusions_sigma_* columns (JSON, see the module docstring)."""
     model = rebuild_from_result(path)
     data = load_person_activity(
         seq_len=record["config"]["effective"]["build"]["seq_len"],
         data_path=data_path, split=record["split"],
         split_seed=record["split_seed"])
-    cols = {f"f1_sigma_{s:g}": noisy_macro_f1(model, data, s,
-                                              record.get("batch_size", 128))
-            for s in SIGMAS}
+    cols, conf = {}, {}
+    for s in SIGMAS:
+        by_rec = {} if confusions else None
+        cols[f"f1_sigma_{s:g}"] = noisy_macro_f1(
+            model, data, s, record.get("batch_size", 128), by_rec)
+        if confusions:
+            # the pooled matrices of the draws reproduce the scalar exactly
+            # (integer counts): the crossed bootstrap starts from this value
+            pooled = np.sum([c for c in by_rec.values()], axis=0)
+            if float(np.mean([macro_f1(m) for m in pooled])) \
+                    != cols[f"f1_sigma_{s:g}"]:
+                raise SystemExit(f"{path}: the per-recording confusions do "
+                                 f"not reproduce f1_sigma_{s:g}")
+            conf[f"confusions_sigma_{s:g}"] = json.dumps(by_rec)
     f1 = cols[f"f1_sigma_{SIGMA_DECISION:g}"]
-    return {**cols, "metric_robust": f1,
+    return {**cols, **conf, "metric_robust": f1,
             "diverged_robust": not np.isfinite(f1),
             "rebuild_rel_dev": rebuild_dev(path, cols["f1_sigma_0"],
                                            record["test_macro_f1"])}
 
 
-def evaluate(path, data_path=None, streams="v1"):
+def evaluate(path, data_path=None, streams="v1", confusions=False):
     """The CSV row of the result JSON at ``path``, or None if unsupported."""
     with open(path) as f:
         record = json.load(f)
@@ -221,7 +253,7 @@ def evaluate(path, data_path=None, streams="v1"):
         return None
     if not record.get("weights_path"):
         raise SystemExit(f"{path}: no weights_path, cannot rebuild the fit")
-    cols = (pa_columns(path, record, data_path) if task == "pa"
+    cols = (pa_columns(path, record, data_path, confusions) if task == "pa"
             else rollout_columns(path, record, streams))
     print(f"robustness {path}: metric_robust {cols['metric_robust']:.4g}")
     return {"file": path, "task": task, "system": system,
@@ -229,6 +261,34 @@ def evaluate(path, data_path=None, streams="v1"):
             "wiring": record["wiring"], "seed": record["seed"],
             "config_effective_sha256": config_hash(
                 record["config"]["effective"]), **cols}
+
+
+VERIFIED = ("f1_sigma_0", "f1_sigma_0.1", "f1_sigma_0.3", "metric_robust")
+
+
+def verify_against(rows, csv_paths):
+    """SystemExit unless every Person Activity row has exactly one stored row
+    (same system, arm, seed) in ``csv_paths`` whose VERIFIED columns equal
+    its own bit for bit (#96)."""
+    key = ["system", "arm", "seed"]
+    stored = pd.concat([pd.read_csv(p, float_precision="round_trip")
+                        for p in csv_paths], ignore_index=True)
+    stored = stored.set_index(key)
+    bad = []
+    for r in rows:
+        if r["task"] != "pa":
+            continue
+        k = (r["system"], r["arm"], r["seed"])
+        match = stored.loc[[k]] if k in stored.index else stored.iloc[:0]
+        if len(match) != 1:
+            bad.append(f"{k}: {len(match)} stored rows")
+            continue
+        bad += [f"{k}: {c} {r[c]!r} != stored {match[c].iloc[0]!r}"
+                for c in VERIFIED if r[c] != match[c].iloc[0]]
+    if bad:
+        raise SystemExit("--verify-against: " + "; ".join(bad))
+    print(f"verified {sum(r['task'] == 'pa' for r in rows)} Person Activity "
+          "row(s) bit-identical with the stored CSVs")
 
 
 def main(argv=None):
@@ -246,12 +306,27 @@ def main(argv=None):
                          "evaluated records (long of replicate s = ood of "
                          "s + 1), v2 = disjoint ood and long streams; "
                          "Person Activity ignores it")
+    ap.add_argument("--per-recording-confusions", action="store_true",
+                    help="Person Activity: add the per-recording, per-draw "
+                         "confusion matrices (columns confusions_sigma_*) "
+                         "for the crossed bootstrap (#96)")
+    ap.add_argument("--verify-against", nargs="+", metavar="CSV",
+                    help="earlier robustness CSVs (paths or globs): every "
+                         "Person Activity row must reproduce its stored "
+                         "f1_sigma_* and metric_robust bit-identically")
     args = ap.parse_args(argv)
     paths = sorted(glob.glob(args.results, recursive=True))
-    rows = [r for r in (evaluate(p, args.data_path, args.seed_streams)
-                           for p in paths) if r]
+    rows = [r for r in (evaluate(p, args.data_path, args.seed_streams,
+                                 args.per_recording_confusions)
+                        for p in paths) if r]
     if not rows:
         raise SystemExit(f"no supported result JSON matches {args.results!r}")
+    if args.verify_against:
+        stored = sorted(p for g in args.verify_against
+                        for p in glob.glob(g, recursive=True))
+        if not stored:
+            raise SystemExit(f"no CSV matches {args.verify_against}")
+        verify_against(rows, stored)
     pd.DataFrame(rows).to_csv(args.out, index=False)
     print(f"wrote {len(rows)} rows ({len(paths) - len(rows)} skipped) to "
           f"{args.out}")
