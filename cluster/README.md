@@ -626,5 +626,5 @@ Crossed PA robustness (#96): `configs/suite/eval/pa_crossed_robustness.yaml`
 fails on any bit difference to the stored `f1_sigma_*` (`--verify-against`,
 set both placeholders). Its CSVs go to `aggregate_results.py --contrasts
 --robustness`, which then reports the seeds x recordings interval next to the
-seed interval. The rerun stays on the old rollout seed streams (#101 v1);
+seed interval. The YAML names the old seed streams (`seed_streams: v1`, #101);
 Person Activity has no rollout draw.
