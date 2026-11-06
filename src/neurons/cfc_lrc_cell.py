@@ -35,7 +35,7 @@
 import tensorflow as tf
 
 from .base_cell import BaseCell
-from .cfc_cell import _check_head_activation, _lecun_tanh
+from .cfc_cell import CfC_Cell, _check_head_activation, _lecun_tanh
 
 
 class CfC_LRC_Cell(BaseCell):
@@ -165,6 +165,10 @@ class CfC_LRC_Cell(BaseCell):
 
         self.built = True
 
+    # The same gate heads as CfC_Cell; one method, so post-hoc probes
+    # (experiments/check_gate_sign.py) read t_a at a single point.
+    _time_constants = CfC_Cell._time_constants
+
     def _elastance_value(self, raw):
         """Liquid elastance eps in [0,1] from the raw [inputs, state] tensor."""
         if self._elastance_one:
@@ -197,8 +201,7 @@ class CfC_LRC_Cell(BaseCell):
                 else (lambda l: l(x)))
         ff1 = head(self._ff1)
         ff2 = head(self._ff2)
-        t_a = head(self._time_a)
-        t_b = head(self._time_b)
+        t_a, t_b = self._time_constants(head)
 
         if self._elastance_one:
             # eps = 1 exactly: both gate variants reduce to the CfC gate.

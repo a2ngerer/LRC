@@ -58,11 +58,15 @@ def save_weights(model, json_path, enabled=True):
     return os.path.basename(path)
 
 
-def rebuild_from_result(json_path, **cell_overrides) -> tf.keras.Model:
+def rebuild_from_result(json_path, *, untrained=False,
+                        **cell_overrides) -> tf.keras.Model:
     """Rebuild the compiled model of a result JSON and load its trained weights.
 
-    ``cell_overrides`` replace cell_kwargs entries that create no weights,
-    e.g. ``ode_unfolds=k`` to re-run trained solver weights at k substeps."""
+    ``untrained=True`` skips the weights: the builder seeds the init from
+    build.seed, so this is a same-seed draw of the fit's initial model (bitwise
+equal across devices is not guaranteed). ``cell_overrides`` replace
+    cell_kwargs entries that create no weights, e.g. ``ode_unfolds=k`` to
+    re-run trained solver weights at k substeps."""
     with open(json_path) as f:
         record = json.load(f)
     eff = record["config"]["effective"]
@@ -75,6 +79,8 @@ def rebuild_from_result(json_path, **cell_overrides) -> tf.keras.Model:
                 build["cell"], eff.get("backbone_layers")))
     cell_kwargs.update(cell_overrides)
     model = BUILDERS[eff["task"]](**build, **cell_kwargs)
+    if untrained:
+        return model
     _layers_only(model).load_weights(
         os.path.join(os.path.dirname(json_path), record["weights_path"]))
     return model
