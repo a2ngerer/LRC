@@ -1,0 +1,75 @@
+# Spec for `experiments/aggregate_results.py --f2-families` (#107): the seven
+# tests of the four F2 families (protocol F2 sections 2.1 to 2.4, constant
+# F2_FAMILIES in the aggregator). Per test and arm:
+#   label             the arm label as arm_label returns it (fixed per test)
+#   protocol_version  the config.effective.protocol_version every record of
+#                     the arm carries (a string, or a list of strings for an
+#                     arm whose records span a suffix version); null for PPO
+#   paths             run folders (searched recursively, inside the folder
+#                     only) or record files; no patterns
+# Replace every <...> placeholder with a run folder before use. F1 reference
+# arms come from the F1 final run folders only, never from an F2 folder.
+
+rewiring_lv:
+  a:
+    label: cfc_lrc/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_LV_FINAL_RUN_DIR>]
+  b:
+    label: cfc_lrc/ncp_random
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_REWIRING_RUN_DIR>]
+rewiring_pa:
+  a:
+    label: cfc_lrc/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_PA_FINAL_RUN_DIR>]
+  b:
+    label: cfc_lrc/ncp_random
+    protocol_version: F2-2026-11-05
+    paths: [<F2_PA_REWIRING_RUN_DIR>]
+width_lv:
+  a:
+    label: cfc_lrc/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_LV_FINAL_RUN_DIR>]
+  b:
+    label: cfc_lrc/dense3 [fixed width]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_WIDTH_RUN_DIR>]
+width_pa:
+  a:
+    label: cfc_lrc/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_PA_FINAL_RUN_DIR>]
+  b:
+    label: cfc_lrc/dense3 [fixed width]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_PA_WIDTH_RUN_DIR>]
+budget_lv:
+  a:
+    label: cfc_lrc/ncp [epochs=600]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_LV_BUDGET_RUN_DIR>]
+  b:
+    label: cfc_lrc/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_LV_FINAL_RUN_DIR>]
+budget_duffing:
+  a:
+    label: cfc_lrc/ncp [epochs=900]
+    protocol_version: F2-2026-11-05
+    paths: [<F2_DUFFING_BUDGET_RUN_DIR>]
+  b:
+    label: cfc_lrc/ncp
+    protocol_version: F1-2026-10-26
+    paths: [<F1_DUFFING_FINAL_RUN_DIR>]
+ppo_halfcheetah:
+  a:
+    label: cfc_lrc
+    protocol_version: null
+    paths: [<F2_PPO_RUN_DIR>]
+  b:
+    label: gru
+    protocol_version: null
+    paths: [<F2_PPO_RUN_DIR>]
