@@ -1296,6 +1296,22 @@ def contrast_report(df, blocks, desc) -> str:
                 f"| {system} | {arm} | {len(g)} "
                 f"| {int(g['diverged_robust'].astype(bool).sum())} | "
                 + ' | '.join(_fmt(g[c].median()) for c in cols) + ' |')
+        ctl = r[r['control']]
+        if 'rebuild_rel_dev' in ctl and not ctl.empty:
+            lines += ['', '## Control arms: rebuild fidelity and robustness '
+                      '(#99; descriptive, the controls are no family '
+                      'members)\n',
+                      '| Task | Arm | fits | max rebuild_rel_dev | clean '
+                      'median | metric_robust median | diverged_robust |',
+                      '|------|-----|------|---------------------|--------'
+                      '-------|----------------------|-----------------|']
+            for (system, arm), g in ctl.groupby(['system', 'arm']):
+                lines.append(
+                    f"| {system} | {arm} | {len(g)} "
+                    f"| {_fmt(g['rebuild_rel_dev'].max())} "
+                    f"| {_fmt(g['metric'].median())} "
+                    f"| {_fmt(g['metric_robust'].median())} "
+                    f"| {int(g['diverged_robust'].astype(bool).sum())} |")
     lines.append('')
     return '\n'.join(lines)
 

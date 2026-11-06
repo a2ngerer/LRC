@@ -61,6 +61,9 @@ Stage eval (#105) trains nothing: it re-evaluates stored result JSONs.
         records_dir: results/01_lotka_volterra/<run>/results
         arms: [cfc_lrc_ncp]     # optional: default every arm of the source
         seeds: [0, 1]           # optional: default every seed of the arm
+    robustness: true            # optional (the control evals, #99): lv gets a
+    seed_streams: v1            # second line per record, see below; the rollout
+                                # draw seeds (#101) are written out, no default
     cluster: {runs_per_gpu: 10}
 
 One line per record, named with result_name from the source YAML: lv runs
@@ -71,6 +74,14 @@ stem>.csv (the rebuild check; no --outdir; the line carries that path as
 `out`). id and done are <source stem>/<record>, so equal record names of two
 sources never collide; the records_dir folders are read-only inputs (a cluster
 path, read at run time only). --count gives the line count.
+
+With `robustness: true` (and the required `seed_streams`, v1 for the records of
+F1/F2) the robustness evaluation runs on the same records: an lv source gets a
+second line per record, eval_robustness.py --results <record> --seed-streams v1
+--out results/<source stem>/<record stem>.csv (its rebuild_rel_dev is the
+rebuild fidelity, its metric_robust the robustness row); a pa line is that
+call already and only gains --seed-streams (ignored on Person Activity). The
+CSVs go to `aggregate_results.py --contrasts --robustness`.
 
 Arms are ordered cell-major in YAML order and named <cell>_<wiring> (or by
 their `arms` key). Stage hpo gives one line per arm: one
@@ -124,9 +135,15 @@ LV_DEFAULT_SYSTEM = "periodic_predator_prey"   # run_lotka_volterra_benchmark.py
 KEYS = {"task", "system", "stage", "cells", "wirings", "arms", "param_budget",
         "seeds", "extra_seeds", "config_from", "epochs", "ode_unfolds",
         "dt_scale", "extra_args", "per_cell", "hpo_dir", "fixed", "cluster",
-        "heavy", "description", "selection_from", "sources"}
-EVAL_KEYS = {"task", "system", "stage", "sources", "cluster", "description"}
-EVAL_RUNNERS = {"lv": RUNNERS["lv"], "pa": "experiments/eval_robustness.py"}
+        "heavy", "description", "selection_from", "sources", "robustness",
+        "seed_streams"}
+EVAL_KEYS = {"task", "system", "stage", "sources", "cluster", "description",
+             "robustness", "seed_streams"}
+# eval_robustness.SEED_STREAMS (#101), not imported: that module loads
+# TensorFlow; a test pins the equality
+SEED_STREAMS = ("v1", "v2")
+ROBUSTNESS_RUNNER = "experiments/eval_robustness.py"
+EVAL_RUNNERS = {"lv": RUNNERS["lv"], "pa": ROBUSTNESS_RUNNER}
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLUSTER_KEYS = ("runs_per_gpu", "mem", "walltime", "cpus", "array_throttle")
 
@@ -237,6 +254,13 @@ def _load_eval(path, cfg):
         raise SystemExit(f"{path}: system applies to task lv only")
     if not cfg.get("sources"):
         raise SystemExit(f"{path}: 'sources' is required")
+    if cfg.get("robustness") not in (None, True, False):
+        raise SystemExit(f"{path}: robustness must be true or false")
+    if cfg.get("robustness") and cfg.get("seed_streams") not in SEED_STREAMS:
+        raise SystemExit(f"{path}: robustness needs seed_streams, one of "
+                         f"{', '.join(SEED_STREAMS)} (written out, no default)")
+    if cfg.get("seed_streams") and not cfg.get("robustness"):
+        raise SystemExit(f"{path}: seed_streams applies with robustness: true")
     for src in cfg["sources"]:
         if not isinstance(src, dict) or not {"config", "records_dir"} <= set(
                 src) <= {"config", "records_dir", "arms", "seeds"}:
@@ -283,17 +307,24 @@ def expand_eval(cfg):
                               [*common, *_flags(flags)])
             record = os.path.join(src["records_dir"], rec)
             argv = ["uv", "run", "python", EVAL_RUNNERS[task]]
+            csv = f"{stem}/{os.path.splitext(rec)[0]}.csv"
             line = {"id": f"{stem}/{rec}", "group": "default", "outdir": stem}
+            streams = (["--seed-streams", cfg["seed_streams"]]
+                       if cfg.get("robustness") else [])
             if task == "lv":
                 argv += ["--eval-only", record, "--anchors",
                          ",".join(map(str, ANCHORS)),
                          "--horizon", str(ANCHOR_HORIZON)]
                 line["done"] = f"{stem}/{rec}"
             else:
-                argv += ["--results", record]
-                line["done"] = line["out"] = (
-                    f"{stem}/{os.path.splitext(rec)[0]}.csv")
+                argv += ["--results", record, *streams]
+                line["done"] = line["out"] = csv
             lines.append({**line, "argv": argv})
+            if task == "lv" and cfg.get("robustness"):
+                lines.append({"id": csv, "group": "default", "outdir": stem,
+                              "done": csv, "out": csv, "argv": [
+                                  "uv", "run", "python", ROBUSTNESS_RUNNER,
+                                  "--results", record, *streams]})
     dup = len(lines) - len({ln["done"] for ln in lines})
     if dup:
         raise SystemExit(f"stage eval: {dup} records are listed twice")

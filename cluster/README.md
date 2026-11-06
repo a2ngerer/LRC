@@ -584,6 +584,21 @@ per user, running ones included: check `squeue` before every submit.
 | | **SW3** (17 without C8) | | **21** |
 | SW5 (T5) | `f2_t5_fidelity_lv`, `f2_t5_fidelity_duffing`, `f2_t5_fidelity_pa` | `f2-t5-fidelity-<task>` | 11 + 6 + 4 = 21 |
 
+Control eval (#99): `f2_control_eval_lv`, `f2_control_eval_duffing` and
+`f2_control_eval_pa` re-evaluate the three descriptive controls
+(`control_lv_dt_scale1`: 3 fits, `control_duffing_k1` and `control_pa_k1`: 5
+fits each) without training, label `f2-control-eval-<task>`, 6 + 10 + 5 lines.
+`robustness: true` adds the robustness evaluation to the eval stage: an lv or
+Duffing record gets the `--eval-only` rebuild and an `eval_robustness.py` call
+(CSV with `rebuild_rel_dev` and `metric_robust`), a Person Activity record the
+`eval_robustness.py` call it always had. `seed_streams: v1` is required and
+written into every call, the stream of the evaluated final fits (#101).
+`records_dir` is the control's run folder. The CSVs enter the aggregator next
+to those of the final fits (`--contrasts --robustness <final CSVs> <control
+CSVs>` with the control run folders below `--rollout-runs` / `--pa-runs`); the
+summary then has a "Control arms" section, and `contrasts.csv` stays byte
+identical because the controls are no family members (a test pins it).
+
 SW4 is the PPO wave (`cluster/submit_mujoco.sh`, #61) and not part of this
 table. SW3 is staggered: each family final is submitted once its own HPO chain
 is fetched (set its `hpo_dir`) and after the `squeue` check; C8 and C7 on

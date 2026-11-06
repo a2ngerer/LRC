@@ -1109,3 +1109,63 @@ def test_f1_outputs_equal_the_golden_files_and_inputs_stay_untouched(
             got = f.read().replace(F1_FIXTURE, '<FIXTURE>')
         with open(os.path.join(F1_GOLDEN, name), encoding='utf-8') as f:
             assert got == f.read(), name
+
+
+# --- control arms with eval-only rows (#99) ---------------------------------
+
+def test_control_rows_leave_the_contrast_tables_byte_identical(tmp_path):
+    """The k=1 and dt_scale=1 control fits with their robustness rows (rebuild
+    fidelity, metric_robust) appear in sequence_runs.csv, the robustness table
+    and the control section; contrasts.csv (every pre-registered family,
+    robustness family included) equals byte for byte the one of the same
+    suite without the controls: controls are no family members."""
+    import shutil
+    from src.benchmark.checkpoints import config_hash
+
+    def run(sub, controls):
+        base = tmp_path / sub
+        lv, pa = _suite(base)
+        shutil.rmtree(lv / 'k1')        # _suite's own control: set per run
+        main_sha, rows = config_hash({'ode_unfolds': 6}), []
+        for s in range(10):
+            rows += [('duffing', 'cfc_lrc/ncp', s, 8.0 + s, False, main_sha),
+                     ('duffing', 'cfc_lrc/dense3', s, 4.0, False, main_sha)]
+            _write_lv_fit(lv, 'duffing', 'cfc_lrc', 'dense3', s, 5.0)
+        if controls:
+            k1_sha = config_hash({'ode_unfolds': 1})
+            for s in range(5):
+                _write_lv_fit(lv / 'k1', 'duffing', 'lrc', 'ncp', s, 7.0 + s,
+                              ode_unfolds=1)
+                rows.append(('duffing', 'lrc/ncp [k=1]', s, 3.0 + s,
+                             s == 4, k1_sha))
+            for s in range(3):
+                _write_lv_fit(lv / 'dt1', 'periodic_predator_prey', 'cfc_lrc',
+                              'ncp', s, 9.0, dt_scale=1.0)
+                rows.append(('periodic_predator_prey',
+                             'cfc_lrc/ncp [dt_scale=1]', s, 6.0, False,
+                             main_sha))
+        csv = base / 'rob.csv'
+        pd.DataFrame(rows, columns=['system', 'arm', 'seed', 'metric_robust',
+                                    'diverged_robust',
+                                    'config_effective_sha256']).assign(
+            rebuild_rel_dev=lambda d: np.where(d['seed'] == 1, 3e-4, 1e-6)
+        ).to_csv(csv, index=False)
+        out = base / 'out'
+        assert main(['--runs', str(base / 'none'), '--out', str(out),
+                     '--rollout-runs', str(lv), '--pa-runs', str(pa),
+                     '--contrasts', '--robustness', str(csv)]) == 0
+        return out
+
+    plain, with_ctl = run('a', False), run('b', True)
+    assert (plain / 'contrasts.csv').read_bytes() == (
+        with_ctl / 'contrasts.csv').read_bytes()
+    runs = pd.read_csv(with_ctl / 'sequence_runs.csv')
+    ctl = runs[runs['control']].set_index(['system', 'arm', 'seed'])
+    assert len(ctl) == 8 and ctl['diverged_robust'].notna().all()
+    assert ctl.loc[('duffing', 'lrc/ncp [k=1]', 1), 'rebuild_rel_dev'] == 3e-4
+    text = (with_ctl / 'summary.md').read_text()
+    sect = text.split('## Control arms: rebuild fidelity and robustness')[1]
+    assert '| duffing | lrc/ncp [k=1] | 5 | 0.0003 | 9 | 5 | 1 |' in sect
+    assert ('| periodic_predator_prey | cfc_lrc/ncp [dt_scale=1] | 3 | 0.0003 '
+            '| 9 | 6 | 0 |') in sect
+    assert 'Control arms' not in (plain / 'summary.md').read_text()
