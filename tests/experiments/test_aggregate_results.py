@@ -999,6 +999,56 @@ def test_main_contrasts_writes_csv_and_descriptive_pairs(tmp_path):
     assert '- cfc_lrc/ncp vs cfc_lrc/dense3: **not supported**' in text
 
 
+def test_rq5_paired_differences_and_csv(tmp_path):
+    """#97: cfc_lrc vs cfc and vs cfc_lrc_outer per task and wiring on the
+    complete seed pairs only (a seed missing in one arm drops out), with the
+    positive-seed count, the median difference, its seed interval and
+    P(A>B); a diverged fit enters at the worst value; controls never pair;
+    no p-value column; main writes rq5_paired.csv and leaves the other
+    outputs as they were."""
+    from experiments.aggregate_results import RQ5_COLUMNS, rq5_paired
+    lv, pa = tmp_path / 'lv', tmp_path / 'pa'
+    for s in range(6):
+        _write_lv_fit(lv, 'duffing', 'cfc_lrc', 'ncp', s, 20.0 + s)
+        _write_lv_fit(lv, 'duffing', 'cfc', 'ncp', s, 18.0 + 2 * s)   # -2..+2
+        if s != 5:
+            _write_lv_fit(lv, 'duffing', 'cfc_lrc_outer', 'ncp', s, 15.0,
+                          rate_unbounded=1.0 if s == 0 else 0.0)
+        _write_lv_fit(lv, 'duffing', 'cfc_lrc', 'dense', s, 5.0)
+        _write_lv_fit(lv, 'duffing', 'cfc', 'dense', s, 5.0)     # all ties
+        _write_pa_fit(pa, 'cfc_lrc', 'ncp', s, 0.7)
+        _write_pa_fit(pa, 'cfc', 'ncp', s, 0.6)
+    _write_lv_fit(lv / 'k1', 'duffing', 'cfc', 'ncp', 0, 99.0, ode_unfolds=1)
+    from experiments.aggregate_results import load_sequence_runs
+    df = pd.concat([load_sequence_runs(str(lv), 'lv'),
+                    load_sequence_runs(str(pa), 'pa')], ignore_index=True)
+    r = rq5_paired(df).set_index(['task', 'wiring', 'comparison'])
+    assert list(rq5_paired(df).columns) == RQ5_COLUMNS
+    assert not any('p_raw' in c or 'significant' in c for c in RQ5_COLUMNS)
+    assert len(r) == 4          # no pa/outer, no dense/outer
+    c = r.loc[('duffing', 'ncp', 'cfc_lrc vs cfc')]
+    # differences (20+s) - (18+2s) = 2 - s: 2, 1, 0, -1, -2, -3
+    assert (c['n_pairs'], c['n_positive'], c['median_diff']) == (6, 2, -0.5)
+    assert c['median_diff_lo'] <= c['median_diff'] <= c['median_diff_hi']
+    assert c['p_a_gt_b'] == pytest.approx(2.5 / 6)       # one tie
+    o = r.loc[('duffing', 'ncp', 'cfc_lrc vs cfc_lrc_outer')]
+    assert (o['n_pairs'], o['n_positive']) == (5, 5)        # seed 5 dropped
+    # seed 0 of the outer arm diverged: 20 - 0, then 6, 7, 8, 9
+    assert o['median_diff'] == 8.0 and o['p_a_gt_b'] == 1.0
+    t = r.loc[('duffing', 'dense', 'cfc_lrc vs cfc')]
+    assert (t['n_positive'], t['median_diff'], t['p_a_gt_b']) == (0, 0.0, 0.5)
+    p = r.loc[('pa', 'ncp', 'cfc_lrc vs cfc')]
+    assert (p['n_pairs'], p['n_positive']) == (6, 6)
+    assert p['median_diff'] == pytest.approx(0.1)
+    assert not rq5_paired(df.iloc[0:0]).shape[0]
+    out = tmp_path / 'out'
+    assert main(['--runs', str(tmp_path / 'none'), '--out', str(out),
+                 '--rollout-runs', str(lv), '--pa-runs', str(pa),
+                 '--contrasts']) == 0
+    got = pd.read_csv(out / 'rq5_paired.csv')
+    assert len(got) == 4 and 'contrasts.csv' in os.listdir(out)
+
+
 def test_contrasts_needs_sequence_runs(tmp_path):
     with pytest.raises(SystemExit):
         main(['--out', str(tmp_path), '--contrasts'])

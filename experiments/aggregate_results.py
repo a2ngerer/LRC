@@ -50,7 +50,11 @@ Optional sections:
                    --hpo-dir, the tuning-seed sign stability; on Person
                    Activity the chance marking of #80), the H-c
                    conjunction and every other arm pair descriptively;
-                   <out>/contrasts.csv and <out>/sequence_runs.csv
+                   <out>/contrasts.csv and <out>/sequence_runs.csv;
+                   <out>/rq5_paired.csv adds the descriptive RQ5 pairs
+                   (cfc_lrc vs cfc, cfc_lrc vs cfc_lrc_outer) per task and
+                   wiring: median paired difference with a seed-bootstrap
+                   interval, P(A>B), positive seeds and n, no p-value (#97)
   --robustness CSV  with --contrasts: the eval-only robustness rows of
                    experiments/eval_robustness.py (#34); their metric_robust
                    (diverged_robust as the divergence flag) runs the H-c
@@ -1142,6 +1146,52 @@ def descriptive_pairs(df) -> pd.DataFrame:
                          'median_diff': float(np.median(x - y)),
                          'p_a_gt_b': pw, 'p_a_gt_b_lo': lo, 'p_a_gt_b_hi': hi})
     return pd.DataFrame(rows)
+
+
+# RQ5 (descriptive by protocol): cfc_lrc against cfc and inner against
+# outer gate, per task and wiring (#97).
+RQ5_PAIRS = (('cfc_lrc', 'cfc'), ('cfc_lrc', 'cfc_lrc_outer'))
+RQ5_COLUMNS = ['task', 'wiring', 'comparison', 'a', 'b', 'n_pairs',
+               'n_positive', 'median_diff', 'median_diff_lo',
+               'median_diff_hi', 'p_a_gt_b', 'p_a_gt_b_lo', 'p_a_gt_b_hi',
+               'budget_above_tolerance']
+
+
+def rq5_paired(df) -> pd.DataFrame:
+    """The RQ5 comparisons (RQ5_PAIRS) as paired-by-seed differences of the
+    final fits per task and wiring (plain arms only, controls never pair):
+    n complete pairs, the number of seeds with v_a - v_b > 0, the median
+    difference with its seed-bootstrap interval, P(A>B) with its
+    Clopper-Pearson interval, and whether an arm sits above the budget
+    tolerance (kept in, #59). No p-value, no significance column: the
+    comparison is descriptive. A pairing without complete pairs has no row."""
+    f = df[df['stage'] == 'final'] if not df.empty else df
+    rows = []
+    for system in sorted(f['system'].unique()) if not f.empty else ():
+        for wiring in sorted(f.loc[f['system'] == system, 'wiring'].unique()):
+            for ca, cb in RQ5_PAIRS:
+                a, b = f'{ca}/{wiring}', f'{cb}/{wiring}'
+                p = _paired(df, system, a, b)
+                if p.empty:
+                    continue
+                d = p['v_a'].to_numpy(float) - p['v_b'].to_numpy(float)
+                sign = 1 if HIGHER_IS_BETTER[p['task_a'].iloc[0]] else -1
+                pw, lo, hi = p_a_gt_b(sign * p['metric_a'].to_numpy(float),
+                                      sign * p['metric_b'].to_numpy(float),
+                                      p['diverged_a'].to_numpy(bool),
+                                      p['diverged_b'].to_numpy(bool))
+                ci = bootstrap_median_ci(d, N_BOOT)
+                rows.append({
+                    'task': system, 'wiring': wiring,
+                    'comparison': f'{ca} vs {cb}', 'a': a, 'b': b,
+                    'n_pairs': len(d), 'n_positive': int((d > 0).sum()),
+                    'median_diff': float(np.median(d)),
+                    'median_diff_lo': ci[0], 'median_diff_hi': ci[1],
+                    'p_a_gt_b': pw, 'p_a_gt_b_lo': lo, 'p_a_gt_b_hi': hi,
+                    'budget_above_tolerance': bool(
+                        (p['budget_above_tolerance_a']
+                         | p['budget_above_tolerance_b']).any())})
+    return pd.DataFrame(rows, columns=RQ5_COLUMNS)
 
 
 def _fmt(v, spec='.4g'):
@@ -2340,6 +2390,8 @@ def main(argv=None) -> int:
         seq.drop(columns='confusion', errors='ignore').to_csv(
             os.path.join(args.out, 'sequence_runs.csv'), index=False)
         parts.append(contrast_report(seq, blocks, descriptive_pairs(seq)))
+        rq5_paired(seq).to_csv(os.path.join(args.out, 'rq5_paired.csv'),
+                               index=False)
     if args.co_runs:
         parts.append(consensus_family(args.co_runs))
         consensus_intervals(args.co_runs).to_csv(
