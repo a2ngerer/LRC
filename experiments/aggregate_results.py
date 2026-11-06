@@ -20,7 +20,9 @@ Optional sections:
                    contrast under the second-best configuration of both arms)
   --pa-runs DIR    Person Activity arm means with a percentile bootstrap over
                    seeds (--bootstrap-units seed) or over seeds and test
-                   recordings (--bootstrap-units seed,recording)
+                   recordings (--bootstrap-units seed,recording); searched
+                   recursively (subfolder = '<folder>/<tag>' arm), with a
+                   cross-mean column where the records carry per-recording F1
   --rollout-runs DIR  rollout outcome-class shares per arm (test split) with
                    exact Clopper-Pearson intervals, at tau_orb and at the 0.30
                    sensitivity, plus one non-finite label per arm
@@ -497,26 +499,53 @@ def hpo_fragility(hpo_dirs) -> str:
 def pa_arm_means(pa_dir, units='seed') -> str:
     """Person Activity arm means (test macro-F1) with a percentile bootstrap
     over seeds, or over seeds and test recordings ('seed,recording', reads
-    test_macro_f1_per_recording). Files without the key are skipped."""
+    test_macro_f1_per_recording). Result files are searched recursively; as in
+    rollout_outcome_classes an arm is '<folder relative to pa_dir>/<file name
+    without _seed<N>>' ('.' omitted), fits on a seed outside FINAL_SEEDS are
+    left out and files without the key are skipped. If any record carries the
+    per-recording key and the units are 'seed', a last column holds the
+    cross-mean (mean over seeds and recordings) with its crossed interval
+    ('—' for an arm whose seeds lack the key or differ in recordings)."""
     by_rec = 'recording' in units
     key = 'test_macro_f1_per_recording' if by_rec else 'test_macro_f1'
-    arms, skipped = defaultdict(list), 0
-    for path in sorted(glob(os.path.join(pa_dir, '*.json'))):
+    arms, crossed, skipped, tuning = defaultdict(list), defaultdict(list), 0, 0
+    for path in sorted(glob(os.path.join(pa_dir, '**', '*.json'),
+                            recursive=True)):
         with open(path, encoding='utf-8') as f:
             r = json.load(f)
-        if key not in r:
+        if not isinstance(r, dict) or key not in r:
             skipped += 1
             continue
+        if r.get('seed') not in FINAL_SEEDS:
+            tuning += 1
+            continue
         v = r[key]
-        # arm = result tag without the seed (keeps backbone/multi-column suffixes)
-        arm = os.path.basename(path)[:-len('.json')].replace(f"_seed{r['seed']}", '')
+        arm = _rollout_arm(path, r, pa_dir)[0]
         arms[arm].append([v[k] for k in sorted(v)] if isinstance(v, dict) else v)
+        rec = r.get('test_macro_f1_per_recording')
+        crossed[arm].append(rec if isinstance(rec, dict) and rec else None)
+    cross = not by_rec and any(None not in c for c in crossed.values())
     lines = [f'## Person Activity arm means (test macro-F1, bootstrap over {units})\n',
-             '| Arm | n seeds | mean | 95% CI |', '|-----|---------|------|--------|']
+             '| Arm | n seeds | mean | 95% CI |'
+             + (' cross-mean [95% CI, seed x recording] |' if cross else ''),
+             '|-----|---------|------|--------|' + ('------|' if cross else '')]
     for arm, rows in sorted(arms.items()):
         mean, lo, hi = bootstrap_mean_ci(rows, resample_cols=by_rec)
-        lines.append(f'| {arm} | {len(rows)} | {mean:.4f} | [{lo:.4f}, {hi:.4f}] |')
+        line = f'| {arm} | {len(rows)} | {mean:.4f} | [{lo:.4f}, {hi:.4f}] |'
+        if cross:
+            recs = crossed[arm]
+            if None in recs or len({tuple(sorted(x)) for x in recs}) > 1:
+                line += ' — |'     # a seed without, or another recording set
+            else:
+                m, lo, hi = bootstrap_mean_ci(
+                    [[x[k] for k in sorted(x)] for x in recs],
+                    resample_cols=True)
+                line += f' {m:.4f} [{lo:.4f}, {hi:.4f}] |'
+        lines.append(line)
     lines.append(f'\nSkipped {skipped} result file(s) without {key}.\n' if skipped else '')
+    if tuning:
+        lines.append(f'\nLeft out {tuning} tuning-seed fit(s) (seed outside '
+                     f'{FINAL_SEEDS.start}..{FINAL_SEEDS.stop - 1}).\n')
     return '\n'.join(lines)
 
 
@@ -2041,7 +2070,7 @@ def main(argv=None) -> int:
                         '--contrasts also sign_stable_tuning)')
     p.add_argument('--pa-runs', default=None,
                    help='Person Activity result JSON folder (arm means with '
-                        'bootstrap interval)')
+                        'bootstrap interval), searched recursively')
     p.add_argument('--rollout-runs', default=None,
                    help='rollout result JSON folder, searched recursively '
                         '(outcome-class shares per arm; each subfolder is '

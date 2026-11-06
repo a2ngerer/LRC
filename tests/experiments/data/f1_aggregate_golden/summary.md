@@ -64,6 +64,7 @@ P(A>B): paired win fraction of A (lower nrmse wins, ties 0.5, a diverged run los
 | cfc_lrc_cncp | 10 | 0.7143 | [0.7143, 0.7143] |
 | cfc_lrc_dense3 | 10 | 0.6050 | [0.4957, 0.7143] |
 | cfc_lrc_ncp | 10 | 0.8646 | [0.8605, 0.8687] |
+| ctrl_k1/cfc_lrc_dense | 5 | 0.8000 | [0.8000, 0.8000] |
 | gru_ncp | 10 | 0.7891 | [0.7438, 0.8351] |
 | lrc_ncp | 10 | 0.6414 | [0.5321, 0.7143] |
 
