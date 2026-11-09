@@ -159,8 +159,8 @@ def _resolve_cell_cls(cell):
 def _reject_multi_state(cell_cls, cell_kwargs):
     """Fail fast on multi-state cells (lstm, mm_*) for a composite wiring.
 
-    CorticalColumnCell (cncp, tbt_cncp*) and the voting committees keep one
-    state slot per graph node or column and therefore cannot host a cell
+    CorticalColumnCell (CNCP_WIRINGS, tbt_cncp*) and the voting committees
+    keep one state slot per graph node or column and therefore cannot host a cell
     with a list state. The dense, dense3 and ncp arms can (tf.keras.layers.RNN
     and NCPLayeredCell carry list states), so the builders call this only for
     the composite wirings and the thesis matrix runs lstm / mm_* on dense and

@@ -246,8 +246,9 @@ The design must degrade gracefully; these double as tests:
    input edge `M_L5_L6*`) and the Thal/TRN relays are not built, since their
    outputs would be unobservable sinks; their four state slots pass through
    unchanged (zero from the initial state), so the eight-slot state layout
-   stays. Masks are drawn for the full edge inventory, so at one seed the
-   shared edges carry the same masks as in `cncp`.
+   stays. Masks are drawn for the full edge inventory, so at one seed and
+   equal lamina widths the shared edges carry the same masks as in `cncp`
+   (budget-matched arms differ in width and therefore in their masks).
    `CorticalColumnCell(feedforward_only=True)`; wiring key `cncp_ff` in the
    Person Activity and Lotka-Volterra builders (issue #135).
 2. **`g=0`** → additive-only cNCP (no gain).
