@@ -11,7 +11,9 @@ without training, on the test windows of its task:
 
   * rollouts (lv: Lotka-Volterra, Duffing, multi-timescale): the teacher-forced
     test inputs of the runner (split_inputs on the fit's redrawn data split);
-  * Person Activity (pa): the test windows of the fit's split;
+  * Person Activity (pa): the test windows of the fit's split (the fold of
+    config.effective.split_fold, #134; the rebuilt recordings must equal the
+    record's);
   * committee (co): the runner's test views without faults (m = 0) of the
     first test seed, with the fit's noise_sigma and view transform.
 
@@ -114,7 +116,12 @@ def test_inputs(record, task, data_path=None):
                             record["wiring"] in TBT_MODES)
     d = load_person_activity(seq_len=eff["build"]["seq_len"],
                              data_path=data_path, split=eff["split"],
-                             split_seed=eff["split_seed"])
+                             split_seed=eff["split_seed"],
+                             split_fold=eff.get("split_fold"))
+    got, want = (None if r is None else {k: sorted(v) for k, v in r.items()}
+                 for r in (d.recordings, record.get("recordings")))
+    if got != want:                     # e.g. a split key not passed through
+        raise SystemExit(f"rebuilt recordings {got} != the record's {want}")
     if task == "pa":
         return d.test_x, d.test_t
     v, seed = eff["views"], eff["test_seeds"][0]
