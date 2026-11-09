@@ -17,6 +17,7 @@
 # Issue #105: _frozen also stubs the selection_from references; the F2 YAMLs
 # (configs/suite/f2_*.yaml) stay out of the frozen matrix, and stage eval
 # (no training) out of the op-determinism check.
+# Issue #134: --split-fold k appends _fold{k} to the PA result name.
 import fnmatch
 import json
 from argparse import Namespace
@@ -207,16 +208,21 @@ def test_load_rejects_bad_configs(tmp_path, over, msg):
 
 @pytest.mark.parametrize('extra', [[], ['--backbone-layers', '1'],
                                    ['--forcing', 'mixed'],
-                                   ['--backbone-layers', '2', '--forcing', 'mixed']])
+                                   ['--backbone-layers', '2', '--forcing', 'mixed'],
+                                   ['--split-fold', '0'],
+                                   ['--backbone-layers', '1', '--split-fold', '4']])
 def test_result_name_matches_the_runners(extra):
     bb = int(extra[extra.index('--backbone-layers') + 1]) if '--backbone-layers' in extra else None
+    fold = int(extra[extra.index('--split-fold') + 1]) if '--split-fold' in extra else None
     forcing = 'mixed' if '--forcing' in extra else 'teacher'
     args = Namespace(cell='cfc_lrc', wiring='ncp', seed=3, backbone_layers=bb,
-                     forcing=forcing)
-    assert result_name('lv', 'cfc_lrc', 'ncp', 3, extra) == lv_runner.result_filename(args)
+                     forcing=forcing, split_fold=fold)
+    if fold is None:                        # the LV runner has no folds
+        assert result_name('lv', 'cfc_lrc', 'ncp', 3, extra) == lv_runner.result_filename(args)
     pa_extra = [a for a in extra if a not in ('--forcing', 'mixed')]
-    assert (result_name('pa', 'cfc_lrc', 'ncp', 3, pa_extra)
-            == pa_runner.result_tag(args) + '.json')
+    name = result_name('pa', 'cfc_lrc', 'ncp', 3, pa_extra)
+    assert name == pa_runner.result_tag(args) + '.json'
+    assert name.endswith('.json' if fold is None else f'_fold{fold}.json')
 
 
 @pytest.mark.parametrize('stage', ['hpo', 'final'])

@@ -15,6 +15,12 @@ cncp scans fractional sizes (finer lamina knob, scaled_lamina_units).
 Split: --split grouped (default) trains on 15 whole recordings, validates on
 5 and tests on 5 (one per person each, --split-seed); --split random_window is
 the original window-level split (literature anchor only, val = test).
+--split-fold k (grouped only, #134) replaces the seeded draw by fold k of a
+deterministic rotation: every person's sorted recording k + 1 is the test and
+recording k + 2 (wrapping) the validation recording. Set, it is recorded in
+config.effective and appends _fold{k} to the result name; default runs keep
+their config_hash. The record and the wandb config carry split_fold (None
+without the flag).
 Metrics: per-step macro-F1 (primary) and accuracy; the epoch with the best
 val macro-F1 is selected, the test values are read at that epoch and its
 weights are the saved ones (<stem>.weights.h5, protocol freeze
@@ -63,7 +69,7 @@ from src.benchmark.optimizers import (add_optimizer_args,  # noqa: E402
                                       optimizer_build_kwargs)
 from src.benchmark.registry import cell_kwargs as registry_cell_kwargs  # noqa: E402
 from src.evaluation.metrics import confusion_matrix, macro_f1  # noqa: E402
-from src.tasks.person_activity.datasets import SPLITS  # noqa: E402
+from src.tasks.person_activity.datasets import N_FOLDS, SPLITS  # noqa: E402
 from src.tasks.person_activity.model import (  # noqa: E402
     WIRINGS, backbone_override, backbone_suffix, budget_sizes,
     dt_feature_applies,
@@ -77,10 +83,13 @@ BUDGET_TOLERANCE = 0.05
 
 def result_tag(args, multi=None):
     """Run tag (log, wandb name, result JSON stem); --backbone-layers adds
-    `_bb{N}`, cncp2_multi adds `_K{K}_{partition}_{coupling}_{readout}`."""
+    `_bb{N}`, cncp2_multi adds `_K{K}_{partition}_{coupling}_{readout}`,
+    --split-fold k adds `_fold{k}` (#134)."""
+    fold = getattr(args, "split_fold", None)
     return (f"{args.cell}_{args.wiring}_seed{args.seed}"
             f"{backbone_suffix(args.backbone_layers)}"
-            f"{multi_column_suffix(multi or {})}")
+            f"{multi_column_suffix(multi or {})}"
+            f"{'' if fold is None else f'_fold{fold}'}")
 
 
 def split_confusions(model, data, part, batch_size):
@@ -107,9 +116,11 @@ def run(args):
 
     if args.deterministic:
         tf.config.experimental.enable_op_determinism()
+    fold = getattr(args, "split_fold", None)    # 0 is a fold: `is not None`
     data = load_person_activity(data_path=args.data_path, split=args.split,
-                                split_seed=args.split_seed)
+                                split_seed=args.split_seed, split_fold=fold)
     print(f"data ({data.split}, split_seed={data.split_seed}, "
+          f"split_fold={fold}, "
           f"{data.n_recordings} recordings, {data.n_negative_dt} negative dt "
           f"clamped): train {data.train_x.shape} val {data.val_x.shape} "
           f"test {data.test_x.shape} features={data.feature_size} "
@@ -184,6 +195,8 @@ def run(args):
         "epochs": args.epochs, "batch_size": args.batch_size,
         "clipnorm": args.clipnorm, "split": data.split,
         "split_seed": data.split_seed,
+        # only when set: default runs keep their key set and config_hash
+        **({} if fold is None else {"split_fold": fold}),
         "backbone_layers": bb_effective,
         "ode_unfolds": effective_ode_unfolds(args.cell, cell_kwargs),
         "dt_scale": args.dt_scale,
@@ -219,6 +232,7 @@ def run(args):
         "dt_scale": args.dt_scale,
         "split": data.split,
         "split_seed": data.split_seed,
+        "split_fold": fold,
         **pc,
         **multi,
         **rewire,
@@ -298,6 +312,7 @@ def run(args):
         "cell_kwargs": cell_kwargs,
         "split": data.split,
         "split_seed": data.split_seed,
+        "split_fold": fold,
         "recordings": data.recordings,
         "n_recordings": data.n_recordings,
         "n_negative_dt": data.n_negative_dt,
@@ -411,6 +426,12 @@ def main():
     p.add_argument("--split-seed", type=int, default=0,
                    help="seed of the grouped recording assignment (keep it "
                         "fixed across a suite; ignored for random_window)")
+    p.add_argument("--split-fold", type=int, default=None,
+                   choices=range(N_FOLDS),
+                   help="grouped only: fold k of the deterministic rotation "
+                        "instead of the seeded draw (test = recording k + 1, "
+                        "val = recording k + 2 wrapping, of every person); "
+                        "needs the default --split-seed 0")
     p.add_argument("--wandb", action="store_true",
                    help="log this run to Weights & Biases (needs the "
                         "'tracking' extra; use WANDB_MODE=offline on cluster)")
@@ -432,6 +453,8 @@ def main():
     add_optimizer_args(p)
     add_multi_column_args(p)
     args = p.parse_args()
+    if args.split_fold is not None and args.split_seed != 0:
+        p.error("--split-fold needs the default --split-seed 0")
     if args.size is None and args.param_budget is None:
         args.size = DEFAULT_SIZE
     run(args)

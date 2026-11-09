@@ -409,7 +409,10 @@ def result_name(task, cell, wiring, seed, argv):
                 f"_clip{'off' if clip is None else f'{float(clip):g}'}"
                 f"_cs{v('--corruption-seed', 0)}_seed{seed}{bb}.json")
     mixed = task == "lv" and _flag_value(argv, "--forcing") == "mixed"
-    return f"{cell}_{wiring}_seed{seed}{bb}{'_mixed' if mixed else ''}.json"
+    fold = _flag_value(argv, "--split-fold")      # PA fold rotation (#134)
+    fold = "" if fold is None else f"_fold{int(fold)}"
+    return (f"{cell}_{wiring}_seed{seed}{bb}{'_mixed' if mixed else ''}"
+            f"{fold}.json")
 
 
 def selection(cfg, name, cell, wiring):
