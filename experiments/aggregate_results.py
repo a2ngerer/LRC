@@ -77,6 +77,16 @@ Optional sections:
                    the reading of each block (three-seed rule, five-seed
                    direction rule, B5 plateau exit, budget direction), no
                    test; <out>/descriptive_blocks.csv
+  --f3-families SPEC.yaml  the F3 test families (protocol F3, F3_FAMILIES:
+                   test kind, side, endpoint, floor rule, learning-success
+                   rule, match fields and status per test) from a spec of
+                   an explicit seed list and explicit path lists per arm
+                   (template: configs/aggregate/f3_families.yaml); paired
+                   Wilcoxon with the exact permutation p, or the exact
+                   McNemar on the learning success; Bonferroni within the
+                   family and F3-wide (sensitivity), records outside the
+                   seed list counted, reading incomplete/floor-bound/
+                   PASS/FAIL; <out>/f3_families.csv
 
 Usage:
     uv run python experiments/aggregate_results.py [--runs results/runs] [--out results]
@@ -84,6 +94,7 @@ Usage:
         [--rollout-runs DIR [--floors]] [--co-runs DIR]
         [--contrasts [--floors-json PATH] [--robustness CSV ...]]
         [--f2-families SPEC.yaml] [--descriptive SPEC.yaml]
+        [--f3-families SPEC.yaml]
 
     # the frozen suite: ROLLOUTS holds the final run folders of every rollout
     # system (searched recursively), PA the Person Activity final run
@@ -102,7 +113,7 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 import yaml
-from scipy.stats import rankdata, wilcoxon
+from scipy.stats import binomtest, rankdata, wilcoxon
 
 # Allow running as a plain script (``src`` is the installed package).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -376,6 +387,18 @@ def wilcoxon_test(x, y, alternative='two-sided'):
               and np.unique(np.abs(nz)).size == nz.size else 'approx')
     return float(wilcoxon(x, y, alternative=alternative,
                           method=method).pvalue), method
+
+
+def mcnemar_exact(success_a, success_b):
+    """(p, n10, n01) of the exact two-sided McNemar test on paired binary
+    outcomes: n10 pairs where only A succeeds, n01 where only B does; p of
+    the binomial test of min(n10, n01) in n10 + n01 at 1/2, 1.0 without a
+    discordant pair."""
+    a, b = np.asarray(success_a, bool), np.asarray(success_b, bool)
+    n10, n01 = int((a & ~b).sum()), int((~a & b).sum())
+    if not n10 + n01:
+        return 1.0, n10, n01
+    return float(binomtest(min(n10, n01), n10 + n01, 0.5).pvalue), n10, n01
 
 
 def _cohens_d_paired(x: np.ndarray, y: np.ndarray) -> float:
@@ -789,9 +812,12 @@ def _control_tag(r):
     (decisions a, d, g, h): ode_unfolds 1, dt_scale 1, a fixed width instead
     of the budget (cfc_static_w; also the width-matched dense3 of protocol
     F2 section 2.2, #85), and teacher forcing on the rollouts. On a record
-    stamped with an F2 protocol_version also epochs=N when its epochs differ
-    from the F1 value of its task (the doubled-budget arms, protocol F2
-    section 3.2, point 7); F1 records never get it (e.g. pilots)."""
+    stamped with an F2 or F3 protocol_version also epochs=N when its epochs
+    differ from the F1 value of its task (the doubled-budget arms, protocol
+    F2 section 3.2, point 7); F1 records never get it (e.g. pilots). Last
+    the optimizer of config.effective.build when it is not the protocol
+    default (optimizer=<name>, opt_epsilon=<value>; the optimizer arms of
+    protocol F3 family A, #131)."""
     eff = (r.get('config') or {}).get('effective') or {}
     tags = []
     if eff.get('ode_unfolds') == 1:
@@ -802,11 +828,16 @@ def _control_tag(r):
         tags.append('fixed width')
     if 'rollout_metrics_test' in r and r.get('forcing') != 'mixed':
         tags.append(f"forcing={r.get('forcing')}")
-    if str(eff.get('protocol_version') or '').startswith('F2-'):
+    if str(eff.get('protocol_version') or '').startswith(('F2-', 'F3-')):
         f1 = F1_EPOCHS.get('person_activity' if eff.get('task')
                            == 'person_activity' else eff.get('system'))
         if f1 is not None and eff.get('epochs') != f1:
             tags.append(f"epochs={eff.get('epochs')}")
+    build = eff.get('build') or {}
+    if build.get('optimizer', 'rmsprop') != 'rmsprop':
+        tags.append(f"optimizer={build['optimizer']}")
+    if build.get('opt_epsilon') is not None:
+        tags.append(f"opt_epsilon={build['opt_epsilon']}")
     return ', '.join(tags)
 
 
@@ -818,11 +849,13 @@ def arm_label(r):
     return f"{r['cell']}/{r['wiring']}" + (f' [{tag}]' if tag else '')
 
 
-def _sequence_row(path, r, task, curves=False) -> dict:
+def _sequence_row(path, r, task, curves=False, fields=()) -> dict:
     """The load_sequence_runs row of one runner record of the task; with
     curves also the per-epoch validation curve (val_loss_curve on the
     rollouts, val_macro_f1_curve on Person Activity) and training_diverged,
-    appended after the other columns."""
+    appended after the other columns; fields: top-level record keys appended
+    last (the endpoint field of the F3 path, #131), a record without one
+    raises SystemExit naming the file."""
     if task == 'lv':
         m = r['rollout_metrics_test']
         if 'vpt_multi_median' not in m:
@@ -859,6 +892,10 @@ def _sequence_row(path, r, task, curves=False) -> dict:
         key = 'val_loss_curve' if task == 'lv' else 'val_macro_f1_curve'
         row.update({key: r.get(key),
                     'training_diverged': r.get('training_diverged')})
+    for k in fields:
+        if k not in r:
+            raise SystemExit(f'{path}: no {k} in the record')
+        row[k] = r[k]
     return row
 
 
@@ -1779,6 +1816,37 @@ def _width_matched(r) -> bool:
     return r.get('wiring') == 'dense3' and r.get('param_budget') is None
 
 
+def _check_protocol(path, eff, versions, name):
+    """SystemExit naming the file unless config.effective.protocol_version
+    of a record is one its arm lists (F2 and F3 path lists)."""
+    if eff.get('protocol_version') not in versions:
+        raise SystemExit(f'{path}: protocol_version '
+                         f'{eff.get("protocol_version")!r}, but {name} '
+                         f'lists {versions}')
+
+
+def _floor_mark(path, r, eff, row, name, draws):
+    """(below, floor) of one _sequence_row fit: a rollout fit below the
+    floor of its own data draw (floor = that floor line), a Person Activity
+    fit at chance (row metric against the one-class value of its test
+    confusions; floor None). A fit without a marking raises SystemExit
+    naming the arm."""
+    if row['task'] == 'lv':
+        m = r['rollout_metrics_test']
+        fl = (None if any(k not in m for k in (
+            'anchors', 'anchor_horizon', 'anchor_theta')) or any(
+            eff.get(k) is None for k in FLOOR_DATA_KEYS)
+            else fit_floor(r, draws))
+        if fl is None or fl[1] is None or not np.isfinite(fl[1]):
+            raise SystemExit(f'{name}: no floor marking for {path}')
+        return not fl[0] >= fl[1], fl[1]
+    if row['confusion'] is None:
+        raise SystemExit(f'{name}: no test confusion matrices (chance '
+                         f'marking) in {path}')
+    return at_chance(row['metric'], one_class_macro_f1(
+        row['confusion'].sum(axis=(0, 2)))), None
+
+
 def _f2_arm(test, side, task, arm, draws, curves=False, empty_ok=False):
     """Final fits of one F2 arm: the records in its paths whose label is the
     arm label, each with the declared protocol_version (else SystemExit
@@ -1812,27 +1880,9 @@ def _f2_arm(test, side, task, arm, draws, curves=False, empty_ok=False):
                 or r.get('seed') not in FINAL_SEEDS or arm_label(r) != label):
             continue
         eff = (r.get('config') or {}).get('effective') or {}
-        if eff.get('protocol_version') not in versions:
-            raise SystemExit(f'{path}: protocol_version '
-                             f'{eff.get("protocol_version")!r}, but {name} '
-                             f'lists {versions}')
+        _check_protocol(path, eff, versions, name)
         row = _sequence_row(path, r, runner, curves)
-        floor = None
-        if runner == 'lv':
-            m = r['rollout_metrics_test']
-            fl = (None if any(k not in m for k in (
-                'anchors', 'anchor_horizon', 'anchor_theta')) or any(
-                eff.get(k) is None for k in FLOOR_DATA_KEYS)
-                else fit_floor(r, draws))
-            if fl is None or fl[1] is None or not np.isfinite(fl[1]):
-                raise SystemExit(f'{name}: no floor marking for {path}')
-            below, floor = not fl[0] >= fl[1], fl[1]
-        else:
-            if row['confusion'] is None:
-                raise SystemExit(f'{name}: no test confusion matrices (chance '
-                                 f'marking) in {path}')
-            below = at_chance(row['metric'], one_class_macro_f1(
-                row['confusion'].sum(axis=(0, 2))))
+        below, floor = _floor_mark(path, r, eff, row, name, draws)
         rows.append({**row, 'width_matched': _width_matched(r),
                      'data_key': eff.get('split_seed' if runner == 'pa'
                                          else 'data_seed'),
@@ -1857,20 +1907,32 @@ def _signed_ranks(x, y):
     return np.sign(nz), rankdata(np.abs(nz))
 
 
-def permutation_p(x, y) -> float:
-    """Exact two-sided sign-flip p of the signed-rank statistic: W+ (sum of
-    the mid-ranks of |d| over the k nonzero differences with d > 0) against
-    all 2^k sign patterns, two-sided by the distance of W+ from its mean
-    sum(ranks) / 2. Without ties and zeros it equals the exact Wilcoxon p;
-    1.0 without a nonzero difference."""
+def permutation_p(x, y, alternative='two-sided') -> float:
+    """Exact sign-flip p of the signed-rank statistic: W+ (sum of the
+    mid-ranks of |d| over the k nonzero differences with d > 0) against all
+    2^k sign patterns; two-sided by the distance of W+ from its mean
+    sum(ranks) / 2, 'greater' as the share of patterns with W+ >= the
+    observed W+. Without ties and zeros it equals the exact Wilcoxon p;
+    1.0 without a nonzero difference. The null distribution is counted
+    exactly over the integer sums 2 W+ (mid-ranks are multiples of 1/2), so
+    k = 25 needs a few kB instead of the 2^k x k pattern matrix."""
+    if alternative not in ('two-sided', 'greater'):
+        raise ValueError(f'alternative {alternative!r}')
     sign, ranks = _signed_ranks(x, y)
     if not ranks.size:
         return 1.0
-    # ponytail: enumerates 2^k patterns, fine for k <= 20 (seeds 0-9)
-    flips = (np.arange(2 ** ranks.size)[:, None] >> np.arange(ranks.size)) & 1
-    mu = ranks.sum() / 2
-    dev = abs(ranks[sign > 0].sum() - mu)
-    return float(np.mean(np.abs(flips @ ranks - mu) >= dev - 1e-9))
+    counts = np.zeros(int(np.rint(2 * ranks.sum())) + 1, np.int64)
+    counts[0] = 1
+    for r2 in np.rint(2 * ranks).astype(int):
+        counts[r2:] = counts[r2:] + counts[:-r2]   # RHS built before the write
+    w = np.arange(counts.size) / 2               # every reachable W+
+    obs = ranks[sign > 0].sum()
+    if alternative == 'greater':
+        hit = w >= obs - 1e-9
+    else:
+        mu = ranks.sum() / 2
+        hit = np.abs(w - mu) >= abs(obs - mu) - 1e-9
+    return float(counts[hit].sum() / 2 ** ranks.size)
 
 
 def _check_data_key(p, name):
@@ -2328,6 +2390,433 @@ def descriptive_report(blocks) -> str:
     return '\n'.join(lines)
 
 
+# --- F3 test families (protocol F3, draft, #131) ----------------------------
+
+# family -> {'status', 'tests': {test: entry}}: the one place where family
+# membership, test kind, side, endpoint, floor rule, learning-success rule,
+# match fields and status are defined. delta = A - B, higher is better on
+# every endpoint. Entry keys:
+#   task      rollout system or 'pa'
+#   a, b      arm labels as arm_label returns them
+#   kind      'wilcoxon' (paired signed-rank) | 'mcnemar' (exact, on the
+#             learning success of the fits)
+#   side      'two-sided' | 'greater'
+#   endpoint  rollouts: 'vpt_multi_median'; Person Activity: the record
+#             field, 'test_macro_f1' (best-validation epoch) or
+#             'test_macro_f1_last' (last epoch, #138); no default
+#   floor     'exclusive' (F1 rule: a floor-bound row reads floor-bound) |
+#             'informational' (marking reported, reading stays PASS/FAIL)
+#   success   optional learning success per fit (learning_success):
+#             ('threshold', t) = endpoint >= t; ('floor+', d) = VPT-multi
+#             median >= the fit's own floor + d
+#   match     optional fields (of lr, clipnorm, epochs, param_budget) equal
+#             within every seed pair, else SystemExit; without it reported
+#   status    optional, overrides the family's 'required' | 'conditional'
+#             | 'optional'
+# Values follow the F3 draft; a change before the freeze is a registry PR.
+# Families B (#132) and E (#133) plug in here.
+F3_CONFIG_FIELDS = ('lr', 'clipnorm', 'epochs', 'param_budget')
+_LEGACY = ' [optimizer=rmsprop_legacy]'
+_VPT = 'vpt_multi_median'
+
+
+def _f3(task, a, b, endpoint, floor, kind='wilcoxon', side='two-sided',
+        **extra):
+    return {'task': task, 'a': a, 'b': b, 'kind': kind, 'side': side,
+            'endpoint': endpoint, 'floor': floor, **extra}
+
+
+F3_FAMILIES = {
+    # A: one fixed recipe for all arms (no arm-wise tuning), learning
+    # success at the end of the budget (draft 4.1, E8)
+    'A': {'status': 'required', 'tests': {
+        'T-A1': _f3('pa', 'lrc/ncp' + _LEGACY, 'lrc/ncp', 'test_macro_f1_last',
+                    'informational', kind='mcnemar',
+                    success=('threshold', 0.30), match=F3_CONFIG_FIELDS),
+        'T-A2': _f3('pa', 'lrc_cal/ncp' + _LEGACY, 'lrc/ncp' + _LEGACY,
+                    'test_macro_f1_last', 'informational',
+                    match=F3_CONFIG_FIELDS)}},
+    'C': {'status': 'required', 'tests': {
+        'T-C1': _f3(_LV, 'cfc_lrc/ncp', 'gru/ncp', _VPT, 'exclusive',
+                    match=('epochs', 'param_budget')),
+        'T-C2': _f3(_LV, 'cfc_lrc/ncp', 'lstm/ncp', _VPT, 'exclusive',
+                    match=('epochs', 'param_budget'))}},
+    'D': {'status': 'required', 'tests': {
+        'T-D1': _f3('pa', 'cfc_lrc/ncp', _EPS1, 'test_macro_f1', 'exclusive'),
+        'T-D2': _f3('pa', 'cfc_lrc/ncp', 'cfc_lrc_outer/ncp', 'test_macro_f1',
+                    'exclusive')}},
+    'F': {'status': 'required', 'tests': {
+        'T-F1': _f3('duffing', 'lrc_init/ncp', 'lrc/ncp', _VPT,
+                    'informational', success=('floor+', 2.0),
+                    match=('epochs', 'param_budget')),
+        'T-F2': _f3('duffing', 'lrc_cal_duffing/ncp', 'lrc/ncp', _VPT,
+                    'informational', success=('floor+', 2.0),
+                    match=('epochs', 'param_budget'))}},
+    'G': {'status': 'conditional', 'tests': {
+        'T-G1': _f3(_LV, 'cfc_lrc/cncp', 'cfc_lrc/cncp_ff', _VPT,
+                    'exclusive'),
+        'T-G2': _f3('pa', 'cfc_lrc/cncp', 'cfc_lrc/cncp_ff', 'test_macro_f1',
+                    'exclusive')}},
+    'H': {'status': 'optional', 'tests': {
+        'T-H1': _f3(_LV, 'cfc_mm_lrc/ncp', 'cfc_lrc/ncp', _VPT, 'exclusive',
+                    side='greater'),
+        'T-H2': _f3('pa', 'cfc_mm_lrc/ncp', 'cfc_lrc/ncp', 'test_macro_f1',
+                    'exclusive', side='greater')}},
+}
+F3_TESTS = {test: {**t, 'family': family,
+                   'status': t.get('status', f['status'])}
+            for family, f in F3_FAMILIES.items()
+            for test, t in f['tests'].items()}
+F3_TEST_KEYS = {'seeds', 'a', 'b'}
+
+
+def load_f3_spec(path) -> dict:
+    """The --f3-families spec: {test: {'seeds': [...], 'a': arm, 'b': arm}}
+    for the tests of F3_TESTS; every required test, the other tests of one
+    family and status only all together or not at all (a conditional or
+    optional family is left out as a whole, a lone optional test alone).
+    seeds: the explicit final seeds of the test (distinct integers); arm as
+    in load_f2_spec (keys F2_ARM_KEYS, label as in the registry), with F3
+    stamps only. Unknown or missing keys, a pattern, a missing path and a
+    non-F3 protocol_version raise SystemExit."""
+    with open(path, encoding='utf-8') as f:
+        spec = yaml.safe_load(f)
+    if not isinstance(spec, dict):
+        raise SystemExit(f'{path}: the spec must map tests to entries')
+    unknown = sorted(set(spec) - set(F3_TESTS))
+    missing = [t for t, e in F3_TESTS.items()
+               if e['status'] == 'required' and t not in spec]
+    if unknown or missing:
+        raise SystemExit(f'{path}: unknown tests {unknown}, missing required '
+                         f'tests {missing}')
+    groups = defaultdict(list)
+    for t, e in F3_TESTS.items():
+        if e['status'] != 'required':
+            groups[(e['family'], e['status'])].append(t)
+    for (family, status), tests in groups.items():
+        got = [t for t in tests if t in spec]
+        if got and got != tests:
+            raise SystemExit(f'{path}: the {status} tests {tests} of family '
+                             f'{family} are left out only together '
+                             f'(missing {sorted(set(tests) - set(got))})')
+    for test, entry in spec.items():
+        if not isinstance(entry, dict) or set(entry) != F3_TEST_KEYS:
+            raise SystemExit(f'{path}: {test} needs exactly the keys '
+                             f'{sorted(F3_TEST_KEYS)}')
+        seeds = entry['seeds']
+        if (not isinstance(seeds, list) or not seeds
+                or not all(type(s) is int for s in seeds)
+                or len(set(seeds)) != len(seeds)):
+            raise SystemExit(f'{path}: {test}.seeds must be a non-empty list '
+                             'of distinct integers')
+        for side in 'ab':
+            arm = entry[side]
+            _check_spec_arm(path, f'{test}.{side}', arm, False)
+            if arm['label'] != F3_TESTS[test][side]:
+                raise SystemExit(f'{path}: {test}.{side}: label '
+                                 f'{arm["label"]!r}, expected '
+                                 f'{F3_TESTS[test][side]!r}')
+            bad = [v for v in arm['protocol_version']
+                   if not v.startswith('F3-')]
+            if bad:
+                raise SystemExit(f'{path}: {test}.{side}: protocol_version '
+                                 f'{bad} is not an F3 stamp')
+    return spec
+
+
+def learning_success(v, diverged, threshold) -> bool:
+    """Learning success of one fit (protocol F3, E8): not diverged and
+    v >= threshold (a non-finite v fails). The descriptive B1 block of F2
+    uses a strict > instead."""
+    return bool(not diverged and v >= threshold)
+
+
+def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
+    """(fits, outside) of one F3 arm. Every record in its paths with the
+    arm label must carry a protocol_version the arm lists, whatever its
+    seed (_check_protocol); a record whose seed is not in the test's seed
+    list is not used, its seed goes to outside. fits: one _sequence_row per
+    used record with the endpoint as metric (Person Activity: the registry
+    field; a diverged fit = non-finite endpoint; the crossed interval only
+    on the best-validation field its confusions belong to), below and floor
+    (_floor_mark on that metric), success (with a registry success rule),
+    data_key, width_matched, param_budget and protocol_version; an empty
+    frame when no listed seed has a record. Two records of one key raise
+    SystemExit."""
+    task, endpoint = entry['task'], entry['endpoint']
+    runner = 'pa' if task == 'pa' else 'lv'
+    label, versions = arm['label'], arm['protocol_version']
+    name = f'{test}.{side} ({label})'
+    rows, outside = [], []
+    for path in _record_files(arm['paths']):
+        with open(path, encoding='utf-8') as f:
+            r = json.load(f)
+        if (not isinstance(r, dict) or _record_task(r) != runner
+                or (runner == 'lv' and r.get('system') != task)
+                or arm_label(r) != label):
+            continue
+        eff = (r.get('config') or {}).get('effective') or {}
+        _check_protocol(path, eff, versions, name)
+        if r.get('seed') not in seeds:
+            outside.append(r.get('seed'))
+            continue
+        row = _sequence_row(path, r, runner,
+                            fields=(endpoint,) if runner == 'pa' else ())
+        if runner == 'pa':
+            v = row[endpoint]
+            v = float('nan') if v is None else float(v)
+            row.update(metric=v, diverged=not np.isfinite(v))
+        below, floor = _floor_mark(path, r, eff, row, name, draws)
+        if runner == 'pa' and endpoint != 'test_macro_f1':
+            row['confusion'] = None     # confusions of the best-val epoch
+        if 'success' in entry:
+            rule, t = entry['success']
+            row['success'] = learning_success(
+                row['metric'], row['diverged'],
+                t if rule == 'threshold' else floor + t)
+        rows.append({**row, 'width_matched': _width_matched(r),
+                     'data_key': eff.get('split_seed' if runner == 'pa'
+                                         else 'data_seed'),
+                     'below': bool(below), 'floor': floor,
+                     'param_budget': r.get('param_budget'),
+                     'protocol_version': eff.get('protocol_version')})
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        dup = df[df.duplicated(list(key), keep=False)]
+        if not dup.empty:
+            raise SystemExit(f'two records of {name} and one '
+                             f'{"/".join(key)}: ' + ', '.join(dup['file']))
+    return df, outside
+
+
+def _config_values(d, field):
+    """'v1;v2' of the distinct values of a config field over an arm's fits,
+    None for an empty arm."""
+    return ';'.join(sorted({str(v) for v in d[field]})) if len(d) else None
+
+
+def _check_match(p, fields, name):
+    """SystemExit naming the seed(s) unless both fits of every pair of a
+    merged frame have equal values in each of fields (None == None)."""
+    for f in fields:
+        bad = [s for s, x, y in zip(p['seed'], p[f'{f}_a'], p[f'{f}_b'])
+               if not (x == y or (pd.isna(x) and pd.isna(y)))]
+        if bad:
+            raise SystemExit(f'{name}: arms A and B differ in {f} on seed(s) '
+                             f'{bad}')
+
+
+def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',)):
+    """One F3 test row (F3_COLUMNS) from the fits of arm A and arm B on the
+    test's seed list, paired on key (seed; family E pairs on fold and seed,
+    #133)."""
+    kind, side = entry['kind'], entry['side']
+    row = {'family': entry['family'], 'test': test,
+           'registry_status': entry['status'], 'task': entry['task'],
+           'endpoint': entry['endpoint'], 'side': side, 'a': entry['a'],
+           'b': entry['b'], 'm': m, 'm_f3': m_f3, 'n_expected': len(seeds),
+           'n_outside_list': sum(len(o) for o in outside.values()),
+           'outside_list': '; '.join(f'{s}: seeds {_seed_runs(set(o))}'
+                                     for s, o in outside.items() if o)
+           or None, 'floor_rule': entry['floor']}
+    marks = {}
+    for s, d in (('a', a), ('b', b)):
+        k, n = (int(d['below'].sum()), len(d)) if len(d) else (0, 0)
+        row[f'floor_{s}'] = f'{k}/{n}'
+        marks[s] = not_learned(k, n)
+        for f in F3_CONFIG_FIELDS:
+            row[f'{f}_{s}'] = _config_values(d, f)
+    row['floor_bound'] = marks['a'] or marks['b']
+    row['floor_bound_arms'] = ','.join(
+        s.upper() for s in 'ab' if marks[s]) or None
+    above = any(len(d) and (d['budget_above_tolerance']
+                            & ~d['width_matched']).any() for d in (a, b))
+    if len(a) and len(b):
+        worst = WORST['pa' if entry['task'] == 'pa' else 'lv']
+        a, b = (d.assign(v=np.where(d['diverged'], worst, d['metric']))
+                for d in (a, b))
+        p = a.merge(b, on=list(key), suffixes=('_a', '_b')).sort_values(
+            list(key))
+        _check_data_key(p, test)
+        _check_match(p, entry.get('match', ()), test)
+    else:
+        p = pd.DataFrame()
+    n = len(p)
+    row.update(n_pairs=n, n_nonfinite=int(p['diverged_a'].sum()
+                                          + p['diverged_b'].sum()) if n
+               else 0)
+    if n:
+        st = _pair_stats(p, p['task_a'].iloc[0], m, side)
+        x, y = p['v_a'].to_numpy(float), p['v_b'].to_numpy(float)
+        row.update({k: st[k] for k in (
+            'd_z', 'p_a_gt_b', 'p_a_gt_b_lo', 'p_a_gt_b_hi', 'median_diff',
+            'median_diff_lo', 'median_diff_hi', 'ci_units')},
+            n_positive=int((x - y > 0).sum()),
+            ci_includes_zero=(bool(st['median_diff_lo'] <= 0
+                                   <= st['median_diff_hi'])
+                              if entry['task'] == 'pa' else None))
+        if 'success' in entry:
+            sa, sb = p['success_a'].to_numpy(bool), p['success_b'].to_numpy(
+                bool)
+            _, n10, n01 = mcnemar_exact(sa, sb)
+            row.update(n10=n10, n01=n01, rate_a=_rate(int(sa.sum()), n),
+                       rate_b=_rate(int(sb.sum()), n),
+                       rate_diff=(int(sa.sum()) - int(sb.sum())) / n)
+    if above:
+        row.update(status=EXCLUDED, reading=None)
+        return row
+    row['status'] = 'tested'
+    complete = n == len(seeds)
+    if not n:
+        row['reading'] = 'incomplete'
+        return row
+    if kind == 'mcnemar':
+        p_raw, n10, n01 = mcnemar_exact(sa, sb)
+        row.update(method='mcnemar-exact')
+        effect = n10 - n01
+    else:
+        p_raw, method = st['p_raw'], st['method']
+        if p_raw is None:       # every paired difference zero
+            p_raw = 1.0
+        sign, ranks = _signed_ranks(x, y)
+        effect = float((sign * ranks).sum())          # W+ - W-
+        p_perm = permutation_p(x, y, side)
+        row.update(method=method, p_perm=p_perm,
+                   p_perm_adj=min(1.0, m * p_perm),
+                   w_plus_minus_w_minus=effect)
+    row.update(p_raw=p_raw, p_adj=min(1.0, m * p_raw),
+               p_adj_f3=min(1.0, m_f3 * p_raw))
+    row['significant'] = complete and row['p_adj'] < ALPHA
+    row['significant_f3'] = complete and row['p_adj_f3'] < ALPHA
+    row['only_under_family_cut'] = (row['significant']
+                                    and not row['significant_f3'])
+    if kind != 'mcnemar':
+        row['verdict_flip'] = ((row['p_adj'] < ALPHA)
+                               != (row['p_perm_adj'] < ALPHA))
+    row['reading'] = ('incomplete' if not complete else 'floor-bound'
+                      if entry['floor'] == 'exclusive' and row['floor_bound']
+                      else 'PASS' if row['p_adj'] < ALPHA else 'FAIL')
+    if row['reading'] == 'PASS':
+        row['direction'] = 'A>B' if effect > 0 else 'A<B'
+        if kind != 'mcnemar':
+            row['median_sign_differs'] = bool(np.sign(row['median_diff'])
+                                              != np.sign(effect))
+    return row
+
+
+F3_COLUMNS = ['family', 'test', 'registry_status', 'task', 'endpoint',
+              'side', 'a', 'b', 'm', 'm_f3', 'n_expected', 'n_pairs',
+              'n_outside_list', 'outside_list', 'status', 'reading',
+              'direction', 'method', 'p_raw', 'p_adj', 'p_adj_f3', 'p_perm',
+              'p_perm_adj', 'significant', 'significant_f3',
+              'only_under_family_cut', 'verdict_flip', 'median_sign_differs',
+              'ci_includes_zero', 'w_plus_minus_w_minus', 'median_diff',
+              'median_diff_lo', 'median_diff_hi', 'ci_units', 'd_z',
+              'p_a_gt_b', 'p_a_gt_b_lo', 'p_a_gt_b_hi', 'n_positive',
+              'n_nonfinite', 'n10', 'n01', 'rate_a', 'rate_b', 'rate_diff',
+              'floor_rule', 'floor_a', 'floor_b', 'floor_bound',
+              'floor_bound_arms',
+              *(f'{f}_{s}' for f in F3_CONFIG_FIELDS for s in 'ab')]
+
+
+def f3_family_blocks(spec) -> pd.DataFrame:
+    """One row per test of a load_f3_spec spec, in registry order (columns
+    F3_COLUMNS): paired over the test's seed list with its own merge, delta
+    = A - B, the registry side; Wilcoxon (exact without ties or zeros, else
+    the normal approximation) with the exact permutation p next to it, or
+    the exact McNemar on the learning success; adjusted within the family
+    (m = its tests in the spec) and F3-wide (m_f3 = tests in the spec,
+    sensitivity); reading incomplete (fewer complete pairs than listed
+    seeds; statistics still reported) before the floor rule of the registry
+    before PASS/FAIL; the budget-tolerance exclusion of every arm except
+    the width-matched one."""
+    draws, rows = {}, []
+    for test, entry in F3_TESTS.items():
+        if test not in spec:
+            continue
+        seeds = spec[test]['seeds']
+        m = sum(t in spec for t in F3_FAMILIES[entry['family']]['tests'])
+        (a, out_a), (b, out_b) = (
+            _f3_arm(test, side, entry, spec[test][side], seeds, draws)
+            for side in 'ab')
+        rows.append(_f3_test(test, entry, m, len(spec), a, b, seeds,
+                             {'a': out_a, 'b': out_b}))
+    return pd.DataFrame(rows).reindex(columns=F3_COLUMNS)
+
+
+def f3_report(blocks) -> str:
+    """Markdown of f3_family_blocks."""
+    m_f3 = int(blocks['m_f3'].iloc[0]) if len(blocks) else 0
+    lines = [f'## F3 test families (protocol F3; paired over the seed list '
+             f'of each test, delta = A - B, Bonferroni within the family, '
+             f'F3-wide m={m_f3} as sensitivity)\n',
+             '| Family | m | Test | Task | endpoint | side | A | B | n/listed '
+             '| status | reading | method | p | p adj | p adj F3 | p perm '
+             '| p perm adj | flags | median delta [95% CI] | d_z '
+             '| P(A>B) [95% CI] | seeds delta>0 | success A | success B '
+             '| floor rule | floor A | floor B | floor_bound | non-finite |',
+             '|' + '---|' * 29]
+    flags = (('only_under_family_cut', 'only under the family cut'),
+             ('verdict_flip', 'verdict flips with p perm'),
+             ('median_sign_differs', 'median sign differs'),
+             ('ci_includes_zero', 'interval includes 0'))
+
+    def yes(v):
+        return isinstance(v, (bool, np.bool_)) and bool(v)
+
+    def txt(v):
+        return v if isinstance(v, str) else '—'
+
+    for b in blocks.to_dict('records'):
+        fl = '; '.join([*([b['direction']] if isinstance(b['direction'], str)
+                          else []), *(t for k, t in flags if yes(b[k]))])
+        med = ('—' if pd.isna(b['median_diff']) else
+               f"{b['median_diff']:+.4g} [{b['median_diff_lo']:+.4g}, "
+               f"{b['median_diff_hi']:+.4g}] ({b['ci_units']})")
+        win = ('—' if pd.isna(b['p_a_gt_b']) else
+               f"{b['p_a_gt_b']:.2f} [{b['p_a_gt_b_lo']:.3f}, "
+               f"{b['p_a_gt_b_hi']:.3f}]")
+        lines.append(
+            f"| {b['family']} | {b['m']} | {b['test']} | {b['task']} "
+            f"| {b['endpoint']} | {b['side']} | {b['a']} | {b['b']} "
+            f"| {b['n_pairs']}/{b['n_expected']} | {b['status']} "
+            f"| {txt(b['reading'])} | {txt(b['method'])} | "
+            + ' | '.join(_fmt(b[k]) for k in (
+                'p_raw', 'p_adj', 'p_adj_f3', 'p_perm', 'p_perm_adj'))
+            + f" | {fl or '—'} | {med} | {_fmt(b['d_z'], '+.3f')} | {win} "
+            f"| {_fmt(b['n_positive'], '.0f')} | {txt(b['rate_a'])} "
+            f"| {txt(b['rate_b'])} | {b['floor_rule']} | {b['floor_a']} "
+            f"| {b['floor_b']} | "
+            + (f"YES ({b['floor_bound_arms']})" if yes(b['floor_bound'])
+               else 'no') + f" | {b['n_nonfinite']} |")
+    lines += ['', '| Test | ' + ' | '.join(
+        f'{f} A | {f} B' for f in F3_CONFIG_FIELDS) + ' |',
+        '|' + '---|' * (1 + 2 * len(F3_CONFIG_FIELDS))]
+    for b in blocks.to_dict('records'):
+        lines.append(f"| {b['test']} | " + ' | '.join(
+            txt(b[f'{f}_{s}']) for f in F3_CONFIG_FIELDS for s in 'ab')
+            + ' |')
+    outside = blocks[blocks['n_outside_list'] > 0]
+    lines += ['', 'Records with the arm label outside the seed list of the '
+              'test (not used): ' + ('; '.join(
+                  f"{t} {o} ({n})" for t, o, n in zip(
+                      outside['test'], outside['outside_list'],
+                      outside['n_outside_list'])) or 'none') + '.',
+              '', 'reading: incomplete (fewer complete pairs than listed '
+              'seeds) before floor-bound (floor rule exclusive only) before '
+              f'PASS/FAIL (adj. p < {ALPHA}); the deciding p is that of '
+              'wilcoxon_test (exact without ties or zeros, else the normal '
+              'approximation) or the exact McNemar on the learning success, '
+              'p perm the exact sign-flip test over the mid-ranks with the '
+              'same side. success A/B: fits with learning success (Person '
+              'Activity: endpoint >= the registry threshold; rollouts: '
+              'VPT-multi median >= the fit\'s own floor + 2; a diverged or '
+              'non-finite fit fails). floor A/B: seeds below the floor, not '
+              'learned in more than a fifth of the seeds. A non-finite or '
+              'unbounded fit enters at the worst value.', '']
+    return '\n'.join(lines)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument('--runs', nargs='+', default=['results/runs'])
@@ -2371,6 +2860,11 @@ def main(argv=None) -> int:
                         'a spec of explicit path lists per arm '
                         '(configs/aggregate/descriptive_blocks.yaml); writes '
                         '<out>/descriptive_blocks.csv')
+    p.add_argument('--f3-families', default=None, metavar='SPEC.yaml',
+                   help='the F3 test families (F3_FAMILIES) from a spec of '
+                        'seed lists and explicit path lists per arm '
+                        '(configs/aggregate/f3_families.yaml); writes '
+                        '<out>/f3_families.csv')
     p.add_argument('--bootstrap-units', default='seed',
                    choices=('seed', 'seed,recording'),
                    help='resampling units for the --pa-runs arm means')
@@ -2387,7 +2881,7 @@ def main(argv=None) -> int:
         df = df[df['cell'].isin(args.cells.split(','))]
     if df.empty and not (args.hpo_dir or args.pa_runs or args.rollout_runs
                          or args.co_runs or args.f2_families
-                         or args.descriptive):
+                         or args.descriptive or args.f3_families):
         print(f'No run JSONs found in {args.runs}', file=sys.stderr)
         return 1
 
@@ -2455,6 +2949,10 @@ def main(argv=None) -> int:
         desc.to_csv(os.path.join(args.out, 'descriptive_blocks.csv'),
                     index=False)
         parts.append(descriptive_report(desc))
+    if args.f3_families:
+        f3 = f3_family_blocks(load_f3_spec(args.f3_families))
+        f3.to_csv(os.path.join(args.out, 'f3_families.csv'), index=False)
+        parts.append(f3_report(f3))
     report = '\n'.join(parts)
     md_path = os.path.join(args.out, 'summary.md')
     with open(md_path, 'w', encoding='utf-8') as f:
