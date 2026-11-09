@@ -545,6 +545,11 @@ def test_cncp_ff_builds_with_fewer_params_and_rolls_out():
     assert (param_counts(ff)["params_effective"]
             < param_counts(full)["params_effective"])
     assert "cncp_ff" in FORCEABLE_WIRINGS and "cncp_ff" in LV_WIRINGS
+    (col,) = [l.cell for l in ff.layers
+              if isinstance(l, tf.keras.layers.RNN)]
+    assert sorted(col.subcells) == ["L23", "L4", "L5ET", "L5IT"]
+    assert sorted(col.edges) == ["M_L23_L5ET", "M_L23_L5IT", "M_L4_L23",
+                                 "M_L5IT_L5ET", "M_in_L4"]
     assert ff.rewire_overlap is None
     x, t, _ = _dummy_batch()
     view = forced_rollout_model(ff, tf.Variable(1.0, trainable=False))
@@ -552,12 +557,17 @@ def test_cncp_ff_builds_with_fewer_params_and_rolls_out():
                                rtol=1e-5, atol=1e-6)
 
 
-def test_cncp_ff_budget_fit_within_tolerance_at_4k():
-    """LV budget 4000 (cfc_lrc, registry kwargs as in the runner): the
-    fractional lamina scan lands within BUDGET_TOLERANCE (measured: size
-    21.5, 4079 effective, 2.0 %). The window covers the full scan's pick."""
-    from experiments.run_lotka_volterra_benchmark import BUDGET_TOLERANCE
-    build = lambda s: build_lotka_volterra_model(
-        "cncp_ff", "cfc_lrc", size=s, seed=0, elastance_type="asymmetric")
-    size, n = size_for_budget(build, 4000, lamina_sizes(range(19, 25)))
-    assert abs(n - 4000) / 4000 <= BUDGET_TOLERANCE, (size, n)
+def test_cncp_ff_runner_fits_the_4k_budget(tmp_path, monkeypatch):
+    """LV budget 4000 through the runner's full fractional lamina scan
+    (measured: size 21.5, 4079 effective, 2.0 %), 1 epoch."""
+    monkeypatch.setattr(sys, "argv", [
+        "run_lotka_volterra_benchmark.py", "--wiring", "cncp_ff", "--cell",
+        "cfc_lrc", "--param-budget", "4000", "--epochs", "1",
+        "--n-trajectories", "6", "--seq-len", "6", "--anchors", "1,2",
+        "--horizon", "4", "--outdir", str(tmp_path)])
+    lv_runner.main()
+    rec = json.loads((tmp_path / "cfc_lrc_cncp_ff_seed0.json").read_text())
+    assert rec["size"] != int(rec["size"])          # off the integer sizes
+    assert rec["budget_above_tolerance"] is False
+    assert (abs(rec["params_effective"] - 4000) / 4000
+            <= lv_runner.BUDGET_TOLERANCE)
