@@ -532,3 +532,32 @@ def test_runner_records_the_kept_edge_share_of_the_random_wirings(
     assert rec["params_effective"] == plain["params_effective"]
     assert rec["config"]["effective"]["config_hash"] != \
         plain["config"]["effective"]["config_hash"]
+
+
+# --- feed-forward cNCP chain (issue #135) ---
+
+def test_cncp_ff_builds_with_fewer_params_and_rolls_out():
+    from src.wirings import param_counts
+    from src.tasks.lotka_volterra.model import (FORCEABLE_WIRINGS,
+                                                forced_rollout_model)
+    full = build_lotka_volterra_model("cncp", "cfc_lrc", size=16, seed=0)
+    ff = build_lotka_volterra_model("cncp_ff", "cfc_lrc", size=16, seed=0)
+    assert (param_counts(ff)["params_effective"]
+            < param_counts(full)["params_effective"])
+    assert "cncp_ff" in FORCEABLE_WIRINGS and "cncp_ff" in LV_WIRINGS
+    assert ff.rewire_overlap is None
+    x, t, _ = _dummy_batch()
+    view = forced_rollout_model(ff, tf.Variable(1.0, trainable=False))
+    np.testing.assert_allclose(view([x, t]).numpy(), ff([x, t]).numpy(),
+                               rtol=1e-5, atol=1e-6)
+
+
+def test_cncp_ff_budget_fit_within_tolerance_at_4k():
+    """LV budget 4000 (cfc_lrc, registry kwargs as in the runner): the
+    fractional lamina scan lands within BUDGET_TOLERANCE (measured: size
+    21.5, 4079 effective, 2.0 %). The window covers the full scan's pick."""
+    from experiments.run_lotka_volterra_benchmark import BUDGET_TOLERANCE
+    build = lambda s: build_lotka_volterra_model(
+        "cncp_ff", "cfc_lrc", size=s, seed=0, elastance_type="asymmetric")
+    size, n = size_for_budget(build, 4000, lamina_sizes(range(19, 25)))
+    assert abs(n - 4000) / 4000 <= BUDGET_TOLERANCE, (size, n)

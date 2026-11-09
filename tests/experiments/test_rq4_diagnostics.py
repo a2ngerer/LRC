@@ -143,7 +143,7 @@ def test_jacobian_matches_finite_differences_through_dt_scale(cell):
 
 @pytest.mark.parametrize('wiring,cell', [
     *[('dense', c) for c in KNOWN_CELLS],
-    *[(w, 'lrc') for w in ('dense3', 'ncp', 'cncp', 'cncp2')]])
+    *[(w, 'lrc') for w in ('dense3', 'ncp', 'cncp', 'cncp2', 'cncp_ff')]])
 def test_one_step_map_reproduces_every_registry_cell(wiring, cell):
     # lrc_ar feeds its input as the state: dense width = state width
     size = 2 if cell == 'lrc_ar' else (8 if wiring == 'ncp' else 4)

@@ -45,13 +45,17 @@ from src.wirings.ncp import BUDGET_SIZES, CFC_NCP_CELLS, ncp_cell_kwargs
 #         lateral coupling, readout over the column outputs (spec B.7, V4)
 # ncp_random / cncp_random: the degree-preserving random-rewiring null models of
 #         ncp / cncp (issue #17), same weights and effective parameter count
+# cncp_ff: the feed-forward reduction of cncp (spec 7.1, issue #135): only the
+#         chain input -> L4 -> L2/3 -> L5IT/L5ET is built, no delayed basal,
+#         apical or relay edges, no gains, no L6 sub-cells, no relay
 WIRINGS = ("cncp", "ncp", "dense", "dense3", "cncp2", "cncp2_multi",
-           "ncp_random", "cncp_random")
+           "ncp_random", "cncp_random", "cncp_ff")
 # Wirings whose composite state holds one slot per graph node.
-COMPOSITE_WIRINGS = ("cncp", "cncp2", "cncp2_multi", "cncp_random")
-# The two null models run the node-for-node same cell as their plain wiring.
+COMPOSITE_WIRINGS = ("cncp", "cncp2", "cncp2_multi", "cncp_random", "cncp_ff")
+# The null models and the feed-forward reduction run the same cell class as
+# their plain wiring.
 NCP_WIRINGS = ("ncp", "ncp_random")
-CNCP_WIRINGS = ("cncp", "cncp_random")
+CNCP_WIRINGS = ("cncp", "cncp_random", "cncp_ff")
 
 # Person Activity rows are one-hot(sensor tag, 4) ++ xyz (datasets.py), the
 # sensor structure of partition='region' (spec B.7).
@@ -120,7 +124,7 @@ def lamina_sizes(sizes=BUDGET_SIZES):
 
 def budget_sizes(wiring):
     """The ``size_for_budget`` scan of one arm: the finer lamina knob for the
-    wirings built from scaled_lamina_units (cncp, tbt_cncp*), else every
+    wirings built from scaled_lamina_units (CNCP_WIRINGS, tbt_cncp*), else every
     integer size in BUDGET_SIZES."""
     if wiring in CNCP_WIRINGS or wiring.startswith("tbt_"):
         return lamina_sizes()
@@ -373,14 +377,17 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
 
     Args:
         wiring:       'cncp', 'ncp', 'dense', 'dense3', 'cncp2', 'cncp2_multi',
-                      or the random-rewiring controls 'ncp_random' /
+                      the random-rewiring controls 'ncp_random' /
                       'cncp_random' (issue #17; same effective parameter count
-                      as 'ncp' / 'cncp' of the same seed and size).
+                      as 'ncp' / 'cncp' of the same seed and size), or the
+                      feed-forward cNCP chain 'cncp_ff' (issue #135; fewer
+                      effective parameters than 'cncp' at the same size).
         cell:         _CELL_REGISTRY key (e.g. 'cfc_lrc', 'gru', 'lstm') or
                       BaseCell subclass; cncp takes single-state cells only.
         size:         the arm's width knob. dense/dense3: RNN units per layer;
-                      ncp: inter=size, command=motor=size//2; cncp: lamina
-                      widths scaled by size/16, fractional sizes allowed
+                      ncp: inter=size, command=motor=size//2; cncp,
+                      cncp_random, cncp_ff: lamina widths scaled by size/16,
+                      fractional sizes allowed
                       (see scaled_lamina_units);
                       cncp2 / cncp2_multi: column width u = size.
                       Derive it per arm from the parameter budget
@@ -456,11 +463,12 @@ def build_person_activity_model(wiring, cell, size=64, seed=42,
         # One composite RNN cell holding the whole sparse cNCP graph; it
         # consumes (features, time) directly, so every sub-cell integrates
         # the true elapsed time at every step. cncp_random: the group-level
-        # null model (issue #17).
+        # null model (issue #17); cncp_ff: the feed-forward reduction (#135).
         cncp_cell = CorticalColumnCell(
             cell_cls=cell_cls, lamina_units=scaled_lamina_units(size),
             seed=seed, timescale_prior=timescale_prior,
-            rewire=wiring == "cncp_random", **cell_kwargs)
+            rewire=wiring == "cncp_random",
+            feedforward_only=wiring == "cncp_ff", **cell_kwargs)
         h = tf.keras.layers.RNN(cncp_cell, return_sequences=True)((x, time))
         rewire_overlap = cncp_cell.rewire_overlap
     elif wiring == "cncp2":
