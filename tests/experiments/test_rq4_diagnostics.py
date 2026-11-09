@@ -161,6 +161,29 @@ def test_one_step_map_reproduces_every_registry_cell(wiring, cell):
         assert not np.any(jacs[:, :, :one.dim, :one.dim])
 
 
+def test_cncp_ff_retention_reads_the_built_nodes_only():
+    """#135: the inert cncp_ff slots form an identity block that no other slot
+    reads, so the full S-norm would be max(active norm, 1); active_state
+    drops them."""
+    model = _model('cncp_ff', 'lrc', 4)
+    one = rq4.OneStep(model)
+    _, states, jacs = one.trajectory(*_inputs(T=17), 0.0)   # D = 16 exists
+    idx = rq4.active_state({'wiring': 'cncp_ff'}, one)
+    inert = np.arange(len(idx), one.dim)
+    assert len(inert) == sum(one.sizes[0][4:]) > 0
+    np.testing.assert_array_equal(jacs[:, :, inert][..., inert],
+                                  np.broadcast_to(np.eye(len(inert)),
+                                                  jacs.shape[:2] + (len(inert),) * 2))
+    assert not jacs[:, :, idx][..., inert].any()
+    assert not jacs[:, :, inert][..., idx].any()
+    act = rq4.trajectory_columns('cl', states, jacs, idx, {})
+    full = rq4.trajectory_columns('cl', states, jacs, np.arange(one.dim), {})
+    for d in rq4.DELTAS:
+        assert full[f'cl_jac{d}_max'] == pytest.approx(
+            max(act[f'cl_jac{d}_max'], 1.0), rel=1e-5)
+    assert len(rq4.active_state({'wiring': 'cncp'}, one)) == one.dim
+
+
 def test_posthoc_script_on_2_epoch_fits(tmp_path, monkeypatch):
     _lv(tmp_path, monkeypatch, 'gru', 'dense3', 4)
     _lv(tmp_path, monkeypatch, 'lrc', 'ncp', 8, '--dt-scale', 'auto',

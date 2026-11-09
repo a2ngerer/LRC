@@ -21,7 +21,10 @@ Per result JSON matched by --results:
     J_{t+D-1}...J_t) for D in 1, 4, 16, median and max over sequences and
     anchors t; ||S_t||_2 mean and max over sequences and t. dense3:
     additionally per RNN layer, ncp: per inter/command/motor block. The
-    stateless mlp control (#60) never reads S, so its retention is 0;
+    stateless mlp control (#60) never reads S, so its retention is 0.
+    cncp_ff (#135): the S-block is restricted to its four built nodes
+    (active_state); the inert L6CC/L6CT/Thal/TRN slots pass through with an
+    identity block that would floor every retention norm at 1;
   * --hessian-top (exploratory, off by default, not a pre-registered outcome):
     top Hessian eigenvalue of the training loss on the first 16 training
     sequences (the runner's default fixed batch), 20 power-iteration HVPs.
@@ -134,6 +137,15 @@ def jacobian_products(jacs):
         d *= 2
 
 
+def active_state(record, one):
+    """Indices of S the retention norms read: all of S, except the four
+    inert slots of cncp_ff (L6CC, L6CT, Thal, TRN after L4, L23, L5IT, L5ET in
+    NODE_ORDER), which pass through unchanged and no other slot reads."""
+    if record["wiring"] == "cncp_ff":
+        return np.arange(sum(one.sizes[0][:4]))
+    return np.arange(one.dim)
+
+
 def state_blocks(record, one):
     """{block: state indices} of the per-layer blocks (dense3, ncp), else {}."""
     if record["wiring"] == "dense3":
@@ -163,8 +175,9 @@ def _spectral(prod, idx):
     return tf.linalg.svd(block, compute_uv=False)[..., 0].numpy()
 
 
-def trajectory_columns(prefix, states, jacs, dim, blocks):
-    """CSV columns of one trajectory (prefix 'tf' or 'cl')."""
+def trajectory_columns(prefix, states, jacs, full, blocks):
+    """CSV columns of one trajectory (prefix 'tf' or 'cl'); ``full`` = the
+    S indices of the retention norms (active_state)."""
     row = {}
     norms = np.linalg.norm(states, axis=-1)                   # (B, T)
     row[f"{prefix}_hnorm_mean"] = float(norms.mean())
@@ -172,7 +185,6 @@ def trajectory_columns(prefix, states, jacs, dim, blocks):
     for name, idx in blocks.items():
         row[f"{prefix}_hnorm_{name}_mean"] = float(
             np.linalg.norm(states[..., idx], axis=-1).mean())
-    full = np.arange(dim)
     for d, prod in jacobian_products(jacs).items():
         row[f"{prefix}_jac{d}_median"], row[f"{prefix}_jac{d}_max"] = _stats(
             _spectral(prod, full))
@@ -235,11 +247,11 @@ def diagnose(path, hessian=False):
                                rtol=1e-3, atol=1e-4,
                                err_msg="one-step map at alpha 0 != wrapper")
 
-    blocks = state_blocks(record, one)
+    blocks, full = state_blocks(record, one), active_state(record, one)
     diag = {"config_effective_sha256": config_hash(eff),
             "n_seq": len(xs), "seq_len": data.seq_len, "state_dim": one.dim,
-            **trajectory_columns("tf", tf_states, tf_jacs, one.dim, blocks),
-            **trajectory_columns("cl", cl_states, cl_jacs, one.dim, blocks)}
+            **trajectory_columns("tf", tf_states, tf_jacs, full, blocks),
+            **trajectory_columns("cl", cl_states, cl_jacs, full, blocks)}
     if hessian:
         b = HESSIAN_BATCH
         diag["hessian_top"] = hessian_top(
