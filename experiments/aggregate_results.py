@@ -1921,6 +1921,8 @@ def permutation_p(x, y, alternative='two-sided') -> float:
     sign, ranks = _signed_ranks(x, y)
     if not ranks.size:
         return 1.0
+    if ranks.size > 62:
+        raise ValueError('permutation_p: int64 pattern counts need k <= 62')
     counts = np.zeros(int(np.rint(2 * ranks.sum())) + 1, np.int64)
     counts[0] = 1
     for r2 in np.rint(2 * ranks).astype(int):
@@ -2572,7 +2574,8 @@ def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
         if 'success' in entry:
             rule, t = entry['success']
             row['success'] = learning_success(
-                row['metric'], row['diverged'],
+                row['metric'],
+                row['diverged'] or bool(r.get('training_diverged')),
                 t if rule == 'threshold' else floor + t)
         rows.append({**row, 'width_matched': _width_matched(r),
                      'data_key': eff.get('split_seed' if runner == 'pa'
@@ -2741,7 +2744,8 @@ def f3_family_blocks(spec) -> pd.DataFrame:
             for side in 'ab')
         rows.append(_f3_test(test, entry, m, len(spec), a, b, seeds,
                              {'a': out_a, 'b': out_b}))
-    return pd.DataFrame(rows).reindex(columns=F3_COLUMNS)
+    return pd.DataFrame(rows).reindex(columns=F3_COLUMNS).astype(
+        {'n10': 'Int64', 'n01': 'Int64'})
 
 
 def f3_report(blocks) -> str:

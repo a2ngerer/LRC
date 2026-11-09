@@ -13,7 +13,7 @@ import yaml
 from scipy.stats import wilcoxon
 
 from experiments.aggregate_results import (EXCLUDED, F3_FAMILIES, F3_TESTS,
-                                           _f3_arm, _sequence_row,
+                                           _f3_arm, _f3_test, _sequence_row,
                                            _signed_ranks, arm_label,
                                            f3_family_blocks,
                                            learning_success, load_f3_spec,
@@ -48,10 +48,11 @@ def _cell(label, lr):
 
 
 def _lv(path, system, label, seed, vpt, pv=F3, epochs=None, budget=4000,
-        above=False, lr=1e-3, name=None):
+        above=False, lr=1e-3, name=None, unbounded=False, extra=None):
     cell, wiring, build = _cell(label, lr)
     epochs = epochs or LV_EPOCHS[system]
-    m = {'vpt_multi_median': vpt, 'rate_unbounded': 0.0, 'non_finite': False,
+    m = {'vpt_multi_median': vpt, 'rate_unbounded': 1.0 if unbounded else 0.0,
+         'non_finite': False,
          'anchors': [8], 'anchor_horizon': 16, 'anchor_theta': 0.5}
     eff = {'task': 'lotka_volterra', 'system': system, 't_span': [0.0, 10.0],
            'ic_spread': 0.4, 'n_trajectories': 10, 'seq_len': 32,
@@ -64,6 +65,7 @@ def _lv(path, system, label, seed, vpt, pv=F3, epochs=None, budget=4000,
            'clipnorm': None, 'params_effective': 3960, 'dt_scale': 12.8,
            'forcing': 'mixed', 'best_val_epoch': 1,
            'rollout_metrics_test': m, 'config': {'effective': eff}}
+    rec.update(extra or {})
     _dump(os.path.join(path, name or f'{cell}_{wiring}_seed{seed}.json'), rec)
 
 
@@ -71,10 +73,10 @@ GOOD = {f'r{i}': [[6, 1], [1, 5]] for i in range(3)}   # one-class 0.35
 
 
 def _pa(path, label, seed, f1, pv=F3, last=None, lr=3e-3, budget=30000,
-        above=False, name=None, drop=()):
+        above=False, name=None, drop=(), split_seed=0, extra=None):
     cell, wiring, build = _cell(label, lr)
     eff = {'task': 'person_activity', 'param_budget': budget, 'epochs': 50,
-           'split_seed': 0, 'ode_unfolds': 6, 'protocol_version': pv,
+           'split_seed': split_seed, 'ode_unfolds': 6, 'protocol_version': pv,
            'build': build}
     rec = {'cell': cell, 'wiring': wiring, 'seed': seed, 'epochs': 50,
            'param_budget': budget, 'budget_deviation': 0.02,
@@ -85,6 +87,7 @@ def _pa(path, label, seed, f1, pv=F3, last=None, lr=3e-3, budget=30000,
            'test_confusion_by_recording': GOOD, 'config': {'effective': eff}}
     for k in drop:
         del rec[k]
+    rec.update(extra or {})
     _dump(os.path.join(path, name or f'{cell}_{wiring}_seed{seed}.json'), rec)
 
 
@@ -163,7 +166,12 @@ def test_registry_defines_every_test_once_with_its_rules():
                                  if e['task'] == 'pa'
                                  else ('vpt_multi_median',))
         if e['kind'] == 'mcnemar':
-            assert 'success' in e
+            assert 'success' in e and e['side'] == 'two-sided'
+    assert {t: e['endpoint'] for t, e in F3_TESTS.items()
+            if e['task'] == 'pa'} == {
+        'T-A1': 'test_macro_f1_last', 'T-A2': 'test_macro_f1_last',
+        'T-D1': 'test_macro_f1', 'T-D2': 'test_macro_f1',
+        'T-G2': 'test_macro_f1', 'T-H2': 'test_macro_f1'}
     assert F3_TESTS['T-A1']['a'] == 'lrc/ncp' + LEGACY
     assert F3_TESTS['T-A1']['success'] == ('threshold', 0.30)
     assert F3_TESTS['T-A1']['match'] == ('lr', 'clipnorm', 'epochs',
@@ -360,6 +368,14 @@ def test_incomplete_test_reports_its_statistics(tmp_path):
     assert (r['n_pairs'], r['reading']) == (0, 'incomplete')
 
 
+def test_incomplete_reads_before_floor_bound(tmp_path):
+    vb = [-1.0 if i < 5 else 20.0 for i in range(20)]
+    r = _row(tmp_path, 'T-C1', skip={('T-C1', 'b'): [29]},
+             values={'T-C1': ([21.0 + i for i in range(20)], vb)})
+    assert (r['floor_b'], r['floor_bound'], r['reading']) == (
+        '5/19', True, 'incomplete')
+
+
 def test_records_outside_the_seed_list_are_counted_not_used(tmp_path):
     spec = load_f3_spec(_world(tmp_path))
     folder = spec['T-C1']['a']['paths'][0]
@@ -399,10 +415,16 @@ def test_non_f3_or_unstamped_record_is_rejected_whatever_its_seed(
         f3_family_blocks(spec)
 
 
-def test_t_a1_lr_mismatch_names_the_seed(tmp_path):
-    with pytest.raises(SystemExit, match=r'T-A1: .*differ in lr.*\[15\]'):
-        _blocks(_world(tmp_path, opts={('T-A1', 'b'): {15: {'lr': 1e-2}}}))
-    # T-D has no match entry: a per-arm lr is reported
+@pytest.mark.parametrize('field, value', [
+    ('lr', 1e-2), ('clipnorm', 0.5), ('epochs', 60), ('param_budget', 31000)])
+def test_t_a1_match_mismatch_names_the_seed(tmp_path, field, value):
+    with pytest.raises(SystemExit,
+                       match=rf'T-A1: .*differ in {field}.*\[15\]'):
+        _blocks(_world(tmp_path, opts={
+            ('T-A1', 'b'): {15: {'extra': {field: value}}}}))
+
+
+def test_per_arm_lr_is_reported_without_a_match_entry(tmp_path):
     r = _row(tmp_path / 'd', 'T-D2', opts={('T-D2', 'b'): {'lr': 1e-2}})
     assert (r['lr_a'], r['lr_b'], r['reading']) == ('0.003', '0.01', 'PASS')
 
@@ -418,13 +440,87 @@ def test_optimizer_variants_of_one_cell_pair_by_seed(tmp_path):
     the arms apart, the pairs form by seed."""
     spec = load_f3_spec(_world(tmp_path))
     shared = str(tmp_path / 'shared')
-    for seed in _seeds('T-A1'):
-        _pa(shared, 'lrc/ncp' + LEGACY, seed, 0.6, name=f'legacy_{seed}.json')
-        _pa(shared, 'lrc/ncp', seed, 0.1, name=f'f1_{seed}.json')
+    for seed in _seeds('T-A1'):     # A learns on seeds = 0 mod 3, B on odd
+        if seed != 10:
+            _pa(shared, 'lrc/ncp' + LEGACY, seed,
+                0.6 if seed % 3 == 0 else 0.1, name=f'legacy_{seed}.json')
+        if seed != 13:
+            _pa(shared, 'lrc/ncp', seed, 0.6 if seed % 2 else 0.1,
+                name=f'f1_{seed}.json')
     spec['T-A1']['a']['paths'] = spec['T-A1']['b']['paths'] = [shared]
     r = f3_family_blocks(spec).set_index('test').loc['T-A1']
+    # seed pairs 11, 12, 14-29: only A on 12, 18, 24; only B on 11, 17, 19,
+    # 23, 25, 29
     assert (r['n_pairs'], r['n10'], r['n01'], r['reading']) == (
-        20, 20, 0, 'PASS')
+        18, 3, 6, 'incomplete')
+    assert r['rate_a'].startswith('6/18') and r['rate_b'].startswith('9/18')
+
+
+def test_diverged_and_non_finite_fits_fail_and_enter_at_the_worst_value(
+        tmp_path):
+    spec = load_f3_spec(_world(tmp_path, opts={
+        ('T-F1', 'b'): {10: {'unbounded': True},
+                        11: {'extra': {'training_diverged': True}}},
+        ('T-A1', 'b'): {10: {'extra': {'test_macro_f1_last': None}}}}))
+    entry = F3_TESTS['T-F1']
+    df, _ = _f3_arm('T-F1', 'b', entry, spec['T-F1']['b'], _seeds('T-F1'),
+                    {})
+    df = df.set_index('seed')
+    assert df.loc[10, 'diverged'] and not df.loc[11, 'diverged']
+    assert not df.loc[10, 'success'] and not df.loc[11, 'success']
+    b = f3_family_blocks(spec).set_index('test')
+    assert (b.loc['T-F1', 'n_nonfinite'], b.loc['T-F1', 'rate_b'][:4]) == (
+        1, '8/10')
+    # the unbounded fit enters at VPT 0: seed 10 has A - B = 21
+    assert b.loc['T-F1', 'n_positive'] == 10
+    assert (b.loc['T-A1', 'n_nonfinite'], b.loc['T-A1', 'rate_b'][:5]) == (
+        1, '19/20')
+    with pytest.raises(SystemExit, match=r'T-D1: .*data key.*\[14\]'):
+        _blocks(_world(tmp_path / 'dk', opts={
+            ('T-D1', 'b'): {14: {'split_seed': 1}}}))
+
+
+# --- one test row from frames ------------------------------------------------
+
+def _frame(vals, above=False, width=False):
+    v = np.asarray(vals, float)
+    return pd.DataFrame({
+        'seed': range(10, 10 + len(v)), 'metric': v, 'task': 'lv',
+        'diverged': ~np.isfinite(v), 'below': False,
+        'budget_above_tolerance': above, 'width_matched': width,
+        'data_key': 1, 'lr': 1e-3, 'clipnorm': None, 'epochs': 300,
+        'param_budget': 4000})
+
+
+def _frow(delta, m=2, m_f3=8, a=None, b=None):
+    """_f3_test of T-C1 with B = 0 and A = delta on seeds 10, 11, ..."""
+    return _f3_test('T-C1', F3_TESTS['T-C1'], m, m_f3,
+                    _frame(delta, **(a or {})),
+                    _frame([0.0] * len(delta), **(b or {})),
+                    list(range(10, 10 + len(delta))), {'a': [], 'b': []})
+
+
+def test_family_cut_permutation_flip_direction_and_non_finite():
+    r = _frow([-1, -2, *range(3, 11)])
+    assert r['p_raw'] == pytest.approx(10 / 1024)
+    assert r['significant'] and not r['significant_f3']
+    assert r['only_under_family_cut'] and r['reading'] == 'PASS'
+    r = _frow([2, 3, 3, -2, 1, 4, 2, 4, -1, 4])
+    assert r['method'] == 'approx'
+    assert r['p_perm_adj'] == pytest.approx(52 / 1024)
+    assert r['verdict_flip'] and r['reading'] == 'PASS'
+    r = _frow([-d for d in range(1, 11)])
+    assert (r['reading'], r['direction']) == ('PASS', 'A<B')
+    assert r['w_plus_minus_w_minus'] == -55
+    r = _frow([float('nan'), *range(2, 11)])
+    assert r['n_nonfinite'] == 1 and r['n_positive'] == 9
+
+
+def test_budget_exclusion_spares_only_the_width_matched_arm():
+    r = _frow(range(1, 11), b={'above': True, 'width': True})
+    assert (r['status'], r['reading']) == ('tested', 'PASS')
+    r = _frow(range(1, 11), b={'above': True})
+    assert (r['status'], r['reading']) == (EXCLUDED, None)
 
 
 def test_one_sided_h_test(tmp_path):
