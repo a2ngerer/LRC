@@ -219,11 +219,11 @@ def run(args):
         "dt_feature": dt_feature,
         "ode_unfolds": ode_unfolds,
         "dt_scale": args.dt_scale,
-        "split": data.split,
-        "split_seed": data.split_seed,
         # not hashed: separates the optimizer variants of one config (#138)
         "optimizer": args.optimizer,
         "opt_epsilon": args.opt_epsilon,
+        "split": data.split,
+        "split_seed": data.split_seed,
         **pc,
         **multi,
         **rewire,

@@ -9,8 +9,9 @@ Gaussian noise of --noise-frac times the training std goes on the
 coordinates, and exactly m columns per window lose their coordinates for the
 whole window. All draws come from --corruption-seed, so every arm sees the same
 m sequence, column choices and batch order (`--corruption-seed seed` takes the
-run's --seed: fresh draws per seed, shared by the arms of one seed, #138). Each epoch is scored on fixed
-validation draws for every m of the grid (GridValidation, --val-seed); the
+run's --seed: fresh draws per seed, shared by the arms of one seed, #138). Each
+epoch is scored on fixed validation draws for every m of the grid
+(GridValidation, --val-seed); the
 epoch with the best mean validation macro-F1 over the grid is kept. The test
 split is scored per m over --test-seeds fixed draws (pooled window macro-F1,
 per-recording confusions, per-position macro-F1 curve) plus the correlated
