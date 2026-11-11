@@ -1,7 +1,8 @@
 # tests/experiments/test_cncp2_multi_runners.py
 # cncp2_multi through the runners (issue a2ngerer/LRC#10): the LV and PA flag
 # handling, a one-epoch Lotka-Volterra run writing the new JSON fields and the
-# filename suffix, and a one-epoch committee run on the partial views.
+# filename suffix, and a one-epoch committee run on the partial views (needs the
+# Person Activity data file, skipped without it).
 import json
 import sys
 import warnings
@@ -14,6 +15,7 @@ from experiments import run_committee_benchmark as co_runner
 from experiments import run_lotka_volterra_benchmark as lv_runner
 from experiments.run_person_activity_benchmark import result_tag
 from src.tasks.person_activity.model import multi_column_config
+from tests.tasks.person_activity.test_person_activity import requires_data
 
 _FLAGS = dict(columns=None, partition=None, coupling=None, readout=None,
               backbone_layers=None)
@@ -58,6 +60,7 @@ def test_lv_runner_one_epoch_writes_multi_fields(tmp_path, monkeypatch):
     assert names == ['G0', 'S0', 'D0', 'R0', 'G1', 'S1', 'D1', 'R1']
 
 
+@requires_data     # trains on the real data file, absent in a fresh worktree (#138)
 def test_committee_runner_one_epoch_writes_drop_accs(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, 'argv', [
         'run_committee_benchmark.py', '--wiring', 'cncp2_multi',

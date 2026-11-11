@@ -8,7 +8,8 @@ drawn uniformly from the K-specific fault grid (fault_counts of --rho-grid),
 Gaussian noise of --noise-frac times the training std goes on the
 coordinates, and exactly m columns per window lose their coordinates for the
 whole window. All draws come from --corruption-seed, so every arm sees the same
-m sequence, column choices and batch order. Each epoch is scored on fixed
+m sequence, column choices and batch order (`--corruption-seed seed` takes the
+run's --seed: fresh draws per seed, shared by the arms of one seed, #138). Each epoch is scored on fixed
 validation draws for every m of the grid (GridValidation, --val-seed); the
 epoch with the best mean validation macro-F1 over the grid is kept. The test
 split is scored per m over --test-seeds fixed draws (pooled window macro-F1,
@@ -258,6 +259,18 @@ def _floats(s):
     return [float(x) for x in s.split(",") if x.strip()]
 
 
+def corruption_seed_arg(text):
+    """--corruption-seed: an int, or the word `seed` (kept as the string until
+    main resolves it to --seed)."""
+    if text == "seed":
+        return text
+    try:
+        return int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"an int or the word 'seed', got {text!r}") from None
+
+
 def eval_only(argv):
     """--eval-only (#81): re-score a stored fit without training.
 
@@ -446,9 +459,11 @@ def main():
     ap.add_argument("--train-corruption", default="on", choices=("on", "off"),
                     help="on: per-batch fault count from the grid and "
                          "coordinate noise; off: clean identical views")
-    ap.add_argument("--corruption-seed", type=int, default=0,
+    ap.add_argument("--corruption-seed", type=corruption_seed_arg, default=0,
                     help="seeds the training draws and the batch order "
-                         "(shared by every arm)")
+                         "(shared by every arm); an int, or the word `seed` "
+                         "for the run's --seed (fresh draws per seed, shared "
+                         "by every arm with that seed)")
     ap.add_argument("--val-seed", type=int, default=100,
                     help="seeds the fixed validation draws per fault count")
     ap.add_argument("--test-seeds", default="0,1,2,3,4",
@@ -511,6 +526,8 @@ def main():
                     help="tf.config.experimental.enable_op_determinism() "
                          "before model construction (#76)")
     args = ap.parse_args()
+    if args.corruption_seed == "seed":   # resolved before name, config, record
+        args.corruption_seed = args.seed
     if args.size is None and args.param_budget is None:
         args.size = DEFAULT_SIZE
     if args.wiring == "cncp2_multi" and args.vote_lambda is not None:
