@@ -26,7 +26,8 @@ SEQ_LEN, NUM_CLASSES, FEATURES = 32, 7, 7
 
 
 def dose(inter, command, motor):
-    """The dose-level builder of the init probe (probe_e16b.py)."""
+    """The dose-level builder of the init probe (probe_e16b.py in the thesis
+    workspace, not in this repository); same kwargs shape and factors."""
     return dict(ASYM, init_slice_scale={'inter': inter, 'command': command,
                                         'motor': motor})
 
@@ -76,6 +77,17 @@ def _pa_model(cell, size):
         feature_size=FEATURES, seq_len=SEQ_LEN, **kwargs)
 
 
+@pytest.mark.parametrize('key', KEYS)
+def test_init_options_reach_the_cell(key):
+    """Same seed and width as lrc: identical weight shapes, but the init option
+    of the key changes the drawn values (a builder that drops the option would
+    return the lrc weights)."""
+    ref = _pa_model('lrc', 8).get_weights()
+    got = _pa_model(key, 8).get_weights()
+    assert [w.shape for w in got] == [w.shape for w in ref]
+    assert any(not (a == b).all() for a, b in zip(got, ref)), key
+
+
 @pytest.fixture(scope='module')
 def lrc_pick():
     """Width and effective count the runner's --param-budget 30000 scan picks
@@ -101,7 +113,9 @@ def test_pa_ncp_budget_gives_the_lrc_size(key, lrc_pick):
 @pytest.mark.parametrize('key', KEYS)
 def test_manifest_plans_a_pa_final_entry(key, tmp_path, capsys):
     """Read-only: a PA final YAML (written to tmp_path, not a campaign) with
-    the key on ncp is listed as one run line; nothing is submitted."""
+    the key on ncp is listed as one run line; nothing is submitted. The
+    manifest does not check cell keys (that is test_key_is_registered_...);
+    this pins that a new key flows into a PA final command line."""
     yaml_path = tmp_path / 'f3_probe.yaml'
     yaml_path.write_text(
         'task: pa\nstage: final\n'

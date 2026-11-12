@@ -212,8 +212,8 @@ CELL_REGISTRY: dict[str, CellConfig] = {
                                        'init_slice_scale': {'inter': 5.63,
                                                             'command': 5.21,
                                                             'motor': 5.21}}),
-    # Component arms of lrc_init: lrc_fanin = only the fan-in rule (reference
-    # init ranges), lrc_ranges = only the re-centred ranges (no fan-in rule).
+    # Component arms of lrc_init: lrc_fanin = only the fan-in rule (LRC_Cell
+    # default init ranges), lrc_ranges = only the re-centred ranges (no fan-in rule).
     'lrc_fanin': CellConfig(kwargs={'elastance_type': 'asymmetric',
                                     'init_fanin_scale': 'units'}),
     'lrc_ranges': CellConfig(kwargs={'elastance_type': 'asymmetric',
