@@ -257,6 +257,22 @@ CELL_KWARGS = {
     'lrc_cal_duffing': dict(elastance_type='asymmetric',
                             init_slice_scale={'inter': 6.3, 'command': 4.2,
                                               'motor': 3.9}),
+    # F3 init-variant arms (issue #144), mirror of src/benchmark/registry.py.
+    'lrc_dose050': dict(elastance_type='asymmetric',
+                        init_slice_scale={'inter': 2.68, 'command': 2.57,
+                                          'motor': 2.57}),
+    'lrc_dose075': dict(elastance_type='asymmetric',
+                        init_slice_scale={'inter': 4.40, 'command': 4.12,
+                                          'motor': 4.12}),
+    'lrc_dose0875': dict(elastance_type='asymmetric',
+                         init_slice_scale={'inter': 5.63, 'command': 5.21,
+                                           'motor': 5.21}),
+    'lrc_fanin': dict(elastance_type='asymmetric', init_fanin_scale='units'),
+    'lrc_ranges': dict(elastance_type='asymmetric',
+                       initialization_ranges={
+                           'vleak': (-1.0, 1.0), 'mu': (-0.2, 0.2),
+                           'sensory_mu': (-0.2, 0.2), 'w': (0.001, 0.05),
+                           'sensory_w': (0.001, 0.5), 'gleak': (0.001, 0.1)}),
     # C7 tau-init arms (issue #87), mirror of src/benchmark/registry.py.
     'lrc_tau': dict(elastance_type='asymmetric', tau_init='log_uniform',
                     tau_min=1.01, tau_max=32.0),

@@ -24,6 +24,11 @@ wiring), ``lrc_cal_lv`` / ``lrc_cal_duffing`` (the same with the factors of the
 LV / Duffing graph, issue #86); all have the parameter count of ``lrc``. The
 factors come from ``experiments/calibrate_lrc_init.py``.
 
+F3 init-variant keys (issue #144), also plain LRC_Cell with the parameter
+count of ``lrc``: ``lrc_dose050`` / ``lrc_dose075`` / ``lrc_dose0875`` (the
+``lrc_cal`` factors raised to alpha = 0.5 / 0.75 / 0.875), ``lrc_fanin`` (only
+the fan-in rule of ``lrc_init``) and ``lrc_ranges`` (only its init ranges).
+
 ``cfc_lrc_eps1`` (issue #90): ``cfc_lrc`` with ``elastance_one`` (eps = 1, head
 built and frozen); its params_effective leaves the frozen head out.
 
@@ -188,6 +193,31 @@ CELL_REGISTRY: dict[str, CellConfig] = {
                                           'init_slice_scale': {'inter': 6.3,
                                                                'command': 4.2,
                                                                'motor': 3.9}}),
+    # --- F3 init-variant arms (issue #144), plain LRC_Cell ------------------
+    # Dose arms: the lrc_cal factors (inter 7.2 / command 6.6 / motor 6.6)
+    # raised to alpha and rounded to two decimals; alpha 0 is lrc, alpha 1 is
+    # lrc_cal. Descriptive Person Activity arms of protocol F3.
+    # lrc_dose050: alpha = 0.5
+    'lrc_dose050': CellConfig(kwargs={'elastance_type': 'asymmetric',
+                                      'init_slice_scale': {'inter': 2.68,
+                                                           'command': 2.57,
+                                                           'motor': 2.57}}),
+    # lrc_dose075: alpha = 0.75
+    'lrc_dose075': CellConfig(kwargs={'elastance_type': 'asymmetric',
+                                      'init_slice_scale': {'inter': 4.40,
+                                                           'command': 4.12,
+                                                           'motor': 4.12}}),
+    # lrc_dose0875: alpha = 0.875
+    'lrc_dose0875': CellConfig(kwargs={'elastance_type': 'asymmetric',
+                                       'init_slice_scale': {'inter': 5.63,
+                                                            'command': 5.21,
+                                                            'motor': 5.21}}),
+    # Component arms of lrc_init: lrc_fanin = only the fan-in rule (reference
+    # init ranges), lrc_ranges = only the re-centred ranges (no fan-in rule).
+    'lrc_fanin': CellConfig(kwargs={'elastance_type': 'asymmetric',
+                                    'init_fanin_scale': 'units'}),
+    'lrc_ranges': CellConfig(kwargs={'elastance_type': 'asymmetric',
+                                     'initialization_ranges': _LRC_INIT_RANGES}),
     # --- C7 tau-init arms (issue #87, protocol F2 B4) -----------------------
     # The two base arms lrc / lrc_init plus a log-uniform time-scale init of
     # the elastance bias, -log(T - 1) with T on [1.01, 32].
