@@ -132,7 +132,9 @@ METRIC = 'nrmse'   # primary comparison metric (proposal: MSE/NRMSE)
 # (errors), 'lv' = multi-anchor VPT, 'pa' = test macro-F1 (load_sequence_runs),
 # 'ppo' = eval_return_mean (load_ppo_runs).
 HIGHER_IS_BETTER = {'harness': False, 'lv': True, 'pa': True, 'ppo': True}
-FINAL_SEEDS = range(10)   # final replicates, as in run_grid_hpo.py; tuning seeds lie outside
+FINAL_SEEDS = range(10)   # final replicates of F1/F2; tuning seeds lie outside.
+# run_grid_hpo.py guards 0..29 (F3 adds the seeds 10-29, #138); the aggregator
+# follows with the F3 families (#131).
 GAMMA = 0.75       # P(A>B) reference line, printed for orientation only
 MIN_PAIRS = 8      # fewer complete seed pairs: the contrast is undecidable
 N_BOOT = 10_000    # bootstrap resamples of the median paired difference

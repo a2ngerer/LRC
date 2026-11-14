@@ -65,6 +65,13 @@ _CELL_REGISTRY = {
     "lrc_cal": LRC_Cell,
     "lrc_cal_lv": LRC_Cell,
     "lrc_cal_duffing": LRC_Cell,
+    # F3 init-variant arms (issue #144): dose steps between lrc and lrc_cal and
+    # the two components of lrc_init, init options via the cell kwargs.
+    "lrc_dose050": LRC_Cell,
+    "lrc_dose075": LRC_Cell,
+    "lrc_dose0875": LRC_Cell,
+    "lrc_fanin": LRC_Cell,
+    "lrc_ranges": LRC_Cell,
     # C7 tau-init arms (issue #87): elastance-bias init via the cell kwargs.
     "lrc_tau": LRC_Cell,
     "lrc_init_tau": LRC_Cell,

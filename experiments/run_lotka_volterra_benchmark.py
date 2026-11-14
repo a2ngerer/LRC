@@ -827,6 +827,8 @@ def main():
         "backbone_layers": args.backbone_layers, "self_recurrent": self_rec,
         "head_activation": args.head_activation, "data_seed": data_seed,
         "forcing": args.forcing, **pc, **multi, **rewire, **lr_keys,
+        # not hashed: separates the optimizer variants of one config (#138)
+        "optimizer": args.optimizer, "opt_epsilon": args.opt_epsilon,
         "ode_unfolds": cell_kwargs.get("ode_unfolds"), "dt_scale": args.dt_scale,
     }
     tag = result_filename(args, multi)[:-len(".json")]

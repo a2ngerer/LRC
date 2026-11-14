@@ -171,8 +171,8 @@ learning rate only with one fixed `--grid-clip`, selection on
 `run_grid_hpo.py --transfer-guard <K3 hpo_selection.json> <K30 result JSON>`
 (see the driver docstring).
 
-`GH_TUNING_SEEDS` (default `100 101`, disjoint from the final seeds 0..9;
-`run_grid_hpo.py` refuses seeds in 0..9 without `--allow-seed-overlap`),
+`GH_TUNING_SEEDS` (default `100 101`, disjoint from the final seeds 0..29;
+`run_grid_hpo.py` refuses seeds in 0..29 without `--allow-seed-overlap`),
 `GH_PARAM_BUDGET` (default 4000 lv / 30000 pa, co) and `GH_EXTRA` (driver flags
 such as `--grid-lr`, `--grid-clip`, and runner flags such as `--epochs`,
 forwarded) are optional. Clipping is on the global gradient norm

@@ -168,6 +168,22 @@ def test_runner_tracks_suite_metadata(runner, tmp_path, monkeypatch):
                 record['fault_counts']] == record['per_position_macro_f1_auc']
 
 
+@pytest.mark.parametrize('runner', ['lv', 'pa'])
+def test_wandb_config_carries_the_optimizer(runner, tmp_path, monkeypatch):
+    """The two optimizer variants of one arm are separable in wandb by config
+    keys, not only by config_hash (#138); the wandb config is not hashed."""
+    runs = _fake_wandb(monkeypatch)
+    run_fit = RUNNERS[runner][0]
+    run_fit(tmp_path / 'default', monkeypatch)
+    run_fit(tmp_path / 'legacy', monkeypatch, '--optimizer', 'rmsprop_legacy',
+            '--opt-epsilon', '1e-4')
+    default, legacy = (r.init['config'] for r in runs)
+    assert (default['optimizer'], default['opt_epsilon']) == ('rmsprop', None)
+    assert (legacy['optimizer'], legacy['opt_epsilon']) == ('rmsprop_legacy',
+                                                            1e-4)
+    assert default['config_hash'] != legacy['config_hash']
+
+
 def test_track_yields_none_when_wandb_init_raises(monkeypatch, capsys):
     _failing_init(monkeypatch)
     seen = []

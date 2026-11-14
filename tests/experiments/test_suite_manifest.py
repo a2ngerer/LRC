@@ -17,6 +17,7 @@
 # Issue #105: _frozen also stubs the selection_from references; the F2 YAMLs
 # (configs/suite/f2_*.yaml) stay out of the frozen matrix, and stage eval
 # (no training) out of the op-determinism check.
+# Issue #134: --split-fold k appends _fold{k} to the PA result name.
 import fnmatch
 import json
 from argparse import Namespace
@@ -207,16 +208,21 @@ def test_load_rejects_bad_configs(tmp_path, over, msg):
 
 @pytest.mark.parametrize('extra', [[], ['--backbone-layers', '1'],
                                    ['--forcing', 'mixed'],
-                                   ['--backbone-layers', '2', '--forcing', 'mixed']])
+                                   ['--backbone-layers', '2', '--forcing', 'mixed'],
+                                   ['--split-fold', '0'],
+                                   ['--backbone-layers', '1', '--split-fold', '4']])
 def test_result_name_matches_the_runners(extra):
     bb = int(extra[extra.index('--backbone-layers') + 1]) if '--backbone-layers' in extra else None
+    fold = int(extra[extra.index('--split-fold') + 1]) if '--split-fold' in extra else None
     forcing = 'mixed' if '--forcing' in extra else 'teacher'
     args = Namespace(cell='cfc_lrc', wiring='ncp', seed=3, backbone_layers=bb,
-                     forcing=forcing)
-    assert result_name('lv', 'cfc_lrc', 'ncp', 3, extra) == lv_runner.result_filename(args)
+                     forcing=forcing, split_fold=fold)
+    if fold is None:                        # the LV runner has no folds
+        assert result_name('lv', 'cfc_lrc', 'ncp', 3, extra) == lv_runner.result_filename(args)
     pa_extra = [a for a in extra if a not in ('--forcing', 'mixed')]
-    assert (result_name('pa', 'cfc_lrc', 'ncp', 3, pa_extra)
-            == pa_runner.result_tag(args) + '.json')
+    name = result_name('pa', 'cfc_lrc', 'ncp', 3, pa_extra)
+    assert name == pa_runner.result_tag(args) + '.json'
+    assert name.endswith('.json' if fold is None else f'_fold{fold}.json')
 
 
 @pytest.mark.parametrize('stage', ['hpo', 'final'])
@@ -366,7 +372,8 @@ def test_frozen_arm_matrix():
     assert set(names['duffing_hpo']) - set(names['lv_hpo']) == {
         'cfc_static_ncp', 'ltc_ncp', 'mm_ltc_ncp', 'cfc_mm_ltc_ncp'}
     for path in SUITE.glob('*.yaml'):
-        if path.stem.startswith(('canary', 'smoke', 'pilot', 'diag', 'f2_')):
+        if path.stem.startswith(('canary', 'smoke', 'pilot', 'diag', 'f2_',
+                                 'f3_')):
             continue
         cfg = load(str(path))
         assert cfg['seeds'] == ([100, 101] if cfg['stage'] == 'hpo'
@@ -474,11 +481,14 @@ def test_width_and_control_epochs_follow_the_task(name, ref):
 
 @pytest.mark.parametrize('flags', [
     {}, {'vote_lambda': 0}, {'consensus': 'median'}, {'view_average': 'mean'},
-    {'view_average': 'fault_mean'}, {'n_columns': 1}])
+    {'view_average': 'fault_mean'}, {'n_columns': 1},
+    {'corruption_seed': 'seed'}, {'corruption_seed': 3}])
 @pytest.mark.parametrize('clip', [None, 1.0])
 def test_co_result_name_matches_the_runner(flags, clip):
     """The committee result name as a glob over the budget-derived size
-    matches the runner's result_filename, and no other arm's."""
+    matches the runner's result_filename, and no other arm's. The word `seed`
+    of --corruption-seed is the line's seed (the runner resolves it to the
+    integer before it names the file, #138)."""
     from experiments.suite_manifest import _flags
     defaults = dict(cell='cfc_lrc', wiring='cncp', n_columns=30, size=53.5,
                     view_mode='identical', vote_lambda=None, consensus='mean',
@@ -493,10 +503,15 @@ def test_co_result_name_matches_the_runner(flags, clip):
     argv = ['--n-columns', '30', '--backbone-layers', '1', '--lr', '0.003',
             *(['--clipnorm', '1'] if clip else []), *_flags(flags)]
     pattern = result_name('co', 'cfc_lrc', 'cncp', 7, argv)
-    own = co_runner.result_filename(Namespace(**{**defaults, **flags, 'size': 12}))
+    own = {**defaults, **flags, 'size': 12}
+    if own['corruption_seed'] == 'seed':
+        own['corruption_seed'] = own['seed']
+    own = co_runner.result_filename(Namespace(**own))
     assert fnmatch.fnmatchcase(own, pattern)
     assert [n for n in names.values() if fnmatch.fnmatchcase(n, pattern)] == (
-        [] if 'n_columns' in flags else [names[json.dumps(flags)]])
+        [names[json.dumps(flags)]] if json.dumps(flags) in names else [])
+    if 'corruption_seed' in flags:
+        assert f"_cs{7 if flags['corruption_seed'] == 'seed' else 3}_seed7" in pattern
 
 
 @pytest.mark.parametrize('name', ['duffing_final', 'pa_final', 'co_k30_final'])
@@ -812,3 +827,68 @@ def test_diag_lv_init_fits_outside_the_frozen_counts(name, seeds):
         assert _flag_value(argv, '--param-budget') == '4000'
         assert _flag_value(argv, '--epochs') == '300'
     assert SUITE / f'{name}.yaml' not in _yamls('lv')
+
+
+# --- F3 plumbing: result-name collisions (#138) --------------------------------
+
+def _two_variants(tmp_path, **over):
+    """Final stage, two arms of one cell and wiring that differ in `over`."""
+    arms_ = {'lrc_ncp': {'cell': 'lrc', 'wiring': 'ncp'},
+             'lrc_ncp_variant': {'cell': 'lrc', 'wiring': 'ncp', **over}}
+    return load(_cfg(tmp_path, stage='final', seeds=[0, 1], cells=None,
+                     arms=arms_, fixed={'lr': 0.001, 'clipnorm': None}))
+
+
+@pytest.mark.parametrize('knob', [{'optimizer': 'rmsprop_legacy'},
+                                  {'epochs': 200}])
+def test_expand_rejects_arms_that_share_a_result_name(tmp_path, knob):
+    """Result names carry neither optimizer nor epoch count: two arms that
+    differ only there would skip or overwrite each other in one run folder."""
+    cfg = _two_variants(tmp_path, **knob)
+    with pytest.raises(SystemExit,
+                       match='lrc_ncp_seed0 and lrc_ncp_variant_seed0'):
+        expand(cfg)
+    # one variant per campaign (its own run folder) expands as before
+    del cfg['arms']['lrc_ncp_variant']
+    assert [line['done'] for line in expand(cfg)] == [
+        'lrc_ncp_seed0_mixed.json', 'lrc_ncp_seed1_mixed.json']
+
+
+def test_expand_rejects_a_seed_listed_twice(tmp_path):
+    cfg = load(_cfg(tmp_path, stage='final', seeds=[0, 1], cells=['lrc'],
+                    wirings=['ncp'], fixed={'lr': 0.001, 'clipnorm': None},
+                    extra_seeds={'seeds': [1, 2], 'arms': ['lrc_ncp']}))
+    with pytest.raises(SystemExit, match='lrc_ncp_seed1 and lrc_ncp_seed1'):
+        expand(cfg)
+
+
+def _co_arms(tmp_path, seeds, **b_flags):
+    """Final stage, committee arms a (default corruption seed) and b."""
+    return load(_cfg(
+        tmp_path, task='co', system=None, extra_args=[], stage='final',
+        seeds=seeds, cells=None, wirings=None, per_cell=None,
+        fixed={'lr': 0.001, 'clipnorm': None},
+        arms={'a': {'cell': 'cfc_lrc', 'wiring': 'cncp'},
+              'b': {'cell': 'cfc_lrc', 'wiring': 'cncp', **b_flags}}))
+
+
+def test_seed_following_corruption_draws_name_one_file_per_seed(tmp_path):
+    """`corruption_seed: seed` puts the line's seed into the name (_cs<seed>),
+    so the arm differs from the default arm (_cs0) ..."""
+    done = [line['done'].split('_lr0.001_clipoff_')[1]
+            for line in expand(_co_arms(tmp_path, [3, 4],
+                                        corruption_seed='seed'))]
+    assert done == ['cs0_seed3.json', 'cs0_seed4.json',
+                    'cs3_seed3.json', 'cs4_seed4.json']
+
+
+def test_seed_following_corruption_draws_collide_with_the_default_at_seed_0(
+        tmp_path):
+    """... except at seed 0, where both resolve to one file: the guard says so."""
+    with pytest.raises(SystemExit, match='a_seed0 and b_seed0'):
+        expand(_co_arms(tmp_path, [0, 1], corruption_seed='seed'))
+
+
+def test_expand_accepts_arms_that_differ_in_the_result_name(tmp_path):
+    assert len({line['done'] for line in expand(
+        _two_variants(tmp_path, backbone_layers=2))}) == 4
