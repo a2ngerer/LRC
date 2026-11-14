@@ -89,6 +89,14 @@ Optional sections:
                    PASS/FAIL; <out>/f3_families.csv and
                    <out>/f3_pa_fits.csv (both Person Activity endpoint
                    fields per fit, E14)
+  --lambda-grid DIR  the vote-lambda grid at fixed weights (#137): every
+                   *.lambda_grid.evalonly.json below DIR
+                   (run_committee_benchmark.py --eval-only
+                   --vote-lambda-override); per (cell, wiring, consensus)
+                   and source_protocol_version, lambda row and fault count
+                   the test macro-F1 median over seeds with a seed bootstrap
+                   interval and the paired difference to the stored lambda;
+                   descriptive, no test family; <out>/lambda_grid.csv
 
 Usage:
     uv run python experiments/aggregate_results.py [--runs results/runs] [--out results]
@@ -96,7 +104,7 @@ Usage:
         [--rollout-runs DIR [--floors]] [--co-runs DIR]
         [--contrasts [--floors-json PATH] [--robustness CSV ...]]
         [--f2-families SPEC.yaml] [--descriptive SPEC.yaml]
-        [--f3-families SPEC.yaml]
+        [--f3-families SPEC.yaml] [--lambda-grid DIR]
 
     # the frozen suite: ROLLOUTS holds the final run folders of every rollout
     # system (searched recursively), PA the Person Activity final run
@@ -1423,6 +1431,8 @@ def load_consensus_records(co_dir):
     endpoints, every arm of _co_arm_any."""
     recs, above = defaultdict(dict), set()
     for path in sorted(glob(os.path.join(co_dir, '*.json'))):
+        if path.endswith('.evalonly.json'):     # eval-only outputs (#81, #137)
+            continue
         with open(path, encoding='utf-8') as f:
             r = json.load(f)
         arm = _co_arm_any(r)
@@ -1664,6 +1674,68 @@ def consensus_arm_endpoints(co_dir) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=[
         'cell', 'wiring', 'arm', 'endpoint', 'm', 'n_seeds', 'median', 'lo',
         'hi', 'budget_above_tolerance']).astype({'m': 'Int64'})
+
+
+# --- vote-lambda grid at fixed weights (#137), descriptive -------------------
+
+LAMBDA_GRID_KEYS = ('cell', 'wiring', 'n_columns', 'consensus',
+                    'view_average', 'fault_counts', 'eval_test_seeds', 'seed',
+                    'vote_lambda_stored', 'source_record',
+                    'source_config_hash', 'source_protocol_version',
+                    'by_lambda')
+LAMBDA_GRID_GROUP = ['cell', 'wiring', 'consensus', 'source_protocol_version']
+LAMBDA_GRID_COLUMNS = [*LAMBDA_GRID_GROUP, 'lambda', 'm', 'n_seeds', 'median',
+                       'lo', 'hi', 'n_pairs', 'median_diff_vs_stored',
+                       'diff_lo', 'diff_hi', 'lambda_stored_median']
+
+
+def lambda_grid(grid_dir) -> pd.DataFrame:
+    """The lambda_grid.csv table of every *.lambda_grid.evalonly.json below
+    grid_dir (run_committee_benchmark.py --eval-only --vote-lambda-override):
+    per group (cell, wiring, consensus, source_protocol_version), lambda row
+    ('stored' or the override value) and fault count m the test macro-F1
+    median over seeds with its seed bootstrap interval, and the median
+    paired difference to the 'stored' row of the same seed and m with its
+    seed bootstrap interval; lambda_stored_median is the group's median
+    stored lambda. Descriptive only, part of no test family. A file without
+    the keys of LAMBDA_GRID_KEYS or with an empty source_protocol_version,
+    and a seed twice in one group, are refused."""
+    values, stored = defaultdict(dict), defaultdict(dict)
+    for path in sorted(glob(os.path.join(escape(grid_dir), '**',
+                                         '*.lambda_grid.evalonly.json'),
+                            recursive=True)):
+        with open(path, encoding='utf-8') as f:
+            r = json.load(f)
+        missing = [k for k in LAMBDA_GRID_KEYS if k not in r]
+        if missing or not r['source_protocol_version']:
+            raise SystemExit(f'{path}: a lambda-grid file needs '
+                             f'{missing or "a source_protocol_version"}')
+        group = tuple(r[k] for k in LAMBDA_GRID_GROUP)
+        if r['seed'] in stored[group]:
+            raise SystemExit(f'{path}: seed {r["seed"]} of {group} twice')
+        stored[group][r['seed']] = r['vote_lambda_stored']
+        for row in r['by_lambda']:
+            lam = 'stored' if row['label'] == 'stored' else row['lambda']
+            for m, v in zip(r['fault_counts'], row['test_macro_f1_by_fault'],
+                            strict=True):
+                values[group, lam, m][r['seed']] = float(v)
+    rows = []
+    for group, lam, m in sorted(values, key=lambda k: (
+            k[0], k[1] != 'stored', 0.0 if k[1] == 'stored' else k[1], k[2])):
+        v, ref = values[group, lam, m], values.get((group, 'stored', m), {})
+        lo, hi = bootstrap_median_ci(list(v.values()), N_BOOT)
+        d = [x - ref[s] for s, x in v.items() if s in ref]
+        dlo, dhi = bootstrap_median_ci(d, N_BOOT) if d else (np.nan, np.nan)
+        rows.append({**dict(zip(LAMBDA_GRID_GROUP, group)), 'lambda': lam,
+                     'm': m, 'n_seeds': len(v),
+                     'median': float(np.median(list(v.values()))),
+                     'lo': lo, 'hi': hi, 'n_pairs': len(d),
+                     'median_diff_vs_stored': (float(np.median(d)) if d
+                                               else np.nan),
+                     'diff_lo': dlo, 'diff_hi': dhi,
+                     'lambda_stored_median': float(np.median(list(
+                         stored[group].values())))})
+    return pd.DataFrame(rows, columns=LAMBDA_GRID_COLUMNS)
 
 
 # --- F2 test families (protocol F2 sections 2.0 to 2.4 and 6, #107) --------
@@ -2922,6 +2994,10 @@ def main(argv=None) -> int:
                         'seed lists and explicit path lists per arm '
                         '(configs/aggregate/f3_families.yaml); writes '
                         '<out>/f3_families.csv and <out>/f3_pa_fits.csv')
+    p.add_argument('--lambda-grid', default=None, metavar='DIR',
+                   help='the *.lambda_grid.evalonly.json files below DIR '
+                        '(committee eval-only vote-lambda grid, #137); '
+                        'writes the descriptive <out>/lambda_grid.csv')
     p.add_argument('--bootstrap-units', default='seed',
                    choices=('seed', 'seed,recording'),
                    help='resampling units for the --pa-runs arm means')
@@ -2938,7 +3014,8 @@ def main(argv=None) -> int:
         df = df[df['cell'].isin(args.cells.split(','))]
     if df.empty and not (args.hpo_dir or args.pa_runs or args.rollout_runs
                          or args.co_runs or args.f2_families
-                         or args.descriptive or args.f3_families):
+                         or args.descriptive or args.f3_families
+                         or args.lambda_grid):
         print(f'No run JSONs found in {args.runs}', file=sys.stderr)
         return 1
 
@@ -3011,6 +3088,19 @@ def main(argv=None) -> int:
         f3.to_csv(os.path.join(args.out, 'f3_families.csv'), index=False)
         f3_fits.to_csv(os.path.join(args.out, 'f3_pa_fits.csv'), index=False)
         parts.append(f3_report(f3, f3_fits))
+    if args.lambda_grid:
+        grid = lambda_grid(args.lambda_grid)
+        if grid.empty:
+            print(f'--lambda-grid: no *.lambda_grid.evalonly.json below '
+                  f'{args.lambda_grid}', file=sys.stderr)
+            return 1
+        grid.to_csv(os.path.join(args.out, 'lambda_grid.csv'), index=False)
+        parts.append('## Vote-lambda grid at fixed weights (descriptive, '
+                     f'#137)\n\n{len(grid)} rows over '
+                     f'{len(grid[LAMBDA_GRID_GROUP].drop_duplicates())} '
+                     'groups in lambda_grid.csv: test macro-F1 median over '
+                     'seeds with a seed bootstrap interval and the paired '
+                     'difference to the stored lambda; no test.\n')
     report = '\n'.join(parts)
     md_path = os.path.join(args.out, 'summary.md')
     with open(md_path, 'w', encoding='utf-8') as f:
