@@ -11,6 +11,18 @@
 #   # lines are skipped, only the missing ones run
 #   ./cluster/submit_suite.sh --resume configs/suite/lv_final.yaml 2026-10-28_lv-final
 #
+# --resume checks first (#143): it reads the manifest_<group>.jsonl already in
+# the run folder (_run_ssh) and exits 1 when a line of the freshly expanded one
+# has the result name of an old line but another argv (experiments/suite_manifest.py
+# --check-resume). Result names carry neither the optimizer nor the epoch count,
+# so a resume of another variant would skip every fit as done and replace the
+# manifest. A missing manifest, a longer seed list and a new group pass. The
+# check runs before the LAUNCH.md note, the upload, the rsync and every sbatch,
+# so a refusal leaves the run folder as it was; without --resume nothing
+# changes. -n never reaches the cluster (_run_ssh): a dry run prints the read
+# command and says that the guard did not run; to check by hand, copy the old
+# manifest and call suite_manifest.py --check-resume OLD NEW.
+#
 # The manifests are expanded locally (stage final reads the fetched HPO run,
 # hpo_dir) and uploaded as <run>/manifest_<group>.jsonl. Resources per group:
 # the YAML cluster / heavy.cluster keys, else cluster/config.sh. The jobs get
@@ -49,6 +61,24 @@ DONE_FILE="one result JSON"; [[ $SUITE_STAGE == hpo ]] && DONE_FILE="hpo/<arm>/h
 [[ $SUITE_STAGE == eval ]] && DONE_FILE="<source stem>/<record>: JSON (lv) or CSV (pa)"
 RUN_COUNT="${SUITE_COUNT} manifest lines (${DONE_FILE} each)"
 echo "fits: ${RUN_COUNT}"
+
+if [[ $RUN_RESUME -eq 1 ]]; then
+    run_resolve "${SUITE_BENCH}"   # RUN_DIR only: run_prepare below notes the resume in LAUNCH.md
+    for g in $SUITE_GROUPS; do
+        old="$PLAN_DIR/old_manifest_${g}.jsonl"
+        old_cmd="if [ -f ${RUN_DIR}/manifest_${g}.jsonl ]; then cat ${RUN_DIR}/manifest_${g}.jsonl; fi"
+        if [[ $DRY_RUN -eq 1 ]]; then
+            _run_ssh "$old_cmd"
+            echo "[dry-run] resume guard: group ${g} not checked (a dry run does not read the run folder)"
+            continue
+        fi
+        _run_ssh "$old_cmd" > "$old" \
+            || { echo "FATAL: could not read ${RUN_REL}/manifest_${g}.jsonl; nothing was touched" >&2; exit 1; }
+        uv run python experiments/suite_manifest.py --check-resume "$old" "$PLAN_DIR/manifest_${g}.jsonl" \
+            || { echo "FATAL: resume refused; nothing was uploaded or submitted, the run folder is untouched" >&2; exit 1; }
+        echo "resume guard: group ${g} agrees with the manifest in the run folder"
+    done
+fi
 
 run_prepare "${SUITE_BENCH}"   # reserve the run folder first, then touch the shared code tree
 for g in $SUITE_GROUPS; do

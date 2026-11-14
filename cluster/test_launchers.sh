@@ -83,7 +83,13 @@ check suite "$out" "00_canary/runs/${today}_canary" "fits: 4 manifest lines" \
     "--array=0-1%8" "--mem=32G" "--time=01:00:00" "cluster/suite_array.sbatch" "RUN_GIT_SHA="
 
 out="$(./cluster/submit_suite.sh -n --resume configs/suite/canary_lv_hpo.yaml 2026-10-20_lv-final 2>&1)"
-check suite_resume "$out" "01_lotka_volterra/runs/2026-10-20_lv-final"
+check suite_resume "$out" "01_lotka_volterra/runs/2026-10-20_lv-final" \
+    "[dry-run] ssh ${CLUSTER_HOST} if [ -f \$HOME/wk/benchmarks/01_lotka_volterra/runs/2026-10-20_lv-final/manifest_default.jsonl ]" \
+    "[dry-run] resume guard: group default not checked" \
+    "[dry-run] resume guard: group heavy not checked"
+if grep -q "resume guard" <<<"$(./cluster/submit_suite.sh -n configs/suite/canary_lv_hpo.yaml canary 2>&1)"; then
+    echo "FAIL [suite]: the resume guard runs without --resume"; fail=1
+fi
 
 if out="$(./cluster/submit_suite.sh -n missing.yaml canary 2>&1)"; then
     echo "FAIL [suite]: accepted a missing config"; fail=1

@@ -249,6 +249,25 @@ BENCH=00_canary ./cluster/submit_suite.sh -n configs/suite/canary_lv_hpo.yaml su
 ./cluster/submit_suite.sh --resume <config> <YYYY-MM-DD_label>
 ```
 
+**One run folder per variant.** Result names carry neither the optimizer nor the
+epoch count (`result_name` in `experiments/suite_manifest.py`), so campaigns that
+differ only there (an `--optimizer` variant, the 200-epoch arm next to the budget
+arm) resolve to the same file names. Each such campaign gets its own YAML and its
+own run folder; `expand()` refuses the collision inside one campaign (#138).
+`--resume` refuses it across submissions (#143): before the `LAUNCH.md` note, the
+upload and every `sbatch`, it reads the `manifest_<group>.jsonl` already in the run
+folder and exits 1 naming both line ids when a line of the new manifest has the
+`done` of an old line but another `argv`. The run folder stays as it was. A missing
+manifest, a longer or a separate seed list (a second YAML with seeds 20-29 into
+the folder of seeds 10-19, submitted after the first array has ended, because it
+replaces the manifest) and a group that is new pass. The `argv` of a final line
+follows the `hpo_selection.json` files under `hpo_dir` (or `fixed`) and the
+`--wandb` flag: resume with the same YAML, the same fetched HPO run and the same
+flag. The guard compares with the manifest currently in the folder only; a folder
+that took several YAMLs is checked against the last one. `-n` never reaches the
+cluster, so a dry run prints the read command and says that the guard did not run.
+By hand: `uv run python experiments/suite_manifest.py --check-resume OLD NEW`.
+
 `--wandb` adds `--wandb` to every call; the offline runs land under `<run>/wandb/`
 in project `thesis-benchmarks` with group = the campaign (the YAML stem,
 `SUITE_CAMPAIGN`), job_type = `<task>/<stage>` (`SUITE_STAGE`), run name = the
