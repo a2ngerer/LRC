@@ -143,6 +143,49 @@ _RECURRENT_ONLY_EDGES = (
 )
 
 
+# Path ablation at fixed weights (issue #136, disjoint by construction): the
+# delayed basal edges skipped by 'delayed' and 'relay'. 'apical' has no edge
+# list: it sets the gain factor 1 + g * sigmoid(apical) to 1 at both sites
+# (equivalent to g = 0). The relay state is still computed under 'relay'; only
+# its exit edge Thal -> L4 is cut. The edges are matched by name, so under
+# cncp_random they are cut wherever the swap moved them.
+ABLATION_EDGES = {'delayed': ('M_L5ET_L5IT', 'M_L6CC_L23'),
+                  'relay': ('M_Thal_L4',)}
+ABLATIONS = ('delayed', 'apical', 'relay')
+
+
+def set_cncp_ablation(model, delayed=False, apical=False, relay=False):
+    """Switch the path ablations of every CorticalColumnCell in ``model``
+    (also a cell wrapped by a forced-rollout view or a StackedCell, which share
+    the cell object) and drop the model's cached predict function, so the
+    next predict retraces with the flags. Call it after the weights are
+    loaded (rebuild_from_result); all False restores the plain model. Raises
+    when ``model`` holds no CorticalColumnCell or a flag names a path the cell
+    does not have (cncp_ff, the additive combiner, the thalamic route).
+    Returns the cells."""
+    flags = {'delayed': delayed, 'apical': apical, 'relay': relay}
+    cells = [layer for layer in model._flatten_layers(include_self=True)
+             if isinstance(layer, CorticalColumnCell)]
+    if not cells:
+        raise ValueError("set_cncp_ablation: the model holds no "
+                         "CorticalColumnCell")
+    for cell in cells:
+        missing = {'delayed': cell._feedforward_only,
+                   'apical': not cell._use_gain,
+                   'relay': cell._feedforward_only or cell._thalamic}
+        bad = [p for p in ABLATIONS if flags[p] and missing[p]]
+        if bad:
+            raise ValueError(
+                f"set_cncp_ablation: path(s) {bad} do not exist in this cell "
+                f"(feedforward_only={cell._feedforward_only}, gain combiner="
+                f"{cell._use_gain}, thalamic route={cell._thalamic})")
+    for cell in cells:
+        for p in ABLATIONS:
+            setattr(cell, f'ablate_{p}', bool(flags[p]))
+    model.predict_function = None
+    return cells
+
+
 def _resolve_cell_cls(cell_cls):
     """Resolve a sub-cell class from a registry key or a BaseCell subclass.
 
@@ -333,6 +376,14 @@ class CorticalColumnCell(BaseCell):
                              ncp_cell_kwargs applied the family defaults).
     """
 
+    # Eval-only path ablation at fixed weights (issue #136), set by
+    # set_cncp_ablation after the weights are loaded. Plain Python class
+    # attributes: no variable, constructor keyword or config entry, so saved
+    # weight files stay loadable and the default step is unchanged.
+    ablate_delayed = False
+    ablate_apical = False
+    ablate_relay = False
+
     def __init__(self, cell_cls='lrc', lamina_units=None, mask_densities=None,
                  seed=42, combiner='multiplicative', divisive_inhibition=False,
                  sign_constraint=True, feedforward_only=False,
@@ -448,9 +499,14 @@ class CorticalColumnCell(BaseCell):
 
     def _delayed_drive(self, node, prev):
         """Delayed basal edges ending at ``node``, read from the previous
-        states ``prev`` (node -> state)."""
+        states ``prev`` (node -> state); the edges of an active path ablation
+        are left out (set_cncp_ablation)."""
+        cut = [name for path in ('delayed', 'relay')
+               if getattr(self, f'ablate_{path}')
+               for name in ABLATION_EDGES[path]]
         return [self.edges[name](prev[src])
-                for name, src, dst in self._delayed if dst == node]
+                for name, src, dst in self._delayed
+                if dst == node and name not in cut]
 
     @property
     def state_size(self):
@@ -696,7 +752,7 @@ class CorticalColumnCell(BaseCell):
             for drive in self._delayed_drive('L23', prev):
                 basal_l23 = basal_l23 + drive
         h_l23, _ = self.subcells['L23']((basal_l23, et('L23')), [p_l23])
-        if self._use_gain:
+        if self._use_gain and not self.ablate_apical:
             apical_l23 = e['M_ap_L23'](tf.concat([p_l5et, p_l6ct], axis=-1))
             h_l23 = h_l23 * (1.0 + self.gain_L23 * tf.nn.sigmoid(apical_l23))
 
@@ -712,7 +768,7 @@ class CorticalColumnCell(BaseCell):
         basal_l5et = e['M_L23_L5ET'](h_l23) + e['M_L5IT_L5ET'](h_l5it)
         h_l5et, _ = self.subcells['L5ET']((basal_l5et, et('L5ET')),
                                           [p_l5et])
-        if self._use_gain:
+        if self._use_gain and not self.ablate_apical:
             apical_l5et = e['M_ap_L5ET'](tf.concat([p_l6ct, p_l6cc], axis=-1))
             h_l5et = h_l5et * (
                 1.0 + self.gain_L5ET * tf.nn.sigmoid(apical_l5et))
