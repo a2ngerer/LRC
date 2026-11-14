@@ -1,6 +1,7 @@
 # tests/experiments/test_aggregate_results.py
 import json
 import os
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -1169,3 +1170,129 @@ def test_control_rows_leave_the_contrast_tables_byte_identical(tmp_path):
     assert ('| periodic_predator_prey | cfc_lrc/ncp [dt_scale=1] | 3 | 0.0003 '
             '| 9 | 6 | 0 |') in sect
     assert 'Control arms' not in (plain / 'summary.md').read_text()
+
+
+# --- vote-lambda grid at fixed weights (#137) --------------------------------
+
+from experiments.aggregate_results import (lambda_grid,  # noqa: E402
+                                           load_consensus_records)
+
+F2_VERSION = 'F2-2026-11-05'
+
+
+def _write_grid(dirpath, wiring, seed, version=F2_VERSION, **over):
+    """A run_committee_benchmark.py --vote-lambda-override output: stored
+    lambda 0.4 + e, lambda 0 loses 0.05 at m=0 and 0.05 + e/2 at m=3,
+    lambda 1 gains 0.02 at m=0 (e = 0.01 seed)."""
+    e = 0.01 * seed
+    rows = [('stored', 0.4 + e, [0.6 + e, 0.5 + e]),
+            ('override', 0.0, [0.55 + e, 0.45 + e / 2]),
+            ('override', 1.0, [0.62 + e, 0.5 + e])]
+    r = {'cell': 'cfc_lrc', 'wiring': wiring, 'n_columns': 30,
+         'consensus': 'mean', 'view_average': 'off', 'fault_counts': [0, 3],
+         'eval_test_seeds': [0, 1, 2, 3, 4], 'seed': seed,
+         'vote_lambda_stored': 0.4 + e,
+         'source_record': f'r/{wiring}_seed{seed}.json',
+         'source_config_hash': '0' * 64, 'source_protocol_version': version,
+         'by_lambda': [{'label': label, 'lambda': lam,
+                        'test_macro_f1_by_fault': f}
+                       for label, lam, f in rows], **over}
+    os.makedirs(dirpath, exist_ok=True)
+    path = os.path.join(dirpath, f'{wiring}_seed{seed}_{version}'
+                                 '.lambda_grid.evalonly.json')
+    with open(path, 'w') as f:
+        json.dump(r, f)
+    return path
+
+
+def test_lambda_grid_table_known_values(tmp_path):
+    """Per (cell, wiring, consensus, protocol version), lambda row and m: the
+    median over seeds with its seed interval and the paired difference to
+    the stored row; files found recursively, nothing else read."""
+    d = tmp_path / 'grid'
+    for s in range(5):
+        _write_grid(str(d / f'seed{s}'), 'ncp', s)
+    for s in range(2):
+        _write_grid(str(d), 'ncp', s, version='F3-test')
+    _hd_fixture(str(d))                       # result JSONs: not read
+    (d / 'x.evalonly.json').write_text('{}')  # plain eval-only: not read
+    t = lambda_grid(str(d))
+    assert list(t.columns[:6]) == ['cell', 'wiring', 'consensus',
+                                   'source_protocol_version', 'lambda', 'm']
+    assert [(r.source_protocol_version, r['lambda'], r.m)
+            for _, r in t.iterrows()] == [
+        (v, lam, m) for v in (F2_VERSION, 'F3-test')
+        for lam in ('stored', 0.0, 1.0) for m in (0, 3)]
+    f2 = t[t.source_protocol_version == F2_VERSION].set_index(['lambda', 'm'])
+    assert (f2['n_seeds'] == 5).all() and (f2['n_pairs'] == 5).all()
+    assert f2['lambda_stored_median'].tolist() == pytest.approx([0.42] * 6)
+    r = f2.loc[('stored', 0)]
+    assert r['median'] == pytest.approx(0.62)
+    assert (r['lo'], r['hi']) == pytest.approx(
+        bootstrap_median_ci(0.6 + 0.01 * np.arange(5)))
+    assert (r['median_diff_vs_stored'], r['diff_lo'], r['diff_hi']) == \
+        pytest.approx((0, 0, 0))
+    diff = -(0.05 + 0.005 * np.arange(5))
+    r = f2.loc[(0.0, 3)]
+    assert r['median'] == pytest.approx(0.46)
+    assert r['median_diff_vs_stored'] == pytest.approx(-0.06)
+    assert (r['diff_lo'], r['diff_hi']) == pytest.approx(
+        bootstrap_median_ci(diff))
+    assert f2.loc[(1.0, 0), 'median_diff_vs_stored'] == pytest.approx(0.02)
+    f3 = t[t.source_protocol_version == 'F3-test']
+    assert (f3['n_seeds'] == 2).all()
+
+
+def test_lambda_grid_main_writes_the_csv_and_refuses_bad_files(tmp_path):
+    d, out = tmp_path / 'grid', tmp_path / 'out'
+    for s in range(3):
+        _write_grid(str(d), 'cncp', s)
+    assert main(['--runs', str(tmp_path / 'none'), '--lambda-grid', str(d),
+                 '--out', str(out)]) == 0
+    csv = pd.read_csv(out / 'lambda_grid.csv')
+    assert len(csv) == 6 and set(csv['lambda'].astype(str)) == {
+        'stored', '0.0', '1.0'}
+    assert 'Vote-lambda grid at fixed weights' in (
+        out / 'summary.md').read_text()
+    assert main(['--runs', str(tmp_path / 'none'), '--lambda-grid',
+                 str(tmp_path / 'empty'), '--out', str(out)]) == 1
+    bad = tmp_path / 'bad'
+    for seed, over, msg in (
+            (0, {'source_protocol_version': ''}, 'a source_protocol_version'),
+            (0, {'source_protocol_version': None},
+             'a source_protocol_version'),
+            (1, {}, 'seed 1 of .* twice')):     # seed 1 in two folders
+        _write_grid(str(bad / 'sub'), 'ncp', seed, **over)
+        _write_grid(str(bad), 'ncp', 1)
+        with pytest.raises(SystemExit, match=msg):
+            lambda_grid(str(bad))
+        shutil.rmtree(bad)
+    path = _write_grid(str(bad), 'ncp', 0)
+    with open(path) as f:
+        r = json.load(f)
+    del r['vote_lambda_stored']
+    with open(path, 'w') as f:
+        json.dump(r, f)
+    with pytest.raises(SystemExit, match='vote_lambda_stored'):
+        lambda_grid(str(bad))
+
+
+def test_consensus_records_ignore_eval_only_files(tmp_path):
+    """Eval-only outputs next to the records are never committee records,
+    even with record-like keys; the H-d table stays the golden one."""
+    d = str(tmp_path)
+    _hd_fixture(d)
+    before = load_consensus_records(d)
+    fake = {'cell': 'cfc_lrc', 'wiring': 'ncp', 'seed': 0, 'n_columns': 30,
+            'view_mode': 'identical', 'train_corruption': 'on',
+            'view_average': 'off', 'vote_lambda': None, 'consensus': 'mean',
+            'fault_counts': [0, 3, 9, 15, 20],
+            'test_macro_f1_by_fault': [0.0] * 5,
+            'per_position_macro_f1_auc': [0.0] * 5}
+    for name in ('ncp_seed0.evalonly.json',
+                 'ncp_seed0.lambda_grid.evalonly.json'):
+        with open(os.path.join(d, name), 'w') as f:
+            json.dump(fake, f)
+    assert load_consensus_records(d) == before
+    with open(HD_GOLDEN, encoding='utf-8') as f:
+        assert consensus_family(d) == f.read()

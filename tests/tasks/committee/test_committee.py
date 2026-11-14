@@ -23,6 +23,7 @@ from experiments import run_committee_benchmark as co_runner
 from experiments.run_committee_benchmark import (
     result_filename, position_metrics, steps_to, CorruptedBatches,
     GridValidation)
+from src.benchmark.checkpoints import config_hash
 from src.evaluation.metrics import confusion_matrix, macro_f1
 from src.wirings.committee import CommitteeVotingCell
 from src.wirings.tbt_cncp import MultiColumnVotingCell
@@ -804,6 +805,15 @@ def _weights(path):
     return str(path)[:-len(".json")] + ".weights.h5"
 
 
+EVALONLY_KEYS = {   # the <stem>.evalonly.json of #81
+    "source_record", "source_config_hash", "fault_counts", "eval_test_seeds",
+    "eval_val_draws", "eval_val_draw_seeds",
+    "test_confusion_by_recording_by_fault_by_seed",
+    "test_confusion_by_recording_by_fault", "test_macro_f1_by_fault",
+    "test_macro_f1_per_recording_by_fault", "val_confusion_by_fault_by_draw",
+    "val_macro_f1_by_fault_by_draw"}
+
+
 def test_eval_only_rescores_the_stored_fit_without_training(
         stub_fit, tmp_path, monkeypatch):
     """No fit: per-seed test confusions that sum to the summed key, which
@@ -819,6 +829,11 @@ def test_eval_only_rescores_the_stored_fit_without_training(
                "2", "--out", str(tmp_path))
     r = json.loads((tmp_path / (stub_fit.stem + ".evalonly.json"))
                    .read_text())
+    # the #81 keys plus source_protocol_version (#137), nothing else
+    assert set(r) == EVALONLY_KEYS | {"source_protocol_version"}
+    assert r["source_protocol_version"] \
+        == rec["config"]["effective"]["protocol_version"]
+    assert not list(tmp_path.glob("*.lambda_grid.evalonly.json"))
     assert r["source_record"] == str(stub_fit)
     assert r["source_config_hash"] == rec["config"]["effective"]["config_hash"]
     assert (r["fault_counts"], r["eval_test_seeds"], r["eval_val_draws"],
@@ -888,3 +903,126 @@ def test_eval_only_never_writes_into_the_fit_folder(stub_fit, monkeypatch):
         assert "eval-only refused: --out" in str(e.value.code)
         assert "pass a folder outside the fit folder" in str(e.value.code)
     assert sorted(p.name for p in stub_fit.parent.rglob("*")) == before
+
+
+# --- vote-lambda grid at fixed weights (#137) ---
+
+def _lambda_grid(out, stub_fit):
+    return json.loads((out / (stub_fit.stem + ".lambda_grid.evalonly.json"))
+                      .read_text())
+
+
+def test_lambda_override_at_the_stored_value_reproduces_the_record(
+        stub_fit, tmp_path, monkeypatch):
+    """One lambda-grid file, no plain eval-only file: the stored row and the
+    override at the stored lambda reproduce the record's summed test
+    confusions; every row draws the same corruptions (paired)."""
+    rec = json.loads(stub_fit.read_text())
+    eff, lam = rec["config"]["effective"], rec["vote_lambda_final"]
+    keys, real = [], co_runner._rng
+    monkeypatch.setattr(co_runner, "_rng",
+                        lambda *k: keys.append(k) or real(*k))
+    monkeypatch.setattr(tf.keras.Model, "fit",
+                        lambda *a, **kw: pytest.fail("eval-only trained"))
+    _eval_only(monkeypatch, "--weights", _weights(stub_fit),
+               "--vote-lambda-override", f"0,{lam!r},1", "--out",
+               str(tmp_path))
+    assert [p.name for p in tmp_path.iterdir()] == [
+        stub_fit.stem + ".lambda_grid.evalonly.json"]
+    g = _lambda_grid(tmp_path, stub_fit)
+    assert {k: g[k] for k in (
+        "cell", "wiring", "n_columns", "consensus", "view_average", "seed",
+        "vote_lambda_stored", "fault_counts", "eval_test_seeds",
+        "source_record", "source_config_hash",
+        "source_protocol_version")} == {
+        "cell": "cfc_lrc", "wiring": "dense", "n_columns": 3,
+        "consensus": "mean", "view_average": "off", "seed": 0,
+        "vote_lambda_stored": lam, "fault_counts": [0, 1, 2],
+        "eval_test_seeds": [0, 1], "source_record": str(stub_fit),
+        "source_config_hash": eff["config_hash"],
+        "source_protocol_version": eff["protocol_version"]}
+    rows = g["by_lambda"]
+    assert [(r["label"], r["lambda"]) for r in rows] == [
+        ("stored", lam), ("override", 0.0), ("override", lam),
+        ("override", 1.0)]
+    # each test and validation draw once per row
+    draws = {(s, m) for s in (0, 1, 100) for m in (0, 1, 2)}
+    assert sorted(keys) == sorted(k for k in draws for _ in rows)
+    for r in (rows[0], rows[2]):
+        assert r["test_confusion_by_recording_by_fault"] \
+            == rec["test_confusion_by_recording_by_fault"]
+        assert r["test_macro_f1_by_fault"] == pytest.approx(
+            rec["test_macro_f1_by_fault"], abs=1e-12)
+        assert r["val_macro_f1_by_fault_by_draw"][0] == pytest.approx(
+            rec["val_macro_f1_grid_curve"][rec["best_val_epoch"] - 1],
+            abs=1e-12)
+    for r in rows:
+        assert sorted(r) == sorted(
+            {"label", "lambda"} | EVALONLY_KEYS - set(g)
+            - {"test_confusion_by_recording_by_fault_by_seed"})
+        assert [sorted(d) for d in r["test_macro_f1_per_recording_by_fault"]] \
+            == [["A01", "B01"]] * 3
+
+
+def test_set_vote_lambda_resets_the_predict_cache(stub_fit):
+    """Mean consensus: the readout of step 1 does not depend on lambda, the
+    later steps do (through the mixed states). vote_strength is read when
+    predict traces, so a changed attribute alone keeps the cached lambda;
+    set_vote_lambda drops the cache."""
+    rec = json.loads(stub_fit.read_text())
+    model = co_runner.rebuild_from_result(str(stub_fit))
+    d = _stub()
+    x = (corrupt_views(d.test_x, 3, 1, np.asarray(rec["noise_sigma"],
+                                                  np.float32),
+                       np.random.default_rng(0)), d.test_t)
+    stored = model.predict(x, verbose=0)
+    for cell in co_runner.voting_cells(model):
+        cell._vote_lambda = 0.0                 # no reset: the stored trace
+    np.testing.assert_allclose(model.predict(x, verbose=0), stored, atol=1e-6)
+    co_runner.set_vote_lambda(model, 0.0)
+    l0 = model.predict(x, verbose=0)
+    co_runner.set_vote_lambda(model, 1.0)
+    l1 = model.predict(x, verbose=0)
+    np.testing.assert_allclose(l0[:, 0], l1[:, 0], atol=1e-5)
+    assert np.abs(l0[:, 1:] - l1[:, 1:]).max() > 1e-4
+    assert np.abs(l0[:, 1:] - stored[:, 1:]).max() > 1e-4
+
+
+def test_lambda_override_refuses_bad_values_and_models_without_a_vote(
+        stub_fit, tmp_path, monkeypatch):
+    """Values outside [0, 1], repeated or missing: usage error (exit 2);
+    a model without a voting cell (cncp2_multi): refused (exit 1); nothing
+    written."""
+    for bad in ("1.5", "-0.1", "0,0", ""):
+        with pytest.raises(SystemExit) as e:
+            _eval_only(monkeypatch, "--weights", _weights(stub_fit),
+                       "--vote-lambda-override", bad, "--out", str(tmp_path))
+        assert e.value.code == 2
+    monkeypatch.setattr(co_runner, "rebuild_from_result", lambda path: (
+        build_committee_model("cncp2_multi", 3, size=4, feature_size=7,
+                              seq_len=32)))
+    with pytest.raises(SystemExit) as e:
+        _eval_only(monkeypatch, "--weights", _weights(stub_fit),
+                   "--vote-lambda-override", "0,1", "--out", str(tmp_path))
+    assert "eval-only refused" in str(e.value.code)
+    assert "has no voting cell" in str(e.value.code)
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("average", ["off", "fault_mean"])
+def test_lambda_override_skips_a_single_column_model(stub_fit, tmp_path,
+                                                     monkeypatch, average):
+    """build.n_columns == 1 (K = 1, or a view-averaging monolith): the vote
+    strength is a no-op, reported and skipped with nothing written."""
+    rec = json.loads(stub_fit.read_text())
+    eff = rec["config"]["effective"]
+    eff["build"]["n_columns"], eff["views"]["average"] = 1, average
+    eff["config_hash"] = config_hash(eff)
+    fit = tmp_path / "fit"
+    fit.mkdir()
+    (fit / stub_fit.name).write_text(json.dumps(rec))
+    shutil.copy(_weights(stub_fit), fit / rec["weights_path"])
+    out = _eval_only(monkeypatch, "--weights", str(fit / rec["weights_path"]),
+                     "--vote-lambda-override", "0,1", "--out",
+                     str(tmp_path / "out"))
+    assert out is None and not (tmp_path / "out").exists()
