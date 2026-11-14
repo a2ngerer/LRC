@@ -18,7 +18,9 @@ the original window-level split (literature anchor only, val = test).
 Metrics: per-step macro-F1 (primary) and accuracy; the epoch with the best
 val macro-F1 is selected, the test values are read at that epoch and its
 weights are the saved ones (<stem>.weights.h5, protocol freeze
-F1-2026-10-26 decision m), so a rebuilt fit reproduces them (#34).
+F1-2026-10-26 decision m), so a rebuilt fit reproduces them (#34). The pooled
+test macro-F1 of every epoch is also stored (test_macro_f1_curve) with its last
+value (test_macro_f1_last), the end-of-budget endpoint (#138).
 
 Elapsed time: the discrete cells (gru, lstm) ignore the time input, so with
 --dt-feature on (default) they get dt as an extra input feature (issue #27).
@@ -217,6 +219,9 @@ def run(args):
         "dt_feature": dt_feature,
         "ode_unfolds": ode_unfolds,
         "dt_scale": args.dt_scale,
+        # not hashed: separates the optimizer variants of one config (#138)
+        "optimizer": args.optimizer,
+        "opt_epsilon": args.opt_epsilon,
         "split": data.split,
         "split_seed": data.split_seed,
         **pc,
@@ -264,6 +269,7 @@ def run(args):
         wall = time.time() - t0
         best = int(np.argmax(val_f1))
         test_cm = sum(test_cms[best].values())
+        test_f1_curve = [macro_f1(sum(c.values())) for c in test_cms]
         log_summary(run_, {"best_val_epoch": best + 1,
                            "val_macro_f1": val_f1[best],
                            "test_macro_f1": macro_f1(test_cm),
@@ -317,6 +323,11 @@ def run(args):
         "test_macro_f1_per_recording": {r: macro_f1(cm) for r, cm in
                                         test_cms[best].items()},
         "test_accuracy": accuracy(test_cm),
+        # pooled test macro-F1 after every epoch (curve[best_val_epoch - 1] ==
+        # test_macro_f1) and after the last one (the end-of-budget endpoint,
+        # #138); the weights saved are still the best-val epoch's
+        "test_macro_f1_curve": test_f1_curve,
+        "test_macro_f1_last": test_f1_curve[-1],
         # rows = true, columns = predicted; summing a resample of recordings
         # gives its pooled confusion (recording-level bootstrap).
         "test_confusion_by_recording": {r: cm.tolist() for r, cm in

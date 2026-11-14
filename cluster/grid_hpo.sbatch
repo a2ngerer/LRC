@@ -32,7 +32,7 @@ export WANDB_MODE=offline WANDB_DIR="$RUN_DIR/wandb" WANDB_SILENT=true
 TASK="${GH_TASK:?GH_TASK (lv|pa|co) not set}"
 CELL="${GH_CELL:?GH_CELL not set}"
 WIRING="${GH_WIRING:?GH_WIRING not set}"
-SEEDS="${GH_TUNING_SEEDS:-100 101}"   # disjoint from the final seeds 0..9
+SEEDS="${GH_TUNING_SEEDS:-100 101}"   # disjoint from the final seeds 0..29
 # Thesis budgets: 4k for the rollouts, 30k for Person Activity and the
 # consensus study (co: pass one fixed --grid-clip in GH_EXTRA).
 if [[ "$TASK" == pa || "$TASK" == co ]]; then BUDGET="${GH_PARAM_BUDGET:-30000}"; else BUDGET="${GH_PARAM_BUDGET:-4000}"; fi

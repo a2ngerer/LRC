@@ -27,7 +27,8 @@ def _snapshot(name):
 
 
 def test_snapshot_covers_every_pre_f2_yaml():
-    names = {p.stem for p in SUITE.glob('*.yaml') if not p.stem.startswith('f2_')}
+    names = {p.stem for p in SUITE.glob('*.yaml')
+             if not p.stem.startswith(('f2_', 'f3_'))}
     assert names == set(json.loads(SNAPSHOT.read_text()))
 
 

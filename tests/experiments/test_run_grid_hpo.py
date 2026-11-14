@@ -277,16 +277,25 @@ def test_failed_fit_aborts(tmp_path, monkeypatch):
         _hpo(tmp_path, monkeypatch, table)
 
 
-def test_tuning_seeds_must_avoid_final_seeds(tmp_path, monkeypatch, capsys):
-    # a tuning seed in 0..9 would share initialisation (and on PA the data)
-    # with a final replicate: refused before any fit unless overridden
+@pytest.mark.parametrize('seed', [9, 10, 29])
+def test_tuning_seeds_must_avoid_final_seeds(seed, tmp_path, monkeypatch,
+                                             capsys):
+    # a tuning seed in 0..29 would share initialisation (and on PA the data)
+    # with a final replicate (F1/F2: 0..9, F3: 10..29): refused before any fit
+    # unless overridden
     with pytest.raises(SystemExit):
-        _hpo(tmp_path, monkeypatch, _table(), seeds=(9, 101))
-    assert 'final seed range 0..9' in capsys.readouterr().err
+        _hpo(tmp_path, monkeypatch, _table(), seeds=(seed, 101))
+    assert 'final seed range 0..29' in capsys.readouterr().err
     assert not (tmp_path / 'fits.log').exists()
     sel, _ = _hpo(tmp_path, monkeypatch, _table({(1e-3, None): (1, 1)}),
-                  '--allow-seed-overlap', seeds=(0, 1))
-    assert sel['tuning_seeds'] == [0, 1] and sel['runner_args'] == []
+                  '--allow-seed-overlap', seeds=(seed, 101))
+    assert sel['tuning_seeds'] == [seed, 101] and sel['runner_args'] == []
+
+
+def test_tuning_seed_30_is_accepted(tmp_path, monkeypatch):
+    sel, fits = _hpo(tmp_path, monkeypatch, _table({(1e-3, None): (1, 1)}),
+                     seeds=(30, 101))
+    assert sel['tuning_seeds'] == [30, 101] and fits
 
 
 def _assert_global_clip(built, path, value):

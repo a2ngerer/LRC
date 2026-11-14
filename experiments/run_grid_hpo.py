@@ -71,7 +71,7 @@ GRID_LR = (1e-4, 1e-3, 3e-3, 1e-2)
 GRID_CLIP = (None, 1.0)
 EDGE_EXTENSION = {1e-4: 3e-5, 1e-2: 3e-2}
 TOP_K = 2
-FINAL_SEEDS = range(10)                 # the final replicates; tuning stays out
+FINAL_SEEDS = range(30)                 # the final replicates (F3: 10-29); tuning stays out
 RUNNERS = {"lv": "experiments/run_lotka_volterra_benchmark.py",
            "pa": "experiments/run_person_activity_benchmark.py",
            "co": "experiments/run_committee_benchmark.py"}
@@ -286,7 +286,7 @@ def main(argv=None):
                     help="S1 [S2]: stage 1 on S1, top 2 confirmed on S2; one "
                          "seed ranks stage 1 only")
     ap.add_argument("--allow-seed-overlap", action="store_true",
-                    help="allow tuning seeds in the final seed range 0..9")
+                    help="allow tuning seeds in the final seed range 0..29")
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--grid-lr", type=float, nargs="+", default=list(GRID_LR))
     ap.add_argument("--grid-clip", type=_clip, nargs="+",
@@ -309,7 +309,7 @@ def main(argv=None):
                  "--grid-clip value")
     overlap = [s for s in args.tuning_seeds if s in FINAL_SEEDS]
     if overlap and not args.allow_seed_overlap:
-        ap.error(f"--tuning-seeds {overlap} lie in the final seed range 0..9 "
+        ap.error(f"--tuning-seeds {overlap} lie in the final seed range 0..29 "
                  "(e.g. use 100 101) or pass --allow-seed-overlap")
     if args.minimize and not args.select_on:
         ap.error("--minimize needs --select-on")
