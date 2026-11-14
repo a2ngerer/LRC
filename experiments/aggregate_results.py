@@ -86,7 +86,9 @@ Optional sections:
                    McNemar on the learning success; Bonferroni within the
                    family and F3-wide (sensitivity), records outside the
                    seed list counted, reading incomplete/floor-bound/
-                   PASS/FAIL; <out>/f3_families.csv
+                   PASS/FAIL; <out>/f3_families.csv and
+                   <out>/f3_pa_fits.csv (both Person Activity endpoint
+                   fields per fit, E14)
 
 Usage:
     uv run python experiments/aggregate_results.py [--runs results/runs] [--out results]
@@ -2407,7 +2409,9 @@ def descriptive_report(blocks) -> str:
 #   side      'two-sided' | 'greater'
 #   endpoint  rollouts: 'vpt_multi_median'; Person Activity: the record
 #             field, 'test_macro_f1' (best-validation epoch) or
-#             'test_macro_f1_last' (last epoch, #138); no default
+#             'test_macro_f1_last' (last epoch, #138); no default. E14: a
+#             binary learning-success count reads the last epoch, a
+#             continuous endpoint (and its floor marking) the best-val one
 #   floor     'exclusive' (F1 rule: a floor-bound row reads floor-bound) |
 #             'informational' (marking reported, reading stays PASS/FAIL)
 #   success   optional learning success per fit (learning_success):
@@ -2422,6 +2426,8 @@ def descriptive_report(blocks) -> str:
 F3_CONFIG_FIELDS = ('lr', 'clipnorm', 'epochs', 'param_budget')
 _LEGACY = ' [optimizer=rmsprop_legacy]'
 _VPT = 'vpt_multi_median'
+F3_PA_SUCCESS = 0.30   # learning success on Person Activity (E8)
+F3_PA_FIELDS = ('test_macro_f1', 'test_macro_f1_last')   # both per fit (E14)
 
 
 def _f3(task, a, b, endpoint, floor, kind='wilcoxon', side='two-sided',
@@ -2431,15 +2437,16 @@ def _f3(task, a, b, endpoint, floor, kind='wilcoxon', side='two-sided',
 
 
 F3_FAMILIES = {
-    # A: one fixed recipe for all arms (no arm-wise tuning), learning
-    # success at the end of the budget (draft 4.1, E8)
+    # A: one fixed recipe for all arms (no arm-wise tuning); T-A1 counts the
+    # learning success at the end of the budget (E8, E14), T-A2 compares the
+    # best-val macro-F1 under the floor rule (E13, F-9, E14)
     'A': {'status': 'required', 'tests': {
         'T-A1': _f3('pa', 'lrc/ncp' + _LEGACY, 'lrc/ncp', 'test_macro_f1_last',
                     'informational', kind='mcnemar',
-                    success=('threshold', 0.30), match=F3_CONFIG_FIELDS),
+                    success=('threshold', F3_PA_SUCCESS),
+                    match=F3_CONFIG_FIELDS),
         'T-A2': _f3('pa', 'lrc_cal/ncp' + _LEGACY, 'lrc/ncp' + _LEGACY,
-                    'test_macro_f1_last', 'informational',
-                    match=F3_CONFIG_FIELDS)}},
+                    'test_macro_f1', 'exclusive', match=F3_CONFIG_FIELDS)}},
     'C': {'status': 'required', 'tests': {
         'T-C1': _f3(_LV, 'cfc_lrc/ncp', 'gru/ncp', _VPT, 'exclusive',
                     match=('epochs', 'param_budget')),
@@ -2541,8 +2548,9 @@ def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
     seed (_check_protocol); a record whose seed is not in the test's seed
     list is not used, its seed goes to outside. fits: one _sequence_row per
     used record with the endpoint as metric (Person Activity: the registry
-    field; a diverged fit = non-finite endpoint; the crossed interval only
-    on the best-validation field its confusions belong to), below and floor
+    field, both F3_PA_FIELDS as columns; a diverged fit = non-finite
+    endpoint; the crossed interval only on the best-validation field its
+    confusions belong to), below and floor
     (_floor_mark on that metric), success (with a registry success rule),
     data_key, width_matched, param_budget and protocol_version; an empty
     frame when no listed seed has a record. Two records of one key raise
@@ -2569,7 +2577,10 @@ def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
         if runner == 'pa':
             v = row[endpoint]
             v = float('nan') if v is None else float(v)
-            row.update(metric=v, diverged=not np.isfinite(v))
+            # both fields as columns; a record without the last-epoch field
+            # (written before #138) leaves it None, no fallback
+            row.update(metric=v, diverged=not np.isfinite(v),
+                       **{f: r.get(f) for f in F3_PA_FIELDS})
         below, floor = _floor_mark(path, r, eff, row, name, draws)
         if runner == 'pa' and endpoint != 'test_macro_f1':
             row['confusion'] = None     # confusions of the best-val epoch
@@ -2724,8 +2735,34 @@ F3_COLUMNS = ['family', 'test', 'registry_status', 'task', 'endpoint',
               *(f'{f}_{s}' for f in F3_CONFIG_FIELDS for s in 'ab')]
 
 
-def f3_family_blocks(spec) -> pd.DataFrame:
-    """One row per test of a load_f3_spec spec, in registry order (columns
+F3_FIT_COLUMNS = ['tests', 'arm', 'seed', *F3_PA_FIELDS,
+                  'success_fields_differ', 'file']
+
+
+def _f3_pa_fits(parts) -> pd.DataFrame:
+    """One row per Person Activity fit of the F3 tests (F3_FIT_COLUMNS; a fit
+    several tests use appears once, tests 'T-A1.a; T-A2.b'): both endpoint
+    fields (E14, a missing one empty) and whether they lie on different
+    sides of F3_PA_SUCCESS (None unless both are finite)."""
+    if not parts:
+        return pd.DataFrame(columns=F3_FIT_COLUMNS)
+    f = (pd.concat(parts, ignore_index=True)
+         .groupby('file', sort=False)
+         .agg(tests=('test', '; '.join), arm=('arm', 'first'),
+              seed=('seed', 'first'),
+              **{k: (k, 'first') for k in F3_PA_FIELDS})
+         .reset_index())
+    v = f[list(F3_PA_FIELDS)].apply(pd.to_numeric, errors='coerce')
+    f[list(F3_PA_FIELDS)] = v
+    side = v >= F3_PA_SUCCESS
+    f['success_fields_differ'] = (side.iloc[:, 0] != side.iloc[:, 1]).astype(
+        object).where(np.isfinite(v).all(axis=1), None)
+    return f[F3_FIT_COLUMNS]
+
+
+def f3_family_blocks(spec) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(blocks, pa_fits). pa_fits: _f3_pa_fits of the Person Activity arms.
+    blocks: one row per test of a load_f3_spec spec, in registry order (columns
     F3_COLUMNS): paired over the test's seed list with its own merge, delta
     = A - B, the registry side; Wilcoxon (exact without ties or zeros, else
     the normal approximation) with the exact permutation p next to it, or
@@ -2735,7 +2772,7 @@ def f3_family_blocks(spec) -> pd.DataFrame:
     seeds; statistics still reported) before the floor rule of the registry
     before PASS/FAIL; the budget-tolerance exclusion of every arm except
     the width-matched one."""
-    draws, rows = {}, []
+    draws, rows, fits = {}, [], []
     for test, entry in F3_TESTS.items():
         if test not in spec:
             continue
@@ -2744,13 +2781,16 @@ def f3_family_blocks(spec) -> pd.DataFrame:
         (a, out_a), (b, out_b) = (
             _f3_arm(test, side, entry, spec[test][side], seeds, draws)
             for side in 'ab')
+        if entry['task'] == 'pa':
+            fits += [d.assign(test=f'{test}.{s}')
+                     for s, d in (('a', a), ('b', b)) if len(d)]
         rows.append(_f3_test(test, entry, m, len(spec), a, b, seeds,
                              {'a': out_a, 'b': out_b}))
-    return pd.DataFrame(rows).reindex(columns=F3_COLUMNS).astype(
-        {'n10': 'Int64', 'n01': 'Int64'})
+    return (pd.DataFrame(rows).reindex(columns=F3_COLUMNS).astype(
+        {'n10': 'Int64', 'n01': 'Int64'}), _f3_pa_fits(fits))
 
 
-def f3_report(blocks) -> str:
+def f3_report(blocks, pa_fits) -> str:
     """Markdown of f3_family_blocks."""
     m_f3 = int(blocks['m_f3'].iloc[0]) if len(blocks) else 0
     lines = [f'## F3 test families (protocol F3; paired over the seed list '
@@ -2807,7 +2847,18 @@ def f3_report(blocks) -> str:
               'test (not used): ' + ('; '.join(
                   f"{t} {o} ({n})" for t, o, n in zip(
                       outside['test'], outside['outside_list'],
-                      outside['n_outside_list'])) or 'none') + '.',
+                      outside['n_outside_list'])) or 'none') + '.']
+    differ = pa_fits[pa_fits['success_fields_differ'].eq(True)]
+    lines += ['', 'Person Activity fits whose test_macro_f1 and '
+              'test_macro_f1_last lie on different sides of '
+              f'{F3_PA_SUCCESS:g} (E14; both fields per fit in '
+              'f3_pa_fits.csv): ' + ('; '.join(
+                  f"{t} {a} seed {s} ({x:.3f} / {y:.3f})" for t, a, s, x, y
+                  in zip(differ['tests'], differ['arm'], differ['seed'],
+                         differ['test_macro_f1'],
+                         differ['test_macro_f1_last'])) or 'none')
+              + '. Fits without a test_macro_f1_last value (missing or '
+              f"NaN): {int(pa_fits['test_macro_f1_last'].isna().sum())}.",
               '', 'reading: incomplete (fewer complete pairs than listed '
               'seeds) before floor-bound (floor rule exclusive only) before '
               f'PASS/FAIL (adj. p < {ALPHA}); the deciding p is that of '
@@ -2870,7 +2921,7 @@ def main(argv=None) -> int:
                    help='the F3 test families (F3_FAMILIES) from a spec of '
                         'seed lists and explicit path lists per arm '
                         '(configs/aggregate/f3_families.yaml); writes '
-                        '<out>/f3_families.csv')
+                        '<out>/f3_families.csv and <out>/f3_pa_fits.csv')
     p.add_argument('--bootstrap-units', default='seed',
                    choices=('seed', 'seed,recording'),
                    help='resampling units for the --pa-runs arm means')
@@ -2956,9 +3007,10 @@ def main(argv=None) -> int:
                     index=False)
         parts.append(descriptive_report(desc))
     if args.f3_families:
-        f3 = f3_family_blocks(load_f3_spec(args.f3_families))
+        f3, f3_fits = f3_family_blocks(load_f3_spec(args.f3_families))
         f3.to_csv(os.path.join(args.out, 'f3_families.csv'), index=False)
-        parts.append(f3_report(f3))
+        f3_fits.to_csv(os.path.join(args.out, 'f3_pa_fits.csv'), index=False)
+        parts.append(f3_report(f3, f3_fits))
     report = '\n'.join(parts)
     md_path = os.path.join(args.out, 'summary.md')
     with open(md_path, 'w', encoding='utf-8') as f:

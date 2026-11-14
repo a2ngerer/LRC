@@ -12,10 +12,11 @@ import pytest
 import yaml
 from scipy.stats import wilcoxon
 
-from experiments.aggregate_results import (EXCLUDED, F3_FAMILIES, F3_TESTS,
+from experiments.aggregate_results import (EXCLUDED, F3_FAMILIES,
+                                           F3_FIT_COLUMNS, F3_TESTS,
                                            _f3_arm, _f3_test, _sequence_row,
                                            _signed_ranks, arm_label,
-                                           f3_family_blocks,
+                                           f3_family_blocks, f3_report,
                                            learning_success, load_f3_spec,
                                            main, mcnemar_exact,
                                            permutation_p)
@@ -139,7 +140,7 @@ def _world(tmp_path, tests=REQUIRED, values=None, opts=None, skip=None):
 
 
 def _blocks(spec_path):
-    return f3_family_blocks(load_f3_spec(spec_path)).set_index('test')
+    return f3_family_blocks(load_f3_spec(spec_path))[0].set_index('test')
 
 
 def _row(tmp_path, test, tests=REQUIRED, **kw):
@@ -160,7 +161,9 @@ def test_registry_defines_every_test_once_with_its_rules():
     for test, e in F3_TESTS.items():
         assert e['kind'] in ('wilcoxon', 'mcnemar')
         assert e['side'] == ('greater' if e['family'] == 'H' else 'two-sided')
-        assert e['floor'] == ('informational' if e['family'] in 'AF'
+        # F-9: the floor rule binds every contrast except the learning
+        # success tests (E8 exception)
+        assert e['floor'] == ('informational' if 'success' in e
                               else 'exclusive')
         assert e['endpoint'] in (('test_macro_f1', 'test_macro_f1_last')
                                  if e['task'] == 'pa'
@@ -169,7 +172,7 @@ def test_registry_defines_every_test_once_with_its_rules():
             assert 'success' in e and e['side'] == 'two-sided'
     assert {t: e['endpoint'] for t, e in F3_TESTS.items()
             if e['task'] == 'pa'} == {
-        'T-A1': 'test_macro_f1_last', 'T-A2': 'test_macro_f1_last',
+        'T-A1': 'test_macro_f1_last', 'T-A2': 'test_macro_f1',     # E14
         'T-D1': 'test_macro_f1', 'T-D2': 'test_macro_f1',
         'T-G2': 'test_macro_f1', 'T-H2': 'test_macro_f1'}
     assert F3_TESTS['T-A1']['a'] == 'lrc/ncp' + LEGACY
@@ -270,11 +273,14 @@ def test_world_through_main_writes_csv_and_summary(tmp_path):
     assert r['p_adj_f3'] == pytest.approx(16 / 2 ** 20)
     assert r['p_perm'] == pytest.approx(r['p_raw'])
     assert df.loc['T-D1', 'ci_units'] == 'seed x recording'
-    assert df.loc['T-A2', 'ci_units'] == 'seed'    # last-epoch endpoint
+    assert df.loc['T-A2', 'ci_units'] == 'seed x recording'
     assert df.loc['T-A1', 'method'] == 'mcnemar-exact'
     assert df.loc['T-A1', 'reading'] == 'FAIL'     # 20/20 against 20/20
     assert df.loc['T-F1', 'rate_a'].startswith('10/10')
     assert str(df.loc['T-C1', 'lr_a']) == '0.001'
+    fits = pd.read_csv(os.path.join(out, 'f3_pa_fits.csv'))
+    assert list(fits.columns) == F3_FIT_COLUMNS
+    assert len(fits) == 8 * 20                 # A1, A2, D1, D2, two arms
     with open(os.path.join(out, 'summary.md'), encoding='utf-8') as f:
         text = f.read()
     assert '## F3 test families' in text and 'F3-wide m=8' in text
@@ -313,7 +319,50 @@ def test_missing_endpoint_field_names_the_file(tmp_path):
     with pytest.raises(SystemExit, match=r'seed13\.json: no '
                                          r'test_macro_f1_last'):
         _blocks(_world(tmp_path, opts={
-            ('T-A2', 'a'): {13: {'drop': ('test_macro_f1_last',)}}}))
+            ('T-A1', 'a'): {13: {'drop': ('test_macro_f1_last',)}}}))
+
+
+def test_t_a2_reads_the_best_val_field_with_the_crossed_interval(tmp_path):
+    """E14: T-A2 compares test_macro_f1, the epoch the confusions belong to,
+    so its interval is crossed; a last-epoch value that would reverse the
+    direction is not read. lrc/ncp legacy at the one-class value in six of
+    twenty seeds makes T-A2 floor-bound (E13, F-9)."""
+    r = _row(tmp_path, 'T-A2', opts={('T-A2', 'a'): {'last': 0.1}})
+    assert r['endpoint'] == 'test_macro_f1'
+    assert (r['reading'], r['direction'], r['ci_units']) == (
+        'PASS', 'A>B', 'seed x recording')
+    vb = [0.2] * 6 + [0.6] * 14
+    r = _row(tmp_path / 'floor', 'T-A2', values={
+        'T-A2': ([0.7 + 0.01 * i for i in range(20)], vb)})
+    assert (r['floor_b'], r['floor_bound'], r['reading']) == (
+        '6/20', True, 'floor-bound')
+
+
+def test_pa_fits_carry_both_endpoint_fields(tmp_path):
+    """E14: both fields per Person Activity fit, a fit two tests use once; a
+    record without test_macro_f1_last (written before #138) leaves the
+    column empty with no fallback and does not stop a best-val test; a fit
+    whose fields lie on different sides of 0.30 is named in the summary."""
+    spec = load_f3_spec(_world(tmp_path, opts={
+        ('T-A1', 'a'): {12: {'last': 0.25}},
+        ('T-D1', 'b'): {14: {'drop': ('test_macro_f1_last',)}}}))
+    spec['T-A2']['b']['paths'] = spec['T-A1']['a']['paths']
+    blocks, fits = f3_family_blocks(spec)
+    assert list(fits.columns) == F3_FIT_COLUMNS and len(fits) == 7 * 20
+    shared = fits[fits['tests'] == 'T-A1.a; T-A2.b'].set_index('seed')
+    assert len(shared) == 20
+    assert shared.loc[12, ['test_macro_f1', 'test_macro_f1_last']].tolist() \
+        == [pytest.approx(0.63), 0.25]
+    assert shared.loc[12, 'success_fields_differ'] is True
+    old = fits[fits['tests'] == 'T-D1.b'].set_index('seed').loc[14]
+    assert old['test_macro_f1'] == 0.6 and pd.isna(old['test_macro_f1_last'])
+    assert old['success_fields_differ'] is None
+    assert fits['success_fields_differ'].eq(True).sum() == 1
+    assert blocks.set_index('test').loc['T-D1', 'reading'] == 'PASS'
+    text = f3_report(blocks, fits)
+    assert ('T-A1.a; T-A2.b lrc/ncp [optimizer=rmsprop_legacy] seed 12 '
+            '(0.630 / 0.250)') in text
+    assert 'without a test_macro_f1_last value (missing or NaN): 1.' in text
 
 
 def test_sequence_row_fields_are_opt_in():
@@ -384,7 +433,7 @@ def test_records_outside_the_seed_list_are_counted_not_used(tmp_path):
             'cfc_lrc/ncp', seed, -50.0)
     _lv(os.path.join(folder, 'other'), 'periodic_predator_prey',
         'cfc_lrc/ncp', 100, -50.0, name='tuning.json')
-    r = f3_family_blocks(spec).set_index('test').loc['T-C1']
+    r = f3_family_blocks(spec)[0].set_index('test').loc['T-C1']
     assert (r['n_outside_list'], r['outside_list']) == (11,
                                                         'a: seeds 0-9, 100')
     assert r['n_pairs'] == 20 and r['p_raw'] == pytest.approx(2 / 2 ** 20)
@@ -448,7 +497,7 @@ def test_optimizer_variants_of_one_cell_pair_by_seed(tmp_path):
             _pa(shared, 'lrc/ncp', seed, 0.6 if seed % 2 else 0.1,
                 name=f'f1_{seed}.json')
     spec['T-A1']['a']['paths'] = spec['T-A1']['b']['paths'] = [shared]
-    r = f3_family_blocks(spec).set_index('test').loc['T-A1']
+    r = f3_family_blocks(spec)[0].set_index('test').loc['T-A1']
     # seed pairs 11, 12, 14-29: only A on 12, 18, 24; only B on 11, 17, 19,
     # 23, 25, 29
     assert (r['n_pairs'], r['n10'], r['n01'], r['reading']) == (
@@ -468,7 +517,7 @@ def test_diverged_and_non_finite_fits_fail_and_enter_at_the_worst_value(
     df = df.set_index('seed')
     assert df.loc[10, 'diverged'] and not df.loc[11, 'diverged']
     assert not df.loc[10, 'success'] and not df.loc[11, 'success']
-    b = f3_family_blocks(spec).set_index('test')
+    b = f3_family_blocks(spec)[0].set_index('test')
     assert (b.loc['T-F1', 'n_nonfinite'], b.loc['T-F1', 'rate_b'][:4]) == (
         1, '8/10')
     # the unbounded fit enters at VPT 0: seed 10 has A - B = 21
