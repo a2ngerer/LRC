@@ -52,7 +52,12 @@ config.effective.deterministic (protocol freeze F1-2026-10-26 l, #76).
 --eval-only --weights <stem>.weights.h5 re-scores a stored fit without
 training (#81, eval_only): per-seed test confusions and further validation
 draws, written to <out>/<stem>.evalonly.json (--out required, outside the fit
-folder); its own flags, see --eval-only --help.
+folder); its own flags, see --eval-only --help. With --vote-lambda-override
+L1,L2,... (#137) it scores the same fixed weights at each vote strength
+lambda in [0, 1] and at the stored one (row `stored`), all on the same draws,
+into <out>/<stem>.lambda_grid.evalonly.json (eval_only lists the keys;
+experiments/aggregate_results.py --lambda-grid reads these files). The
+suite runs it as stage eval of task co (experiments/suite_manifest.py).
 
 Usage:
     uv run python experiments/run_committee_benchmark.py \
@@ -61,6 +66,9 @@ Usage:
         --wiring ncp --n-columns 30 --param-budget 30000 --view-average mean
     uv run python experiments/run_committee_benchmark.py --eval-only \
         --weights results/.../<stem>.weights.h5 --val-draws 5 --out <folder>
+    uv run python experiments/run_committee_benchmark.py --eval-only \
+        --weights results/.../<stem>.weights.h5 \
+        --vote-lambda-override <L1,L2,...> --out <folder>
 """
 from __future__ import annotations
 
@@ -227,14 +235,28 @@ class GridValidation(tf.keras.callbacks.Callback):
             self.model.set_weights(self.best_weights)
 
 
+def voting_cells(model):
+    """The committee cells of the model with a state vote (VotingMixin); empty
+    for an arm without one (cncp2_multi)."""
+    return [c for c in (getattr(layer, "cell", None) for layer in model.layers)
+            if hasattr(c, "vote_strength")]
+
+
 def vote_strength(model):
     """The voting strength lambda of the model's committee cell (learned or
     fixed), or None for an arm without a state vote (cncp2_multi)."""
-    for layer in model.layers:
-        cell = getattr(layer, "cell", None)
-        if hasattr(cell, "vote_strength"):
-            return float(cell.vote_strength)
-    return None
+    cells = voting_cells(model)
+    return float(cells[0].vote_strength) if cells else None
+
+
+def set_vote_lambda(model, lam):
+    """Fix the voting strength of every voting cell to lam in [0, 1] (no
+    variable is touched: a learned vote_raw stays, unused) and drop the cached
+    predict function. vote_strength is read when predict traces the model, so
+    without the reset a later predict keeps the lambda of the first trace."""
+    for cell in voting_cells(model):
+        cell._vote_lambda = float(lam)
+    model.predict_function = None
 
 
 def result_filename(args):
@@ -298,8 +320,28 @@ def eval_only(argv):
           [[confusion per fault count] per draw], draw k from
           eval_val_draw_seeds[k]; val_macro_f1_by_fault_by_draw its macro-F1
 
-    plus source_record, source_config_hash, fault_counts, eval_test_seeds,
-    eval_val_draws and eval_val_draw_seeds."""
+    plus source_record, source_config_hash, source_protocol_version (the
+    record's config.effective.protocol_version), fault_counts,
+    eval_test_seeds, eval_val_draws and eval_val_draw_seeds.
+
+    --vote-lambda-override L1,L2,... (#137) scores the fit at fixed weights
+    once with the stored vote strength (row label `stored`: the learned
+    sigmoid(vote_raw), vote_lambda_final of the record, or the fixed value
+    of a --vote-lambda arm) and once per value (label `override`), each
+    after set_vote_lambda; every row uses the same test and validation draws
+    (paired by construction). It writes <out>/<stem>.lambda_grid.evalonly.json
+    instead, with
+      by_lambda   [{label, lambda, test_confusion_by_recording_by_fault,
+                  test_macro_f1_by_fault,
+                  test_macro_f1_per_recording_by_fault,
+                  val_confusion_by_fault_by_draw,
+                  val_macro_f1_by_fault_by_draw}], stored first, then the
+                  values in the given order
+    plus cell, wiring, n_columns (K of the views), consensus, view_average,
+    seed, vote_lambda_stored and the keys above. Refused (exit 1) for a
+    model without a voting cell (cncp2_multi); a model with one column
+    (config.effective.build.n_columns == 1: K = 1 or a view-averaging arm)
+    has no vote to change and is skipped (exit 0, nothing written)."""
     ap = argparse.ArgumentParser(
         prog="run_committee_benchmark.py --eval-only",
         description="Re-score a stored committee fit without training (#81).")
@@ -319,9 +361,19 @@ def eval_only(argv):
                     help="output folder outside the fit folder (refused: the "
                          "record's folder or below it)")
     ap.add_argument("--data-path", default=None)
+    ap.add_argument("--vote-lambda-override", type=_floats, default=None,
+                    metavar="L1,L2,...",
+                    help="score the fit at each fixed vote strength in [0, 1] "
+                         "and at the stored one; writes "
+                         "<stem>.lambda_grid.evalonly.json (#137)")
     args = ap.parse_args(argv)
     if args.val_draws < 1:
         ap.error("--val-draws must be >= 1")
+    lams = args.vote_lambda_override
+    if lams is not None and (not lams or len(set(lams)) != len(lams)
+                             or not all(0.0 <= x <= 1.0 for x in lams)):
+        ap.error("--vote-lambda-override takes distinct values in [0, 1], "
+                 f"got {lams}")
     path = args.record or args.weights.removesuffix(".weights.h5") + ".json"
     # A fit folder holds exactly one result JSON (run_grid_hpo.py,
     # determinism_probe.py and the S0 gate unpack it so) and sits in a
@@ -351,6 +403,17 @@ def eval_only(argv):
         tf.config.experimental.enable_op_determinism()
     model = rebuild_from_result(path)
     v, b = eff["views"], eff["build"]
+    lam_stored = vote_strength(model)
+    if lams is not None:
+        if lam_stored is None:
+            sys.exit(f"eval-only refused: {path} ({b['wiring']}) has no "
+                     "voting cell, --vote-lambda-override does not apply")
+        if b["n_columns"] == 1:
+            print(f"eval-only {path}: one model column (K "
+                  f"{v['n_columns']}, view_average {v['average']}), the vote "
+                  "strength is a no-op; --vote-lambda-override skipped, "
+                  "nothing written")
+            return None
     d = load_person_activity(seq_len=b["seq_len"], data_path=args.data_path,
                              split=eff["split"], split_seed=eff["split_seed"])
     K, C = v["n_columns"], d.num_classes
@@ -369,47 +432,71 @@ def eval_only(argv):
     seeds = ([int(s) for s in args.test_seeds.split(",")]
              if args.test_seeds else eff["test_seeds"])
     recs = [str(r) for r in np.unique(d.test_rec)]
-    by_seed = {}
-    for s in seeds:
-        by_seed[str(s)] = []
-        for m in grid:
-            pred = predict(d.test_x, d.test_t, m, s)
-            by_seed[str(s)].append({r: confusion_matrix(
-                d.test_y[d.test_rec == r], pred[d.test_rec == r], C).tolist()
-                for r in recs})
-    total = np.sum([[[c[r] for r in recs] for c in cs]
-                    for cs in by_seed.values()], axis=0)  # (fault, rec, C, C)
     val_seeds = [eff["val_seed"] + VAL_DRAW_STRIDE * k
                  for k in range(args.val_draws)]
-    val_cm = [[confusion_matrix(d.val_y, predict(d.val_x, d.val_t, m, vs), C)
-               for m in grid] for vs in val_seeds]
-    out = {
-        "source_record": path, "source_config_hash": eff["config_hash"],
-        "fault_counts": grid, "eval_test_seeds": seeds,
-        "eval_val_draws": args.val_draws, "eval_val_draw_seeds": val_seeds,
-        "test_confusion_by_recording_by_fault_by_seed": by_seed,
-        "test_confusion_by_recording_by_fault": [
-            {r: c.tolist() for r, c in zip(recs, f)} for f in total],
-        "test_macro_f1_by_fault": [macro_f1(f.sum(axis=0)) for f in total],
-        "test_macro_f1_per_recording_by_fault": [
-            {r: macro_f1(c) for r, c in zip(recs, f)} for f in total],
-        "val_confusion_by_fault_by_draw": [[c.tolist() for c in cs]
-                                           for cs in val_cm],
-        "val_macro_f1_by_fault_by_draw": [[macro_f1(c) for c in cs]
-                                          for cs in val_cm]}
-    dest = os.path.join(args.out, os.path.basename(path)[:-len(".json")]
-                        + ".evalonly.json")
+
+    def score():
+        """The scores of the model as it stands, on the fixed draws."""
+        by_seed = {}
+        for s in seeds:
+            by_seed[str(s)] = []
+            for m in grid:
+                pred = predict(d.test_x, d.test_t, m, s)
+                by_seed[str(s)].append({r: confusion_matrix(
+                    d.test_y[d.test_rec == r], pred[d.test_rec == r],
+                    C).tolist() for r in recs})
+        total = np.sum([[[c[r] for r in recs] for c in cs]
+                        for cs in by_seed.values()], axis=0)  # (fault,rec,C,C)
+        val_cm = [[confusion_matrix(d.val_y, predict(d.val_x, d.val_t, m, vs),
+                                    C) for m in grid] for vs in val_seeds]
+        return {
+            "test_confusion_by_recording_by_fault_by_seed": by_seed,
+            "test_confusion_by_recording_by_fault": [
+                {r: c.tolist() for r, c in zip(recs, f)} for f in total],
+            "test_macro_f1_by_fault": [macro_f1(f.sum(axis=0)) for f in total],
+            "test_macro_f1_per_recording_by_fault": [
+                {r: macro_f1(c) for r, c in zip(recs, f)} for f in total],
+            "val_confusion_by_fault_by_draw": [[c.tolist() for c in cs]
+                                               for cs in val_cm],
+            "val_macro_f1_by_fault_by_draw": [[macro_f1(c) for c in cs]
+                                              for cs in val_cm]}
+
+    meta = {"source_record": path, "source_config_hash": eff["config_hash"],
+            "source_protocol_version": eff.get("protocol_version"),
+            "fault_counts": grid, "eval_test_seeds": seeds,
+            "eval_val_draws": args.val_draws, "eval_val_draw_seeds": val_seeds}
+    stem = os.path.basename(path)[:-len(".json")]
+    if lams is None:
+        out = stored = {**meta, **score()}
+        dest = os.path.join(args.out, stem + ".evalonly.json")
+    else:
+        rows = [{"label": "stored", "lambda": lam_stored, **score()}]
+        for lam in lams:
+            set_vote_lambda(model, lam)
+            rows.append({"label": "override", "lambda": lam, **score()})
+        for row in rows:     # the per-seed split stays in the plain output
+            del row["test_confusion_by_recording_by_fault_by_seed"]
+        out = {"cell": b["cell"], "wiring": b["wiring"],
+               "n_columns": v["n_columns"], "consensus": b["consensus"],
+               "view_average": v["average"], "seed": b["seed"],
+               "vote_lambda_stored": lam_stored, **meta, "by_lambda": rows}
+        stored = rows[0]
+        dest = os.path.join(args.out, stem + ".lambda_grid.evalonly.json")
+        for row in rows:
+            print(f"  lambda {row['label']} {row['lambda']:.4g}: test "
+                  "macro-F1 by fault "
+                  f"{[round(x, 4) for x in row['test_macro_f1_by_fault']]}")
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     with open(dest, "w") as f:
         json.dump(out, f)
-    same = (out["test_confusion_by_recording_by_fault"]
+    same = (stored["test_confusion_by_recording_by_fault"]
             == record.get("test_confusion_by_recording_by_fault"))
+    val0 = stored["val_macro_f1_by_fault_by_draw"][0]
     print(f"eval-only {path}: test macro-F1 by fault "
-          f"{[round(x, 4) for x in out['test_macro_f1_by_fault']]}, summed "
+          f"{[round(x, 4) for x in stored['test_macro_f1_by_fault']]}, summed "
           f"test confusions {'equal' if same else 'differ from'} the "
           f"record's; validation draw 0 macro-F1 "
-          f"{[round(x, 4) for x in out['val_macro_f1_by_fault_by_draw'][0]]}"
-          f" -> {dest}")
+          f"{[round(x, 4) for x in val0]} -> {dest}")
     return out
 
 
