@@ -98,7 +98,12 @@ A line is {"id", "group", "argv", "outdir", "done"}; outdir and done are
 relative to the run folder's results/. A line whose results/<done> exists (the
 fit's result JSON, or the arm's hpo_selection.json; co: a glob, the runner's
 name carries the budget-derived size) is done and skipped, so a requeue or a
-re-submit after a walltime kill only runs what is missing.
+re-submit after a walltime kill only runs what is missing. Result names carry
+neither the optimizer nor the epoch count, so expand() raises when two lines of
+one campaign resolve to the same `done` (#138); arms that differ only there go
+into campaigns with their own run folders. A committee arm takes
+`corruption_seed: seed` (--corruption-seed seed): the draws follow the line's
+seed and the name carries `_cs<seed>`.
 
 --count prints the planned fits (an hpo line counts HPO_FITS of its task; with
 one tuning seed its stage-1 grid, --grid-lr x --grid-clip, default GRID_LR x
@@ -397,6 +402,7 @@ def result_name(task, cell, wiring, seed, argv):
             return default if val is None else val
         lam, dvu, clip = (v("--vote-lambda"), v("--dense-vote-units"),
                           v("--clipnorm"))
+        cs = v("--corruption-seed", 0)      # the word `seed`: the line's seed
         avg = {"off": "", "mean": "_viewavg", "median": "_viewmed",
                "fault_mean": "_viewfm"}[v("--view-average", "off")]
         return (f"{cell}_{wiring}_K{v('--n-columns', 4)}_s*_"
@@ -407,9 +413,12 @@ def result_name(task, cell, wiring, seed, argv):
                 f"{'_trainclean' if v('--train-corruption') == 'off' else ''}"
                 f"_lr{float(v('--lr', 1e-3)):g}"
                 f"_clip{'off' if clip is None else f'{float(clip):g}'}"
-                f"_cs{v('--corruption-seed', 0)}_seed{seed}{bb}.json")
+                f"_cs{seed if cs == 'seed' else cs}_seed{seed}{bb}.json")
     mixed = task == "lv" and _flag_value(argv, "--forcing") == "mixed"
-    return f"{cell}_{wiring}_seed{seed}{bb}{'_mixed' if mixed else ''}.json"
+    fold = _flag_value(argv, "--split-fold")      # PA fold rotation (#134)
+    fold = "" if fold is None else f"_fold{int(fold)}"
+    return (f"{cell}_{wiring}_seed{seed}{bb}{'_mixed' if mixed else ''}"
+            f"{fold}.json")
 
 
 def selection(cfg, name, cell, wiring):
@@ -557,7 +566,23 @@ def expand(cfg, wandb=False):
     if missing:
         raise SystemExit(f"no hpo_selection.json under {cfg['hpo_dir']} for "
                          f"{', '.join(missing)}")
+    _reject_collisions(lines)
     return lines
+
+
+def _reject_collisions(lines):
+    """Result names carry neither the optimizer nor the epoch count, so two
+    lines of one campaign that differ only there write (or skip as done) the
+    same file in the run folder: refuse, naming both lines."""
+    seen = {}
+    for line in lines:
+        first = seen.setdefault(line["done"], line)
+        if first is not line:
+            raise SystemExit(
+                f"{first['id']} and {line['id']} both resolve to the result "
+                f"{line['done']} in one run folder (result names carry no "
+                "optimizer or epoch count); split the arms into campaigns "
+                "with their own run folders")
 
 
 def groups(lines):

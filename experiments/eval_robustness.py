@@ -64,7 +64,8 @@ metric_robust and diverged_robust as the second Bonferroni family (m = 2 per
 task).
 
 Skipped with a message: committee and other JSONs, rollout systems without an
-OOD set (multitimescale_lib), wirings without a ForcedRolloutCell view.
+OOD set (multitimescale_lib), wirings without a ForcedRolloutCell view,
+Person Activity fold records (non-null split_fold, #134; out of scope).
 
 Usage:
     uv run python experiments/eval_robustness.py \
@@ -243,6 +244,10 @@ def evaluate(path, data_path=None, streams="v1", confusions=False):
     with open(path) as f:
         record = json.load(f)
     task = _record_task(record) if isinstance(record, dict) else None
+    if task == "pa" and record.get("split_fold") is not None:
+        print(f"skip {path}: fold record (split_fold "
+              f"{record['split_fold']}), no robustness endpoint for folds")
+        return None
     if task == "pa":
         system = "pa"
     elif (task == "lv" and record["system"] in SYSTEMS

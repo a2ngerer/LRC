@@ -251,6 +251,14 @@ def test_pa_one_class_val_from_the_loader_counts(monkeypatch):
     assert got == pytest.approx((2 * 0.5 / 1.5) / 6)
 
 
+def test_pa_fold_result_stops_the_tuning(tmp_path, monkeypatch, one_class):
+    """#134: tuning under a fold is unsupported; the first result with a
+    split_fold stops the driver and names the file."""
+    with pytest.raises(SystemExit, match=r"fake\.json: split_fold 0"):
+        _hpo(tmp_path, monkeypatch, _table(), '--split-fold', '0', task='pa')
+    assert not (tmp_path / 'hpo' / 'hpo_selection.json').exists()
+
+
 def test_select_on_override_minimize(tmp_path, monkeypatch):
     table = _table({(3e-3, None): (0, 0, 0.1)})  # lowest nrmse_32
     sel, _ = _hpo(tmp_path, monkeypatch, table, '--select-on',
@@ -277,16 +285,25 @@ def test_failed_fit_aborts(tmp_path, monkeypatch):
         _hpo(tmp_path, monkeypatch, table)
 
 
-def test_tuning_seeds_must_avoid_final_seeds(tmp_path, monkeypatch, capsys):
-    # a tuning seed in 0..9 would share initialisation (and on PA the data)
-    # with a final replicate: refused before any fit unless overridden
+@pytest.mark.parametrize('seed', [9, 10, 29])
+def test_tuning_seeds_must_avoid_final_seeds(seed, tmp_path, monkeypatch,
+                                             capsys):
+    # a tuning seed in 0..29 would share initialisation (and on PA the data)
+    # with a final replicate (F1/F2: 0..9, F3: 10..29): refused before any fit
+    # unless overridden
     with pytest.raises(SystemExit):
-        _hpo(tmp_path, monkeypatch, _table(), seeds=(9, 101))
-    assert 'final seed range 0..9' in capsys.readouterr().err
+        _hpo(tmp_path, monkeypatch, _table(), seeds=(seed, 101))
+    assert 'final seed range 0..29' in capsys.readouterr().err
     assert not (tmp_path / 'fits.log').exists()
     sel, _ = _hpo(tmp_path, monkeypatch, _table({(1e-3, None): (1, 1)}),
-                  '--allow-seed-overlap', seeds=(0, 1))
-    assert sel['tuning_seeds'] == [0, 1] and sel['runner_args'] == []
+                  '--allow-seed-overlap', seeds=(seed, 101))
+    assert sel['tuning_seeds'] == [seed, 101] and sel['runner_args'] == []
+
+
+def test_tuning_seed_30_is_accepted(tmp_path, monkeypatch):
+    sel, fits = _hpo(tmp_path, monkeypatch, _table({(1e-3, None): (1, 1)}),
+                     seeds=(30, 101))
+    assert sel['tuning_seeds'] == [30, 101] and fits
 
 
 def _assert_global_clip(built, path, value):
