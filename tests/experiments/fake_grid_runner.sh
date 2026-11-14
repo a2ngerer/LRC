@@ -5,9 +5,10 @@
 # <seed> <score> <tie_break>" (clip "off" = no --clipnorm); a missing row fails
 # the fit. "system" echoes --system (null without it, as the PA runner);
 # best_val_epoch is $FAKE_BEST_EPOCH (default 10) of 40 epochs; split and
-# split_seed as the PA runner's grouped default.
+# split_seed as the PA runner's grouped default, split_fold echoes
+# --split-fold (null without it).
 set -euo pipefail
-clip=off; system=null; all="$*"
+clip=off; system=null; fold=null; all="$*"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --lr) lr="$2"; shift ;;
@@ -15,6 +16,7 @@ while [[ $# -gt 0 ]]; do
         --seed) seed="$2"; shift ;;
         --outdir) outdir="$2"; shift ;;
         --system) system="\"$2\""; shift ;;
+        --split-fold) fold="$2"; shift ;;
     esac
     shift
 done
@@ -27,6 +29,7 @@ mkdir -p "$outdir"
 cat > "$outdir/fake.json" <<JSON
 {"system": $system, "data_seed": $((1000 + seed)), "val_macro_f1": $score,
  "val_macro_f1_mean": $score, "epochs": 40, "split": "grouped", "split_seed": 0,
+ "split_fold": $fold,
  "best_val_epoch": ${FAKE_BEST_EPOCH:-10},
  "rollout_metrics_val": {"vpt_multi_median": $score, "nrmse_32_anchor_8": $tie,
                          "vpt_median": $score, "nrmse_32_median": $tie}}

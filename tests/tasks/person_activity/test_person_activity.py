@@ -10,7 +10,10 @@
 #   - on a stub raw file (issue #26): all recordings parsed, negative dt
 #     clamped, the grouped split is disjoint by recording, person-balanced and
 #     shares no time step, no window spans two recordings; macro-F1 matches
-#     sklearn; a two-epoch runner run writes the val/test metric fields.
+#     sklearn; a two-epoch runner run writes the val/test metric fields;
+#   - the fold rotation (issue #134): every recording a test recording once
+#     over the five folds, its errors, the unchanged default split, and the
+#     runner's split_fold, result name and record under --split-fold.
 import json
 import os
 import sys
@@ -28,8 +31,10 @@ from src.tasks.person_activity import (build_person_activity_model,
 from src.evaluation.metrics import confusion_matrix, macro_f1
 from src.tasks.person_activity.datasets import CLASS_MAP, SENSOR_IDS
 from src.tasks.person_activity.model import WIRINGS
+from experiments import eval_robustness
 from experiments import run_person_activity_benchmark as pa_runner
 from experiments.run_person_activity_benchmark import result_tag
+from src.benchmark.checkpoints import config_hash
 
 SEQ_LEN = 32
 NUM_CLASSES = 7
@@ -263,6 +268,68 @@ def test_unknown_split_rejected(stub):
         load_person_activity(data_path=stub, split="by_person")
 
 
+# --- fold rotation (issue #134) ---
+
+# the seeded grouped split of main before #134 (pinned: split_fold=None must
+# reproduce it)
+DEFAULT_SPLITS = {
+    0: {"train": ["A03", "A05", "A04", "B05", "B02", "B03", "C01", "C03",
+                  "C04", "D04", "D03", "D01", "E05", "E03", "E02"],
+        "val": ["A01", "B01", "C05", "D02", "E04"],
+        "test": ["A02", "B04", "C02", "D05", "E01"]},
+    1: {"train": ["A05", "A01", "A02", "B04", "B01", "B02", "C03", "C04",
+                  "C05", "D02", "D04", "D05", "E04", "E01", "E02"],
+        "val": ["A03", "B05", "C02", "D01", "E05"],
+        "test": ["A04", "B03", "C01", "D03", "E03"]},
+}
+
+
+def test_default_grouped_split_is_unchanged(stub):
+    for seed, parts in DEFAULT_SPLITS.items():
+        data = load_person_activity(data_path=stub, split_seed=seed)
+        assert data.recordings == parts and data.split_fold is None
+
+
+def test_fold_rotation_tests_every_recording_once(stub):
+    tested = []
+    for k in range(5):
+        data = load_person_activity(data_path=stub, split_fold=k)
+        parts = data.recordings
+        assert data.split_fold == k and data.split_seed == 0
+        # test = recording k + 1, val = recording k + 2 (wrapping: fold 4
+        # tests 05 and validates on 01)
+        assert parts["test"] == [f"{p}{k + 1:02d}" for p in "ABCDE"]
+        assert parts["val"] == [f"{p}{(k + 1) % 5 + 1:02d}" for p in "ABCDE"]
+        sets = [set(parts[p]) for p in ("train", "val", "test")]
+        assert sum(map(len, sets)) == len(set.union(*sets)) == 25
+        for person in "ABCDE":
+            assert [sum(r[0] == person for r in parts[p])
+                    for p in ("train", "val", "test")] == [3, 1, 1]
+        for p in ("train", "val", "test"):
+            assert set(getattr(data, f"{p}_rec")) == set(parts[p])
+        # independent of split_seed
+        assert load_person_activity(data_path=stub, split_seed=7,
+                                    split_fold=k).recordings == parts
+        tested += parts["test"]
+    assert sorted(tested) == sorted(f"{p}{r:02d}" for p in "ABCDE"
+                                    for r in range(1, 6))
+    assert load_person_activity(data_path=stub, split_fold=4).recordings[
+        "val"] == ["A01", "B01", "C01", "D01", "E01"]
+
+
+@pytest.mark.parametrize("kwargs", [dict(split_fold=-1), dict(split_fold=5),
+                                    dict(split_fold=0, split="random_window")])
+def test_fold_rejects_bad_values(stub, kwargs):
+    with pytest.raises(ValueError, match="split_fold"):
+        load_person_activity(data_path=stub, **kwargs)
+
+
+def test_fold_needs_five_recordings_per_person(tmp_path):
+    four = str(_write_stub(tmp_path / "four.txt", recordings=4))
+    with pytest.raises(ValueError, match="person A has 4"):
+        load_person_activity(data_path=four, split_fold=0)
+
+
 def test_macro_f1_matches_sklearn():
     from sklearn.metrics import f1_score
     rng = np.random.default_rng(0)
@@ -285,6 +352,9 @@ def test_runner_writes_val_and_test_metrics(stub, tmp_path, monkeypatch):
     pa_runner.main()
     record = json.loads((tmp_path / "gru_dense_seed0.json").read_text())
     assert record["split"] == "grouped" and record["split_seed"] == 0
+    # default run (#134): no split_fold in config.effective, None on top
+    assert "split_fold" not in record["config"]["effective"]
+    assert record["split_fold"] is None
     assert record["n_recordings"] == 25 and record["n_negative_dt"] == 1
     assert "best_test_accuracy" not in record
     assert record["dt_feature"] is True          # gru, default --dt-feature on
@@ -305,11 +375,52 @@ def test_runner_writes_val_and_test_metrics(stub, tmp_path, monkeypatch):
     assert record["test_macro_f1"] == pytest.approx(macro_f1(total))
 
 
+@pytest.mark.parametrize("fold", [0, 4])
+def test_runner_writes_the_fold(stub, tmp_path, monkeypatch, capsys, fold):
+    """--split-fold k (#134): the record, config.effective and the file name
+    carry the fold; the test metrics are keyed by the fold's test recordings;
+    eval_robustness skips the record."""
+    monkeypatch.setattr(sys, "argv", [
+        "run_person_activity_benchmark.py", "--wiring", "dense",
+        "--cell", "gru", "--size", "4", "--epochs", "2", "--batch-size", "32",
+        "--data-path", stub, "--outdir", str(tmp_path),
+        "--split-fold", str(fold)])
+    pa_runner.main()
+    (path,) = tmp_path.glob("*.json")
+    assert path.name == f"gru_dense_seed0_fold{fold}.json"
+    record = json.loads(path.read_text())
+    tests = [f"{p}{fold + 1:02d}" for p in "ABCDE"]
+    assert record["split_fold"] == fold and record["split_seed"] == 0
+    assert record["recordings"]["test"] == tests
+    assert sorted(record["test_macro_f1_per_recording"]) == tests
+    assert sorted(record["test_confusion_by_recording"]) == tests
+    eff = record["config"]["effective"]
+    assert eff["split_fold"] == fold
+    assert eff["config_hash"] == config_hash(eff)
+    capsys.readouterr()
+    assert eval_robustness.evaluate(str(path)) is None
+    assert f"skip {path}" in capsys.readouterr().out
+
+
+def test_runner_rejects_a_fold_with_a_split_seed(stub, tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "argv", [
+        "run_person_activity_benchmark.py", "--wiring", "dense",
+        "--cell", "gru", "--data-path", stub, "--outdir", str(tmp_path),
+        "--split-fold", "0", "--split-seed", "1"])
+    with pytest.raises(SystemExit):
+        pa_runner.main()
+    assert not list(tmp_path.glob("*.json"))
+
+
 def test_result_tag_backbone_suffix():
     a = SimpleNamespace(cell="cfc_lrc", wiring="ncp", seed=2,
                         backbone_layers=None)
     assert result_tag(a) == "cfc_lrc_ncp_seed2"
     a.backbone_layers = 1
+    assert result_tag(a) == "cfc_lrc_ncp_seed2_bb1"
+    a.split_fold = 0                        # fold 0 is set (#134)
+    assert result_tag(a) == "cfc_lrc_ncp_seed2_bb1_fold0"
+    a.split_fold = None
     assert result_tag(a) == "cfc_lrc_ncp_seed2_bb1"
 
 

@@ -251,6 +251,14 @@ def test_pa_one_class_val_from_the_loader_counts(monkeypatch):
     assert got == pytest.approx((2 * 0.5 / 1.5) / 6)
 
 
+def test_pa_fold_result_stops_the_tuning(tmp_path, monkeypatch, one_class):
+    """#134: tuning under a fold is unsupported; the first result with a
+    split_fold stops the driver and names the file."""
+    with pytest.raises(SystemExit, match=r"fake\.json: split_fold 0"):
+        _hpo(tmp_path, monkeypatch, _table(), '--split-fold', '0', task='pa')
+    assert not (tmp_path / 'hpo' / 'hpo_selection.json').exists()
+
+
 def test_select_on_override_minimize(tmp_path, monkeypatch):
     table = _table({(3e-3, None): (0, 0, 0.1)})  # lowest nrmse_32
     sel, _ = _hpo(tmp_path, monkeypatch, table, '--select-on',

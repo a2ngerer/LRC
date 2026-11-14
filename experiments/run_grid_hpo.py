@@ -49,6 +49,8 @@ stage-1 candidate is at chance, the arm never left the one-class plateau: the
 selection sets not_learned true and names the plateau in reason; there is no
 edge extension and no stage 2, and lr / clipnorm are the stage-1 ranking's
 first entry (exact ties in grid order). Else not_learned is false, reason null.
+Tuning under a Person Activity fold (#134) is unsupported: a result JSON with
+a non-null split_fold stops the driver (SystemExit naming the file).
 
 Usage:
     uv run python experiments/run_grid_hpo.py --task lv --cell cfc_lrc \
@@ -144,6 +146,9 @@ class GridHPO:
         (path,) = glob(os.path.join(d, "*.json"))  # one result per fit folder
         with open(path) as f:
             rec = json.load(f)
+        if rec.get("split_fold") is not None:
+            raise SystemExit(f"{path}: split_fold {rec['split_fold']}, "
+                             "tuning under a fold is unsupported (#134)")
         self.fits[key] = {
             "lr": lr, "clipnorm": clip, "seed": seed,
             "data_seed": rec.get("data_seed", rec.get("split_seed")),

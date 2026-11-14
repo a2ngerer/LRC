@@ -11,7 +11,8 @@
 #     few negative elapsed times (out-of-order timestamps) are clamped to 0.
 # The windowing (length seq_len, stride seq_len // 2, inside one recording) is
 # unchanged. split='grouped' (default) assigns whole recordings to
-# train/val/test; split='random_window' is the original protocol (seed 98841,
+# train/val/test (seeded per person, or fold k of a deterministic rotation
+# with split_fold); split='random_window' is the original protocol (seed 98841,
 # 20% of the windows as test, no validation set), kept as literature anchor:
 # overlapping windows of the same recording land on both sides there.
 
@@ -29,6 +30,7 @@ DEFAULT_DATA_PATH = os.path.join(_REPO_ROOT, "data", "person",
 
 NUM_CLASSES = 7
 SPLITS = ("grouped", "random_window")
+N_FOLDS = 5             # recordings per person = folds of the rotation (#134)
 
 # Activity label -> class id (several raw labels share a class).
 CLASS_MAP = {
@@ -66,6 +68,8 @@ class PersonActivityData:
     split='random_window' has no validation set: val_* are the test_* arrays.
     recordings: {'train'|'val'|'test': [recording ids]} for split='grouped',
     None for 'random_window' (every recording feeds both sides).
+    split_fold: the fold of the deterministic rotation, None for the seeded
+    grouped split and for 'random_window'.
     """
     train_x: np.ndarray
     train_t: np.ndarray
@@ -87,6 +91,7 @@ class PersonActivityData:
     recordings: Optional[dict]
     n_recordings: int
     n_negative_dt: int
+    split_fold: Optional[int] = None
 
 
 def _parse_raw(data_path):
@@ -193,8 +198,29 @@ def _assign_recordings(names, split_seed):
     return parts
 
 
+def _fold_recordings(names, split_fold):
+    """Grouped split, fold split_fold of the deterministic rotation (#134).
+
+    Per person, of the recordings sorted by id (A01 .. A05): test = index
+    split_fold, val = index (split_fold + 1) mod N_FOLDS, train = the other
+    three. Over the folds 0 .. N_FOLDS - 1 every recording is a test recording
+    exactly once.
+    """
+    parts = {"train": [], "val": [], "test": []}
+    for person in sorted({n[0] for n in names}):
+        recs = sorted(n for n in names if n[0] == person)
+        if len(recs) != N_FOLDS:
+            raise ValueError(f"split_fold needs {N_FOLDS} recordings per "
+                             f"person, person {person} has {len(recs)}")
+        test, val = recs[split_fold], recs[(split_fold + 1) % N_FOLDS]
+        parts["train"] += [r for r in recs if r not in (test, val)]
+        parts["val"].append(val)
+        parts["test"].append(test)
+    return parts
+
+
 def load_person_activity(seq_len=32, data_path=None, split="grouped",
-                         split_seed=0):
+                         split_seed=0, split_fold=None):
     """Load the person-activity dataset as windowed train/val/test splits.
 
     Args:
@@ -207,7 +233,11 @@ def load_person_activity(seq_len=32, data_path=None, split="grouped",
                     protocol, literature anchor only: windows permuted with
                     seed 98841, 20% test, val = test).
         split_seed: seeds the grouped recording assignment (fixed for the
-                    whole suite); ignored for 'random_window'.
+                    whole suite); ignored for 'random_window' and when
+                    split_fold is set.
+        split_fold: None (default: the seeded assignment) or a fold in
+                    0 .. N_FOLDS - 1 of the deterministic rotation
+                    (_fold_recordings); 'grouped' only.
 
     Returns:
         PersonActivityData with train/val/test x, t, y, rec and metadata.
@@ -215,9 +245,19 @@ def load_person_activity(seq_len=32, data_path=None, split="grouped",
     Raises:
         FileNotFoundError: if the data file is missing (run
         download_dataset.sh in the repo root to fetch it).
+        ValueError: unknown split; split_fold outside 0 .. N_FOLDS - 1 or
+        with split='random_window'; a person without N_FOLDS recordings
+        under split_fold.
     """
     if split not in SPLITS:
         raise ValueError(f"split must be one of {SPLITS}, got {split!r}")
+    if split_fold is not None:
+        if split != "grouped":
+            raise ValueError(f"split_fold needs split='grouped', got "
+                             f"{split!r}")
+        if split_fold not in range(N_FOLDS):
+            raise ValueError(f"split_fold must be in 0 .. {N_FOLDS - 1}, "
+                             f"got {split_fold!r}")
     data_path = data_path or DEFAULT_DATA_PATH
     if not os.path.isfile(data_path):
         raise FileNotFoundError(
@@ -231,7 +271,9 @@ def load_person_activity(seq_len=32, data_path=None, split="grouped",
     all_rec = np.array(names)[source]
 
     if split == "grouped":
-        recordings = _assign_recordings(names, split_seed)
+        recordings = (_assign_recordings(names, split_seed)
+                      if split_fold is None
+                      else _fold_recordings(names, split_fold))
         idx = {part: np.flatnonzero(np.isin(all_rec, recs))
                for part, recs in recordings.items()}
     else:
@@ -256,4 +298,5 @@ def load_person_activity(seq_len=32, data_path=None, split="grouped",
         recordings=recordings,
         n_recordings=len(names),
         n_negative_dt=n_negative_dt,
+        split_fold=split_fold,
     )

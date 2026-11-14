@@ -2,7 +2,9 @@
 # Issue a2ngerer/LRC#98: eval-only sign check of the gate time coefficient
 # t_a from saved weights. Tiny synthetic fits of cfc, cfc_lrc and
 # cfc_lrc_outer on the three runners (rollout, Person Activity stub,
-# committee stub); no real data, no real results.
+# committee stub); no real data, no real results. Issue #134: the Person
+# Activity fold reaches the loader, a rebuilt split that differs from the
+# record's recordings stops the check.
 import json
 import sys
 
@@ -18,7 +20,9 @@ from experiments import run_person_activity_benchmark as pa_runner
 from src.benchmark.checkpoints import rebuild_from_result
 from src.neurons.cfc_cell import CfC_Cell
 from src.neurons.cfc_lrc_cell import CfC_LRC_Cell
+from src.tasks.person_activity.datasets import load_person_activity
 from tests.benchmark.test_checkpoints import T, _pa_stub
+from tests.tasks.person_activity.test_person_activity import _write_stub
 
 
 @pytest.fixture(scope="module")
@@ -118,6 +122,24 @@ def test_untrained_rebuild_is_the_seeded_init(fits):
         np.testing.assert_array_equal(wa, wb)
     assert any(not np.array_equal(wa, wt) for wa, wt in
                zip(a.get_weights(), trained.get_weights()))
+
+
+def test_pa_fold_reaches_the_loader(tmp_path, monkeypatch):
+    """config.effective.split_fold rebuilds the fold (recordings compared per
+    part, order-insensitive); without it the default split is rebuilt, which
+    differs from the record's recordings and fails loudly."""
+    monkeypatch.setattr(gs, "load_person_activity", load_person_activity)
+    stub = str(_write_stub(tmp_path / "ConfLongDemo_JSI.txt"))
+    fold = load_person_activity(data_path=stub, split_fold=4)
+    eff = {"build": {"seq_len": 32}, "split": "grouped", "split_seed": 0,
+           "split_fold": 4}
+    record = {"config": {"effective": eff},
+              "recordings": {k: v[::-1] for k, v in fold.recordings.items()}}
+    x, t = gs.test_inputs(record, "pa", stub)
+    np.testing.assert_array_equal(x, fold.test_x)
+    del eff["split_fold"]
+    with pytest.raises(SystemExit, match="rebuilt recordings"):
+        gs.test_inputs(record, "pa", stub)
 
 
 def test_summary_median_bootstrap_and_reading():
