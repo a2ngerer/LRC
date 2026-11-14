@@ -544,13 +544,42 @@ confusion} per fault count]}`, one seed's entry in the layout of
 (`[[confusion per fault count] per draw]`) and its macro-F1, the summed keys
 `test_confusion_by_recording_by_fault`, `test_macro_f1_by_fault` and
 `test_macro_f1_per_recording_by_fault` (comparable with the source record),
-`source_record`, `source_config_hash`, `fault_counts`, `eval_test_seeds`,
-`eval_val_draws` and `eval_val_draw_seeds`.
+`source_record`, `source_config_hash`, `source_protocol_version` (the
+record's `config.effective.protocol_version`), `fault_counts`,
+`eval_test_seeds`, `eval_val_draws` and `eval_val_draw_seeds`.
+
+Vote-lambda grid at fixed weights (#137): `--vote-lambda-override
+L1,L2,...` (distinct values in [0, 1]) scores the same weights once with the
+stored vote strength (row `stored`: the learned `sigmoid(vote_raw)`, i.e.
+`vote_lambda_final`, or the fixed value of a `--vote-lambda` arm) and once
+per value (rows `override`). Before each value `set_vote_lambda` sets
+`_vote_lambda` on every voting cell and drops the cached predict function
+(`vote_strength` is read when predict traces). All rows use the same test
+and validation draws. The output is `<out>/<stem>.lambda_grid.evalonly.json`
+instead of `.evalonly.json`: `by_lambda` (per row `label`, `lambda` and the
+summed test and validation keys above, without the per-seed split) plus
+`cell`, `wiring`, `n_columns`, `consensus`, `view_average`, `seed`,
+`vote_lambda_stored` and the `source_*`, `fault_counts`, `eval_*` keys. A
+model without a voting cell (`cncp2_multi`) is refused; a model with one
+column (`build.n_columns == 1`: K = 1, `avg_in`, `fault_mean`) has no vote
+to change and is skipped without output. With mean consensus the readout of
+the current step does not depend on lambda; lambda acts through the mixed
+states carried to later steps. In the suite the grid is `stage: eval` of
+`task: co` (required key `vote_lambda_override`; each line resolves its
+source fit's weights from `record_glob` at run time, see
+`experiments/suite_manifest.py`), and `aggregate_results.py --lambda-grid
+<folder>` writes the descriptive `lambda_grid.csv` (median over seeds,
+seed bootstrap interval, paired difference to the `stored` row; no test).
 
 ```bash
 uv run python experiments/run_committee_benchmark.py --eval-only \
     --weights results/04_column_voting/<run>/results/hpo/ncp_cons/<point>/<stem>.weights.h5 \
     --test-seeds 0,1,2,3,4 --val-draws 5 --out <scratch folder>
+uv run python experiments/run_committee_benchmark.py --eval-only \
+    --weights results/04_column_voting/<run>/results/<stem>.weights.h5 \
+    --vote-lambda-override <L1,L2,...> --out <scratch folder>
+uv run python experiments/aggregate_results.py --runs none \
+    --lambda-grid <scratch folder> --out <scratch folder>
 uv run python experiments/suite_gate.py --stage s3co \
     --runs results/04_column_voting/<co-k3-final run> --out <scratch folder>/S3_GK.md
 ```

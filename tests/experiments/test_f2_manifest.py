@@ -206,7 +206,7 @@ def test_eval_pa_lines(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('over, msg', [
     ({'seeds': [0]}, r"does not take \['seeds'\]"),
-    ({'task': 'co'}, 'needs task lv or pa'),
+    ({'task': 'mt'}, 'needs task lv, pa or co'),
     ({'sources': []}, "'sources' is required"),
     ({'sources': [{'config': 'configs/suite/duffing_final.yaml'}]},
      'a source is'),
@@ -252,6 +252,105 @@ def test_eval_default_takes_every_source_record():
         {'config': 'configs/suite/duffing_final.yaml', 'records_dir': 'r'}]}
     with tempfile.TemporaryDirectory() as d:
         assert count(load(_write(Path(d), cfg))) == 200
+
+
+
+# --- co eval lines: the vote-lambda grid at fixed weights (#137) ------------
+
+CO_STEM = 'cfc_lrc_ncp_K30_s*_identical_lr*_clip*_cs0_seed1_bb1'
+
+
+def _co_eval(tmp_path, records, **over):
+    """An eval YAML over two ncp_cons fits of the K = 30 final (over: None
+    drops a key)."""
+    cfg = {'task': 'co', 'stage': 'eval', 'sources': [
+        {'config': 'configs/suite/co_k30_final.yaml',
+         'records_dir': str(records), 'arms': ['ncp_cons'], 'seeds': [0, 1]}],
+        'vote_lambda_override': [0, 0.5, 1], **over}
+    return load(_write(tmp_path, {k: v for k, v in cfg.items()
+                                  if v is not None}, 'co_eval.yaml'))
+
+
+def test_eval_co_lines(tmp_path, monkeypatch, capsys):
+    """Expanding reads no record; the line carries record_glob and --out;
+    at run time exactly one weights file runs, zero or two stop the line,
+    a done line is skipped before the glob."""
+    records = tmp_path / 'run' / 'results'
+    cfg = _co_eval(tmp_path, records)
+    lines = expand(cfg)
+    assert count(cfg) == len(lines) == 2
+    line = lines[1]
+    assert line == {
+        'id': f'co_k30_final/{CO_STEM}.json', 'group': 'default',
+        'outdir': 'co_k30_final', 'out': 'co_k30_final',
+        'done': f'co_k30_final/{CO_STEM}.lambda_grid.evalonly.json',
+        'record_glob': f'{records}/{CO_STEM}.weights.h5',
+        'argv': ['uv', 'run', 'python', 'experiments/run_committee_benchmark.py',
+                 '--eval-only', '--vote-lambda-override', '0.0,0.5,1.0']}
+    plan = write(cfg, lines, str(tmp_path))
+    assert 'SUITE_BENCH=04_column_voting' in plan and 'SUITE_STAGE=eval' in plan
+    manifest = str(tmp_path / 'manifest_default.jsonl')
+    results = tmp_path / 'ev_run' / 'results'
+    execs = []
+    monkeypatch.setattr('os.execvp', lambda f, argv: execs.append(argv))
+    with pytest.raises(SystemExit, match='matches 0 weight files') as e:
+        run(manifest, 1, str(results))
+    assert line['record_glob'] in str(e.value)
+    records.mkdir(parents=True)
+    fit = 'cfc_lrc_ncp_K30_s20_identical_lr0.003_clip1_cs0_seed1_bb1'
+    for name in (fit + '.weights.h5', fit + '.json',
+                 fit.replace('seed1', 'seed11') + '.weights.h5',
+                 fit.replace('_identical', '_identical_lam0') + '.weights.h5',
+                 fit.replace('_identical', '_identical_median') + '.weights.h5'):
+        (records / name).write_text('')
+    run(manifest, 1, str(results))
+    assert execs == [[*line['argv'], '--weights',
+                      str(records / (fit + '.weights.h5')),
+                      '--out', str(results / 'co_k30_final')]]
+    (records / (fit.replace('lr0.003_clip1', 'lr0.01_clipoff')
+                + '.weights.h5')).write_text('')
+    with pytest.raises(SystemExit, match='matches 2 weight files'):
+        run(manifest, 1, str(results))
+    done = results / 'co_k30_final' / (fit + '.lambda_grid.evalonly.json')
+    done.parent.mkdir()
+    done.write_text('{}')
+    run(manifest, 1, str(results))                 # done -> skipped
+    assert len(execs) == 1
+    capsys.readouterr()
+    main([str(tmp_path / 'co_eval.yaml'), '--list'])
+    first = capsys.readouterr().out.splitlines()[0]
+    assert '--weights' in first and "--out '<results>/co_k30_final'" in first
+
+
+@pytest.mark.parametrize('over, msg', [
+    ({'vote_lambda_override': None}, 'task co needs vote_lambda_override'),
+    ({'vote_lambda_override': []}, 'task co needs vote_lambda_override'),
+    ({'vote_lambda_override': [0, 1.5]}, r'distinct values in \[0, 1\]'),
+    ({'vote_lambda_override': [0.5, 0.5]}, r'distinct values in \[0, 1\]'),
+    ({'vote_lambda_override': [True]}, r'distinct values in \[0, 1\]'),
+    ({'vote_lambda_override': 0.5}, r'distinct values in \[0, 1\]'),
+    ({'robustness': True, 'seed_streams': 'v1'}, 'apply to task lv and pa'),
+    ({'robustness': False}, 'apply to task lv and pa'),
+    ({'seed_streams': 'v1'}, 'apply to task lv and pa'),
+    ({'extra_args': ['--val-draws', '2']}, 'extra_args applies to task pa'),
+    ({'sources': [{'config': 'configs/suite/pa_final.yaml',
+                   'records_dir': 'r'}]}, 'not a final stage of the same task'),
+    ({'sources': [{'config': 'configs/suite/co_k3_hpo.yaml',
+                   'records_dir': 'r'}]}, 'not a final stage'),
+])
+def test_eval_co_rejections(tmp_path, over, msg):
+    with pytest.raises(SystemExit, match=msg):
+        _co_eval(tmp_path, 'r', **over)
+
+
+@pytest.mark.parametrize('task, src, extra', [
+    ('pa', 'pa_final', {}), ('lv', 'duffing_final', {'system': 'duffing'})])
+def test_vote_lambda_override_is_co_only(tmp_path, task, src, extra):
+    cfg = {'task': task, 'stage': 'eval', 'vote_lambda_override': [0, 1],
+           'sources': [{'config': f'configs/suite/{src}.yaml',
+                        'records_dir': 'r'}], **extra}
+    with pytest.raises(SystemExit, match='applies to task co only'):
+        load(_write(tmp_path, cfg))
 
 
 # --- the F2 YAMLs (protocol F2 sections 3, 4, 7, 8) ---------------------------
