@@ -111,6 +111,17 @@ GRID_CLIP of run_grid_hpo.py; an edge extension is not counted) of one or more
 YAMLs and needs no hpo_selection.json; the frozen fit counts per task:
     uv run python experiments/suite_manifest.py --count configs/suite/lv_*.yaml
 
+--check-resume OLD NEW (#143) is the guard of cluster/submit_suite.sh --resume:
+OLD is the manifest_<group>.jsonl already in the run folder (a missing or empty
+file has nothing to contradict), NEW the freshly written one. The call exits
+non-zero naming both line ids when a line of NEW has the `done` of a line of OLD
+but another argv: the result name does not tell the two campaigns apart (see
+above), so the resume would skip the fits of the first as done and replace its
+manifest. Lines in only one of the two (a longer seed list, a new group) pass.
+The argv of a final line follows the lr, clipnorm and final_epochs of the
+hpo_selection.json files under hpo_dir (or `fixed`) and the --wandb flag, so a
+resume must expand the same YAML with the same fetched HPO run and flag.
+
 Usage:
     uv run python experiments/suite_manifest.py CONFIG --list [--group G]
     uv run python experiments/suite_manifest.py --count CONFIG... [--group G]
@@ -118,6 +129,8 @@ Usage:
     uv run python experiments/suite_manifest.py CONFIG --write DIR [--wandb]
     # one SLURM bundle member (cluster/suite_array.sbatch): skip if done, else run
     uv run python experiments/suite_manifest.py --run MANIFEST --index I --results DIR
+    # the resume guard of cluster/submit_suite.sh --resume, one group
+    uv run python experiments/suite_manifest.py --check-resume OLD NEW
 """
 from __future__ import annotations
 
@@ -602,6 +615,35 @@ def pending(lines, results):
     return [line for line in lines if not is_done(line, results)]
 
 
+def _read_manifest(path):
+    """The lines of a manifest_<group>.jsonl; a missing file has none."""
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return [json.loads(row) for row in f if row.strip()]
+
+
+def check_resume(old_path, new_path):
+    """Resume guard (#143): refuse when a line of the new manifest has the
+    `done` of a line of the manifest already in the run folder but another
+    argv. Lines present in only one of the two pass."""
+    old = {line["done"]: line for line in _read_manifest(old_path)}
+    for line in _read_manifest(new_path):
+        prev = old.get(line["done"])
+        if prev is None or prev["argv"] == line["argv"]:
+            continue
+        was = " ".join(t for t in prev["argv"] if t not in line["argv"]) or "-"
+        now = " ".join(t for t in line["argv"] if t not in prev["argv"]) or "-"
+        raise SystemExit(
+            f"resume refused: {prev['id']} (run folder manifest) and "
+            f"{line['id']} (new manifest) both resolve to the result "
+            f"{line['done']} but differ in argv (only in the run folder: "
+            f"{was}; only in the new line: {now}). A resume expands the same "
+            "YAML with the same --wandb flag and the same fetched HPO run; a "
+            "campaign that differs in the optimizer, the epoch count or the "
+            "selection needs its own run folder (cluster/README.md)")
+
+
 def resources(cfg, group):
     res = dict(cfg.get("cluster") or {})
     if group == "heavy":
@@ -655,12 +697,16 @@ def main(argv=None):
                       help="planned fits (no hpo_selection.json needed)")
     mode.add_argument("--write", metavar="DIR")
     mode.add_argument("--run", metavar="MANIFEST")
+    mode.add_argument("--check-resume", nargs=2, metavar=("OLD", "NEW"),
+                      help="the resume guard of submit_suite.sh --resume")
     ap.add_argument("--group", default=None, help="--list/--count: one group")
     ap.add_argument("--wandb", action="store_true",
                     help="append --wandb to every call (offline runs)")
     ap.add_argument("--index", type=int, help="--run: manifest line")
     ap.add_argument("--results", help="--run: the run folder's results/")
     a = ap.parse_args(argv)
+    if a.check_resume:
+        return check_resume(*a.check_resume)
     if a.run:
         if a.index is None or not a.results:
             ap.error("--run needs --index and --results")

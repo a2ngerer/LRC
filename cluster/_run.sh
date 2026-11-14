@@ -13,7 +13,8 @@
 #
 # Contract for a launcher that sources this file:
 #   run_parse_args "$@"        -> sets LABEL, DRY_RUN (-n / --dry-run), BENCH (env override)
-#   run_prepare <NN_benchmark> -> sets RUN_DIR (cluster path), creates the folder
+#   run_resolve <NN_benchmark> -> sets RUN_NAME, RUN_REL, RUN_DIR, RUN_BENCH; no side effect
+#   run_prepare <NN_benchmark> -> run_resolve, then creates the folder
 #                                 and LAUNCH.md (skipped on DRY_RUN); with
 #                                 RUN_RESUME=1 the label is an existing run
 #                                 folder name, reused and noted in LAUNCH.md
@@ -121,10 +122,10 @@ _run_git_sha() {
     echo "${sha}"
 }
 
-# run_prepare <NN_benchmark>: resolve RUN_DIR, create it, write LAUNCH.md.
-# Globals read: LABEL, DRY_RUN, BENCH (optional override), LAUNCH_PURPOSE
-# (optional), RUN_COMMAND (the exact local command, set by the launcher).
-run_prepare() {
+# run_resolve <NN_benchmark>: set RUN_NAME, RUN_REL, RUN_DIR and RUN_BENCH from
+# LABEL and BENCH; touches nothing (a launcher can read the run folder with
+# _run_ssh before run_prepare, see cluster/submit_suite.sh --resume).
+run_resolve() {
     local bench="${BENCH:-$1}"
     local date_utc; date_utc="$(date -u +%F)"
     RUN_NAME="${date_utc}_${LABEL}"
@@ -133,6 +134,13 @@ run_prepare() {
     # $HOME-relative on the cluster unless absolute.
     if [[ "${RUN_REL}" == /* ]]; then RUN_DIR="${RUN_REL}"; else RUN_DIR="\$HOME/${RUN_REL}"; fi
     RUN_BENCH="${bench}"
+}
+
+# run_prepare <NN_benchmark>: resolve RUN_DIR, create it, write LAUNCH.md.
+# Globals read: LABEL, DRY_RUN, BENCH (optional override), LAUNCH_PURPOSE
+# (optional), RUN_COMMAND (the exact local command, set by the launcher).
+run_prepare() {
+    run_resolve "$1"
     echo "run folder: ${CLUSTER_HOST}:${RUN_REL}"
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then return 0; fi
     if [[ "${RUN_RESUME:-0}" -eq 1 ]]; then
