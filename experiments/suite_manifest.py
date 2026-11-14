@@ -53,7 +53,7 @@ configs/suite/{lv,duffing,mt,pa,co}_*.yaml, #71):
 
 Stage eval (#105) trains nothing: it re-evaluates stored result JSONs.
 
-    task: lv                    # lv | pa
+    task: lv                    # lv | pa | co
     system: duffing             # lv: the system of every source
     stage: eval
     sources:                    # the records of these final-stage YAMLs
@@ -67,6 +67,8 @@ Stage eval (#105) trains nothing: it re-evaluates stored result JSONs.
     extra_args: []              # pa only: appended to every eval_robustness.py
                                 # call (#96: --per-recording-confusions,
                                 # --verify-against <stored CSVs>)
+    vote_lambda_override: [0, 1]   # co only, required: the vote strengths
+                                # (distinct, in [0, 1]) of the lambda grid
     cluster: {runs_per_gpu: 10}
 
 One line per record, named with result_name from the source YAML: lv runs
@@ -77,6 +79,16 @@ stem>.csv (the rebuild check; no --outdir; the line carries that path as
 `out`). id and done are <source stem>/<record>, so equal record names of two
 sources never collide; the records_dir folders are read-only inputs (a cluster
 path, read at run time only). --count gives the line count.
+
+co (#137) runs run_committee_benchmark.py --eval-only --vote-lambda-override
+<values> on the stored weights of a committee final fit: the lambda grid at
+fixed weights. The record name embeds the tuned lr and clip, which the eval
+YAML does not know, so the line carries `record_glob`, the weights glob
+<records_dir>/<record stem with _lr*_clip*>.weights.h5; run() resolves it to
+exactly one file (--weights; zero or several matches stop the line, naming
+the glob) when the line runs, so expanding stays free of file access. `out`
+is the folder results/<source stem> (--out); done is <source stem>/<record
+stem>.lambda_grid.evalonly.json.
 
 With `robustness: true` (and the required `seed_streams`, v1 for the records of
 F1/F2) the robustness evaluation runs on the same records: an lv source gets a
@@ -144,14 +156,16 @@ KEYS = {"task", "system", "stage", "cells", "wirings", "arms", "param_budget",
         "seeds", "extra_seeds", "config_from", "epochs", "ode_unfolds",
         "dt_scale", "extra_args", "per_cell", "hpo_dir", "fixed", "cluster",
         "heavy", "description", "selection_from", "sources", "robustness",
-        "seed_streams"}
+        "seed_streams", "vote_lambda_override"}
 EVAL_KEYS = {"task", "system", "stage", "sources", "cluster", "description",
-             "robustness", "seed_streams", "extra_args"}
+             "robustness", "seed_streams", "extra_args",
+             "vote_lambda_override"}
 # eval_robustness.SEED_STREAMS (#101), not imported: that module loads
 # TensorFlow; a test pins the equality
 SEED_STREAMS = ("v1", "v2")
 ROBUSTNESS_RUNNER = "experiments/eval_robustness.py"
-EVAL_RUNNERS = {"lv": RUNNERS["lv"], "pa": ROBUSTNESS_RUNNER}
+EVAL_RUNNERS = {"lv": RUNNERS["lv"], "pa": ROBUSTNESS_RUNNER,
+                "co": RUNNERS["co"]}
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLUSTER_KEYS = ("runs_per_gpu", "mem", "walltime", "cpus", "array_throttle")
 
@@ -257,11 +271,26 @@ def _load_eval(path, cfg):
     if extra:
         raise SystemExit(f"{path}: stage eval does not take {sorted(extra)}")
     if cfg.get("task") not in EVAL_RUNNERS:
-        raise SystemExit(f"{path}: stage eval needs task lv or pa")
+        raise SystemExit(f"{path}: stage eval needs task lv, pa or co")
     if cfg.get("system") and cfg["task"] != "lv":
         raise SystemExit(f"{path}: system applies to task lv only")
     if cfg.get("extra_args") and cfg["task"] != "pa":
         raise SystemExit(f"{path}: extra_args applies to task pa only")
+    lams = cfg.get("vote_lambda_override")
+    if cfg["task"] != "co" and lams is not None:
+        raise SystemExit(f"{path}: vote_lambda_override applies to task co "
+                         "only")
+    if cfg["task"] == "co":
+        if not (isinstance(lams, list) and lams
+                and len(set(lams)) == len(lams)
+                and all(isinstance(x, (int, float))
+                        and not isinstance(x, bool) and 0 <= x <= 1
+                        for x in lams)):
+            raise SystemExit(f"{path}: task co needs vote_lambda_override, a "
+                             "list of distinct values in [0, 1]")
+        if {"robustness", "seed_streams"} & set(cfg):
+            raise SystemExit(f"{path}: robustness and seed_streams apply to "
+                             "task lv and pa only")
     if not cfg.get("sources"):
         raise SystemExit(f"{path}: 'sources' is required")
     if cfg.get("robustness") not in (None, True, False):
@@ -314,8 +343,22 @@ def expand_eval(cfg):
         common = [*_common(scfg), *map(str, scfg.get("extra_args") or [])]
         for (_, cell, wiring, flags), seed in _eval_jobs(scfg, src):
             rec = result_name(task, cell, wiring, seed,
-                              [*common, *_flags(flags)])
+                              [*common, *_flags(flags)], any_lr=task == "co")
             record = os.path.join(src["records_dir"], rec)
+            if task == "co":
+                rec_stem = rec[:-len(".json")]
+                lines.append({
+                    "id": f"{stem}/{rec}", "group": "default",
+                    "outdir": stem, "out": stem,
+                    "done": f"{stem}/{rec_stem}.lambda_grid.evalonly.json",
+                    "record_glob": os.path.join(
+                        glob.escape(src["records_dir"]),
+                        rec_stem + ".weights.h5"),
+                    "argv": ["uv", "run", "python", EVAL_RUNNERS[task],
+                             "--eval-only", "--vote-lambda-override",
+                             ",".join(str(float(x)) for x in
+                                      cfg["vote_lambda_override"])]})
+                continue
             argv = ["uv", "run", "python", EVAL_RUNNERS[task]]
             csv = f"{stem}/{os.path.splitext(rec)[0]}.csv"
             line = {"id": f"{stem}/{rec}", "group": "default", "outdir": stem}
@@ -384,10 +427,12 @@ def _flag_value(argv, flag):
     return vals[-1] if vals else None
 
 
-def result_name(task, cell, wiring, seed, argv):
+def result_name(task, cell, wiring, seed, argv, any_lr=False):
     """Result JSON name the task runner writes for this fit (LV result_filename,
     PA result_tag, committee result_filename as a glob over the size;
-    tests/experiments/test_suite_manifest.py checks the match)."""
+    tests/experiments/test_suite_manifest.py checks the match). any_lr (co):
+    `_lr*_clip*`, the name of a fit whose tuned lr and clip are unknown here
+    (the co eval lines)."""
     if wiring == "cncp2_multi":
         # ponytail: the multi-column suffix needs the runner's column config;
         # add it here when cncp2_multi enters the final suite.
@@ -411,8 +456,9 @@ def result_name(task, cell, wiring, seed, argv):
                 f"{'_median' if v('--consensus') == 'median' else ''}"
                 f"{f'_dvu{dvu}' if dvu else ''}{avg}"
                 f"{'_trainclean' if v('--train-corruption') == 'off' else ''}"
-                f"_lr{float(v('--lr', 1e-3)):g}"
-                f"_clip{'off' if clip is None else f'{float(clip):g}'}"
+                + ("_lr*_clip*" if any_lr else
+                   f"_lr{float(v('--lr', 1e-3)):g}"
+                   f"_clip{'off' if clip is None else f'{float(clip):g}'}") +
                 f"_cs{seed if cs == 'seed' else cs}_seed{seed}{bb}.json")
     mixed = task == "lv" and _flag_value(argv, "--forcing") == "mixed"
     fold = _flag_value(argv, "--split-fold")      # PA fold rotation (#134)
@@ -626,10 +672,21 @@ def write(cfg, lines, outdir):
 
 
 def _out_flag(line, results):
-    """--outdir <results>/<outdir>; a pa eval line: --out <results>/<out>."""
+    """--outdir <results>/<outdir>; a pa or co eval line: --out
+    <results>/<out> (pa: the CSV, co: the output folder)."""
     if "out" in line:
         return ["--out", os.path.join(results, line["out"])]
     return ["--outdir", os.path.join(results, line["outdir"])]
+
+
+def resolve_weights(line):
+    """--weights <the one file> of a co eval line's record_glob (resolved at
+    run time, where the source records are); zero or several matches raise."""
+    hits = sorted(glob.glob(line["record_glob"]))
+    if len(hits) != 1:
+        raise SystemExit(f"{line['id']}: record_glob {line['record_glob']} "
+                         f"matches {len(hits)} weight files, expected one")
+    return ["--weights", hits[0]]
 
 
 def run(manifest, index, results):
@@ -639,7 +696,9 @@ def run(manifest, index, results):
     if is_done(line, results):
         print(f"[skip] {line['id']}: {line['done']} exists", flush=True)
         return
-    argv = [*line["argv"], *map(os.path.normpath, _out_flag(line, results))]
+    weights = resolve_weights(line) if "record_glob" in line else []
+    argv = [*line["argv"], *weights,
+            *map(os.path.normpath, _out_flag(line, results))]
     if "out" in line:       # eval_robustness.py does not create the folder
         os.makedirs(os.path.dirname(argv[-1]), exist_ok=True)
     print(f"[run ] {line['id']}\n+ {shlex.join(argv)}", flush=True)
@@ -680,7 +739,10 @@ def main(argv=None):
         by_group = {a.group: by_group.get(a.group, [])}
     for g, glines in by_group.items():
         for i, line in enumerate(glines):
-            cmd = shlex.join([*line["argv"], *_out_flag(line, "<results>")])
+            weights = (["--weights", line["record_glob"]]
+                       if "record_glob" in line else [])
+            cmd = shlex.join([*line["argv"], *weights,
+                              *_out_flag(line, "<results>")])
             print(f"{g}[{i}]\t{line['id']}\t{cmd}")
 
 
