@@ -33,6 +33,7 @@ This repository is part of a master's thesis at TU Wien evaluating novel neuron 
 | **cNCP** (`cncp`) | Eight-node cortical-column graph of sub-cells with sparse edges, feedback, gain and a gated relay loop (`src/wirings/cncp.py`) |
 | **NCP random** (`ncp_random`) | Null model of `ncp`: the NCP graph of the same seed after a degree-preserving, pass-order-respecting random rewiring (10 x edges edge swaps); same effective parameter count (`src/wirings/rewiring.py`, issue #17) |
 | **cNCP random** (`cncp_random`) | Null model of `cncp` on the node-group level: degree-, sign-, delay-type- and mask-shape-preserving swaps of edge targets; the default graph admits one such swap, so it is a single-swap control (`src/wirings/rewiring.py`, issue #17) |
+| **cNCP feed-forward** (`cncp_ff`) | Feed-forward reduction of `cncp`: only the chain input -> L4 -> L2/3 -> L5IT/L5ET (with the same-step edge L5IT -> L5ET); no delayed basal, apical or relay edges, no gains, no L6 sub-cells or relays (`CorticalColumnCell(feedforward_only=True)`, spec section 7.1, issue #135) |
 | **cNCP v2** (`cncp2`) | Four-node abstraction G / S / D / R: delayed top-down feedback, one centred gain edge, a gated re-entrant relay; one width knob u (`src/wirings/cncp2.py`, spec `docs/superpowers/specs/2026-10-21-cncp-v2-abstraction.md`) |
 
 ### Architecture Matrix

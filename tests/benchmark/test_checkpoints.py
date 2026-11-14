@@ -168,3 +168,45 @@ def test_pre_issue23_record_rebuilds_without_self_recurrence(tmp_path,
     np.testing.assert_allclose(
         rebuild_from_result(path).predict(inputs, verbose=0),
         built[-1][0].predict(inputs, verbose=0), atol=1e-6)
+
+
+# --- feed-forward cNCP chain (issue #135) ---
+
+def test_cncp_ff_lv_one_epoch_round_trip_and_config(tmp_path, monkeypatch):
+    """1-epoch mixed-forcing fit of cncp_ff: weights round-trip, and its
+    config.effective equals the cncp one but for build.wiring (the flag
+    follows the wiring key, not cell_kwargs)."""
+    built = _capture_builds(monkeypatch, lv_runner,
+                            'build_lotka_volterra_model')
+    records = {}
+    for wiring in ('cncp', 'cncp_ff'):
+        monkeypatch.setattr(sys, 'argv', _lv_argv(
+            tmp_path, '--wiring', wiring, '--cell', 'cfc_lrc', '--size', '8',
+            '--epochs', '1', '--forcing', 'mixed'))
+        lv_runner.main()
+        path = tmp_path / f'cfc_lrc_{wiring}_seed0_mixed.json'
+        records[wiring] = json.loads(path.read_text())
+    x = np.random.default_rng(1).normal(size=(3, 8, 2)).astype(np.float32)
+    _assert_round_trip(path, built, (x, np.full((3, 8, 1), 0.1, np.float32)))
+    full, ff = (records[w]['config']['effective'] for w in ('cncp', 'cncp_ff'))
+    assert ff['build'].pop('wiring') == 'cncp_ff'
+    assert full['build'].pop('wiring') == 'cncp'
+    assert ff.pop('config_hash') != full.pop('config_hash')
+    assert ff == full
+    assert (records['cncp_ff']['params_effective']
+            < records['cncp']['params_effective'])
+
+
+def test_cncp_ff_pa_one_epoch_round_trip(tmp_path, monkeypatch):
+    built = _capture_builds(monkeypatch, pa_pkg, 'build_person_activity_model')
+    monkeypatch.setattr(pa_pkg, 'load_person_activity', _pa_stub)
+    monkeypatch.setattr(sys, 'argv', [
+        'run_person_activity_benchmark.py', '--wiring', 'cncp_ff', '--cell',
+        'cfc_lrc', '--size', '8', '--epochs', '1', '--outdir', str(tmp_path)])
+    pa_runner.main()
+    stub = _pa_stub()
+    record, _ = _assert_round_trip(tmp_path / 'cfc_lrc_cncp_ff_seed0.json',
+                                   built, (stub.test_x, stub.test_t))
+    assert record['config']['effective']['build']['wiring'] == 'cncp_ff'
+    assert 'feedforward_only' not in record['config']['effective'][
+        'cell_kwargs']

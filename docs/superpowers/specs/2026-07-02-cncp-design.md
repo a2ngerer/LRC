@@ -238,10 +238,19 @@ subtract), so the edge can never become excitatory during training. A
 
 The design must degrade gracefully; these double as tests:
 
-1. **Zero all feedback + apical + relay-loop masks** (`M_L5ET_L5IT`, `M_L6CC_L23`,
-   `M_ap_*`, `M_L6CT_Thal`, `M_TRN_Thal`, `M_Thal_L4`) → a **feedforward-only
-   laminar stack** `input→L4→L23→{L5IT,L5ET}→{L6CC,L6CT}`, i.e. a cortical
-   *feedforward* NCP analogue. This is the `cncp_ff` control wiring.
+1. **Remove all feedback + apical + relay-loop edges** (`M_L5ET_L5IT`,
+   `M_L6CC_L23`, `M_ap_*` with both gains, `M_L6CT_Thal`, `M_L6CT_TRN`,
+   `M_TRN_Thal`, `M_Thal_L4`) → a **feedforward-only four-node chain**
+   `input→L4→L23→{L5IT,L5ET}` with the same-step edge `L5IT→L5ET`, i.e. a
+   cortical *feedforward* NCP analogue. The L6CC/L6CT sub-cells (with their
+   input edge `M_L5_L6*`) and the Thal/TRN relays are not built, since their
+   outputs would be unobservable sinks; their four state slots pass through
+   unchanged (zero from the initial state), so the eight-slot state layout
+   stays. Masks are drawn for the full edge inventory, so at one seed and
+   equal lamina widths the shared edges carry the same masks as in `cncp`
+   (budget-matched arms differ in width and therefore in their masks).
+   `CorticalColumnCell(feedforward_only=True)`; wiring key `cncp_ff` in the
+   Person Activity and Lotka-Volterra builders (issue #135).
 2. **`g=0`** → additive-only cNCP (no gain).
 3. Any `cell_cls` plugs in unchanged (orthogonality). LTC/LRC/CfC/GRU must all
    build and train.
@@ -303,8 +312,8 @@ Wiring-level controls (these become benchmark conditions later; implement at lea
 as toggles + a test each):
 
 - **combiner ablation:** `combiner='additive'` (g forced 0) vs `'multiplicative'`.
-- **feedforward reduction:** `cncp_ff` (feedback/apical/loop masks zeroed) builds
-  and trains (§7.1).
+- **feedforward reduction:** `cncp_ff` (the four-node chain of §7.1) builds
+  and trains.
 - **sign-constraint ablation:** `sign_constraint=False` still builds/trains.
 - **divisive ablation:** `divisive_inhibition=True` still builds/trains.
 - **cell-orthogonality:** identical wiring works for ≥2 `cell_cls` (already in 6).

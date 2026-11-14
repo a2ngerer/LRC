@@ -121,3 +121,40 @@ def test_random_wirings_follow_the_plain_ones_in_the_helpers():
     assert effective_self_recurrent("ncp_random", "gru") is None
     with pytest.raises(ValueError, match="single-state"):
         _build("cncp_random", "lstm", True)
+
+
+# --- feed-forward cNCP chain (issue #135) -------------------------------------
+
+@pytest.mark.parametrize("cell", ["cfc_lrc", "gru"])
+def test_cncp_ff_builds_the_chain_with_fewer_effective_params(cell):
+    ff, full = _build("cncp_ff", cell, True), _build("cncp", cell, True)
+    assert (param_counts(ff)["params_effective"]
+            < param_counts(full)["params_effective"])
+    (col,) = [l.cell for l in ff.layers
+              if isinstance(l, tf.keras.layers.RNN)]
+    assert sorted(col.subcells) == ["L23", "L4", "L5ET", "L5IT"]
+    assert sorted(col.edges) == ["M_L23_L5ET", "M_L23_L5IT", "M_L4_L23",
+                                 "M_L5IT_L5ET", "M_in_L4"]
+    assert ff.rewire_overlap is None
+    x, t = _batch()
+    assert tuple(ff([x, t]).shape) == (2, T, C)
+
+
+def test_cncp_ff_follows_cncp_in_the_helpers():
+    from src.tasks.person_activity.model import budget_sizes, lamina_sizes
+    assert budget_sizes("cncp_ff") == lamina_sizes()
+    with pytest.raises(ValueError, match="single-state"):
+        _build("cncp_ff", "lstm", True)
+
+
+def test_cncp_ff_budget_fit_within_tolerance_at_30k():
+    """PA budget 30000 (cfc_lrc, registry kwargs as in the runner): the
+    fractional lamina scan lands within BUDGET_TOLERANCE (measured: size 61,
+    29753 effective, 0.8 %). The window covers the full scan's pick."""
+    from experiments.run_person_activity_benchmark import BUDGET_TOLERANCE
+    from src.tasks.person_activity.model import lamina_sizes
+    from src.wirings import size_for_budget
+    build = lambda s: build_person_activity_model(
+        "cncp_ff", "cfc_lrc", size=s, seed=0, elastance_type="asymmetric")
+    size, n = size_for_budget(build, 30000, lamina_sizes(range(58, 64)))
+    assert abs(n - 30000) / 30000 <= BUDGET_TOLERANCE, (size, n)

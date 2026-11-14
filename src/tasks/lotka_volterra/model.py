@@ -44,7 +44,7 @@ LV_WIRINGS = WIRINGS + tuple(TBT_MODES)
 # tbt_cncp* arms recompute the location code from the state and cncp2_multi has
 # its own multi-column head; both keep closed_loop_rollout.
 FORCEABLE_WIRINGS = ("dense", "dense3", "ncp", "cncp", "cncp2",
-                     "ncp_random", "cncp_random")
+                     "ncp_random", "cncp_random", "cncp_ff")
 
 
 def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
@@ -58,8 +58,9 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
 
     Args:
         wiring:       one of LV_WIRINGS: 'dense', 'dense3', 'ncp', 'cncp',
-                      'cncp2', 'cncp2_multi', or the random-rewiring controls
-                      'ncp_random' / 'cncp_random' (issue #17)
+                      'cncp2', 'cncp2_multi', the random-rewiring controls
+                      'ncp_random' / 'cncp_random' (issue #17), the
+                      feed-forward cNCP chain 'cncp_ff' (issue #135)
                       (2-input, no reference frame) or a tbt_cncp* mode
                       (3-input, with the phase-space location signal).
         cell:         _CELL_REGISTRY key (e.g. 'cfc_lrc', 'gru', 'lstm') or
@@ -67,7 +68,8 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
                       take single-state cells only, the stateless control
                       'mlp' runs on 'dense' only (issue #60).
         size:         the arm's width knob. dense/dense3: RNN units per layer;
-                      ncp: inter=size, command=motor=size//2; cncp/tbt: lamina
+                      ncp: inter=size, command=motor=size//2; cncp,
+                      cncp_random, cncp_ff, tbt: lamina
                       widths scaled by size/16 (person_activity.
                       scaled_lamina_units); cncp2 / cncp2_multi: column
                       width u = size.
@@ -136,7 +138,8 @@ def build_lotka_volterra_model(wiring, cell, size=64, seed=42, feature_size=2,
     elif wiring in CNCP_WIRINGS:
         cncp_cell = CorticalColumnCell(
             cell_cls=cell_cls, lamina_units=scaled_lamina_units(size),
-            seed=seed, rewire=wiring == "cncp_random", **cell_kwargs)
+            seed=seed, rewire=wiring == "cncp_random",
+            feedforward_only=wiring == "cncp_ff", **cell_kwargs)
         h = tf.keras.layers.RNN(cncp_cell, return_sequences=True)(
             (state, time))
         rewire_overlap = cncp_cell.rewire_overlap

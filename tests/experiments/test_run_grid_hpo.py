@@ -342,3 +342,25 @@ def test_runners_apply_global_clipnorm(tmp_path, monkeypatch):
     co_runner.main()
     (path,) = (tmp_path / 'co').glob('*.json')
     _assert_global_clip(built, path, 2.0)
+
+
+@pytest.mark.parametrize('task', ['lv', 'pa'])
+def test_cncp_ff_runs_through_the_real_runner(tmp_path, task):
+    """Issue #135: the driver forwards --wiring cncp_ff and the runner accepts
+    it from the builder's choices (one 1-epoch fit, no edge extension)."""
+    from tests.tasks.person_activity.test_person_activity import _write_stub
+    module = Path(run_grid_hpo.RUNNERS[task]).stem
+    extra = (['--n-trajectories', '6', '--seq-len', '40', '--anchors', '8',
+              '--horizon', '32'] if task == 'lv' else      # tie-break key
+             ['--data-path', str(_write_stub(tmp_path / 'pa.txt'))])
+    out = tmp_path / 'hpo'
+    main(['--task', task, '--cell', 'cfc_lrc', '--wiring', 'cncp_ff',
+          '--tuning-seeds', '100', '--grid-lr', '3e-3', '--grid-clip', 'off',
+          '--outdir', str(out), '--runner',
+          f'{sys.executable} -m experiments.{module}',
+          '--epochs', '1', '--size', '8', *extra])
+    sel = json.loads((out / 'hpo_selection.json').read_text())
+    (fit,) = sel['candidates']
+    rec = json.loads((out / fit['result']).read_text())
+    assert sel['wiring'] == rec['wiring'] == 'cncp_ff'
+    assert rec['epochs'] == 1
