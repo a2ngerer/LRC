@@ -869,6 +869,22 @@ def test_interval_note_branches(reading, zero):
         [f'- T-D1: {note}'] if note else [])
 
 
+def test_null_flag_reads_the_unrounded_seed_bounds():
+    """Deltas of order 1e-6 (15 above 0, five larger ones below): the seed
+    interval lies within 5e-5 above 0, so bounds rounded to four decimals
+    would hold 0; the unrounded flag is False and the FAIL row takes the
+    'excludes 0' branch."""
+    r = _drow([1e-6 * k for k in range(1, 16)]
+              + [-(1e-4 + 1e-5 * k) for k in range(5)])
+    lo, hi = r['median_diff_seed_lo'], r['median_diff_seed_hi']
+    assert 0 < lo < hi < 5e-5 and round(lo, 4) == round(hi, 4) == 0
+    assert (r['reading'], r['seed_ci_includes_zero'],
+            r['ci_includes_zero']) == ('FAIL', False, False)
+    assert r['interval_note'].startswith(
+        'not shown, no equivalence; The seed interval (unadjusted 95 %) '
+        'excludes 0')
+
+
 def test_interval_note_is_empty_without_pass_or_fail():
     """floor-bound, incomplete and excluded D rows keep the median, both
     intervals and p_perm, without a note."""
@@ -877,7 +893,7 @@ def test_interval_note_is_empty_without_pass_or_fail():
             (_drow(d, b={'below': [True] * 6 + [False] * 14}), 'floor-bound'),
             (_drow(d[:19]), 'incomplete'),
             (_drow(d, b={'above': True}), None)):
-        assert r['reading'] == reading and 'interval_note' not in r
+        assert r['reading'] == reading and pd.isna(r.get('interval_note'))
         assert r['p_perm'] == pytest.approx(permutation_p(
             np.array([0.6 + v for v in d[:r['n_pairs']]]),
             np.full(r['n_pairs'], 0.6)))
@@ -980,6 +996,8 @@ def test_other_labels_are_counted_named_and_not_used(tmp_path):
     folder = os.path.join(spec['T-C1']['a']['paths'][0], 'mixed')
     for seed in (10, 11, 12):
         _lv(folder, 'periodic_predator_prey', 'gru/ncp', seed, -50.0)
+    _lv(folder, 'periodic_predator_prey', 'gru/ncp', 100, -50.0,
+        name='tuning.json')                         # off the seed list
     _lv(folder, 'periodic_predator_prey', 'cfc_lrc/ncp', 10, -50.0,
         epochs=600, name='long.json')
     _lv(folder, 'periodic_predator_prey', 'gru/ncp', 13, -50.0, pv=F1,
@@ -988,9 +1006,10 @@ def test_other_labels_are_counted_named_and_not_used(tmp_path):
     _pa(folder, 'gru/ncp', 10, 0.1, name='pa.json')
     r = f3_family_blocks(spec)[0].set_index('test').loc['T-C1']
     assert (r['n_other_label_a'], r['other_labels_a']) == (
-        4, 'cfc_lrc/ncp [epochs=600] (1); gru/ncp (3)')
+        5, 'cfc_lrc/ncp [epochs=600] (1); gru/ncp (4)')
     assert r['n_other_label_b'] == 0 and pd.isna(r['other_labels_b'])
     assert r['n_pairs'] == 20 and r['p_raw'] == pytest.approx(2 / 2 ** 20)
+    assert r['n_outside_list'] == 0         # outside = the arm's own label
     with open(tmp_path / 'spec2.yaml', 'w', encoding='utf-8') as f:
         yaml.safe_dump(spec, f)
     out = str(tmp_path / 'out')
@@ -998,11 +1017,11 @@ def test_other_labels_are_counted_named_and_not_used(tmp_path):
                  '--f3-families', str(tmp_path / 'spec2.yaml')]) == 0
     with open(os.path.join(out, 'summary.md'), encoding='utf-8') as f:
         lines = f.read().splitlines()
-    assert '- T-C1 a: cfc_lrc/ncp [epochs=600] (1); gru/ncp (3)' in lines
+    assert '- T-C1 a: cfc_lrc/ncp [epochs=600] (1); gru/ncp (4)' in lines
     assert '- T-C1 b: none' in lines
     raw = pd.read_csv(os.path.join(out, 'f3_families.csv'),
                       dtype=str).set_index('test')
-    assert raw.loc['T-C1', 'n_other_label_a'] == '4'
+    assert raw.loc['T-C1', 'n_other_label_a'] == '5'
 
 
 def _curve(at, n=300, low=0.1):
@@ -1048,6 +1067,23 @@ def test_convergence_flags_on_c_and_f(tmp_path):
     assert '| T-C1 | 0 | 0 | 12 | 0 | 12 | 1 |' in f3_report(blocks, fits)
 
 
+def test_flags_count_unpaired_fits_and_stay_empty_outside_c_and_f(tmp_path):
+    """Arm B of T-C1 has a flagged fit on seed 29, where arm A has no
+    record: it counts in both flags although it is not paired. The LV rows
+    of families G and H leave the flag columns empty."""
+    b = _blocks(_world(
+        tmp_path, REQUIRED + ['T-G1', 'T-G2', 'T-H1', 'T-H2'],
+        opts={('T-C1', 'b'): {29: {'extra': {'val_loss_curve': _curve(300),
+                                             'best_val_epoch': 300}}}},
+        skip={('T-C1', 'a'): [29]}))
+    r = b.loc['T-C1']
+    assert (r['n_pairs'], r['n_flag_whole_a'], r['n_flag_const_a'],
+            r['n_flag_whole_b'], r['n_flag_const_b']) == (19, 0, 0, 1, 1)
+    for t in ('T-G1', 'T-G2', 'T-H1', 'T-H2'):
+        for c in NEW_COLUMNS[-4:]:
+            assert pd.isna(b.loc[t, c]), (t, c)
+
+
 def test_const_phase_window_edges():
     """Window epochs 11-20 of 20 (flagged from 19); 21 epochs: 11-21
     (flagged from 19.95, i.e. 20). Non-finite values are ignored; a window
@@ -1074,6 +1110,10 @@ def test_const_phase_window_edges():
     assert not _const_phase_flagged([1.0] * 10 + [None] * 10, 20)
     assert not _const_phase_flagged([1.0] * 10, 20)
     assert not _const_phase_flagged(None, 20)
+    assert _const_phase_flagged(np.array(at(19)), 20)    # array curve
+    assert not _const_phase_flagged(np.array([]), 20)
+    for epochs in (None, float('nan')):                 # as _flagged
+        assert not _const_phase_flagged(at(19), epochs)
 
 
 # --- spec ---------------------------------------------------------------------

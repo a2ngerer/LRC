@@ -2647,16 +2647,15 @@ def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
     seed (_check_protocol); a record whose seed is not in the test's seed
     list is not used, its seed goes to outside. other: {label: count} of the
     records of the test's task (and system) with an F3 stamp and another
-    arm label (not used). fits: one _sequence_row (curves=True,
-    training_diverged None read as False) per
-    used record with the endpoint as metric (Person Activity: the registry
-    field, both F3_PA_FIELDS as columns; a diverged fit = non-finite
-    endpoint; the crossed interval only on the best-validation field its
-    confusions belong to), below and floor
-    (_floor_mark on that metric), success (with a registry success rule),
-    data_key, width_matched, param_budget and protocol_version; an empty
-    frame when no listed seed has a record. Two records of one key raise
-    SystemExit."""
+    arm label, whatever their seed (not used). fits: one _sequence_row
+    (curves=True, training_diverged None read as False) per used record
+    with the endpoint as metric (Person Activity: the registry field, both
+    F3_PA_FIELDS as columns; a diverged fit = non-finite endpoint; the
+    crossed interval only on the best-validation field its confusions
+    belong to), below and floor (_floor_mark on that metric), success (with
+    a registry success rule), data_key, width_matched, param_budget and
+    protocol_version; an empty frame when no listed seed has a record. Two
+    records of one key raise SystemExit."""
     task, endpoint = entry['task'], entry['endpoint']
     runner = 'pa' if task == 'pa' else 'lv'
     label, versions = arm['label'], arm['protocol_version']
@@ -2731,10 +2730,12 @@ def _const_phase_flagged(curve, epochs) -> bool:
     """F-5: the argmin of val_loss_curve over epochs epochs // 2 + 1 to
     epochs (1-based; the constant phase of mixed forcing) lies at an epoch
     >= CONVERGED x epochs. Non-finite values are ignored; a window without
-    a finite value is not flagged."""
+    a finite value, or a missing or non-finite epochs, is not flagged."""
+    if epochs is None or not np.isfinite(float(epochs)):    # as _flagged
+        return False
     e = int(epochs)
-    w = np.asarray([np.nan if v is None else v
-                    for v in (curve or [])[e // 2:e]], float)
+    w = np.asarray([np.nan if v is None else v for v in (
+        [] if curve is None else curve)[e // 2:e]], float)
     ok = np.isfinite(w)
     return bool(ok.any() and e // 2 + 1 + int(np.argmin(
         np.where(ok, w, np.inf))) >= CONVERGED * e)
