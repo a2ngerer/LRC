@@ -12,8 +12,9 @@ import pytest
 import yaml
 from scipy.stats import wilcoxon
 
-from experiments.aggregate_results import (EXCLUDED, F3_FAMILIES,
-                                           F3_FIT_COLUMNS, F3_SEEDS,
+from experiments.aggregate_results import (EXCLUDED, F3_COLUMNS,
+                                           F3_FAMILIES, F3_FIT_COLUMNS,
+                                           F3_SEEDS,
                                            F3_TESTS, _f3_arm, _f3_test,
                                            _sequence_row, _signed_ranks,
                                            arm_label, f3_family_blocks,
@@ -104,7 +105,7 @@ def _write(test, side, path, seed, value, **kw):
 # --- a synthetic F3 world -----------------------------------------------------
 
 def _seeds(test):
-    return list(range(10, 30 if F3_TESTS[test]['family'] in 'ABCD' else 20))
+    return list(F3_SEEDS.get(F3_TESTS[test]['family'], range(10, 20)))
 
 
 def _world(tmp_path, tests=REQUIRED, values=None, opts=None, skip=None):
@@ -146,6 +147,15 @@ def _blocks(spec_path):
 
 def _row(tmp_path, test, tests=REQUIRED, **kw):
     return _blocks(_world(tmp_path, tests, **kw)).loc[test]
+
+
+def _report_cells(text, test):
+    """{header: cell} of the row of test in the main f3_report table."""
+    lines = text.splitlines()
+    head = next(ln for ln in lines if ln.startswith('| Family |'))
+    row = next(ln for ln in lines if f'| {test} |' in ln)
+    return dict(zip(*([c.strip() for c in ln.split('|')[1:-1]]
+                      for ln in (head, row))))
 
 
 # --- registry -------------------------------------------------------------------
@@ -280,6 +290,12 @@ def test_world_through_main_writes_csv_and_summary(tmp_path):
     assert (df['m'] == 2).all() and (df['m_f3'] == 8).all()
     assert (df['n_pairs'] == df['n_expected']).all()
     assert (df['n_outside_list'] == 0).all()
+    raw = pd.read_csv(os.path.join(out, 'f3_families.csv'),
+                      dtype=str).set_index('test')
+    assert raw.loc['T-C1', 'n_positive'] == '20'          # Int64, not 20.0
+    assert pd.isna(raw.loc['T-A1', 'n_positive'])
+    assert F3_COLUMNS.index('p_perm_adj_f3') == F3_COLUMNS.index(
+        'p_perm_adj') + 1
     r = df.loc['T-C1']
     assert (r['reading'], r['method'], r['direction']) == ('PASS', 'exact',
                                                            'A>B')
@@ -299,6 +315,17 @@ def test_world_through_main_writes_csv_and_summary(tmp_path):
     with open(os.path.join(out, 'summary.md'), encoding='utf-8') as f:
         text = f.read()
     assert '## F3 test families' in text and 'F3-wide m=8' in text
+    for legend in ('The deciding p of a Wilcoxon row is the exact sign-flip '
+                   'permutation p of the Wilcoxon statistic',
+                   'reading and significant read p perm adj, significant_f3 '
+                   'p perm adj F3',
+                   'The deciding p of the McNemar row (T-A1) is the exact '
+                   'McNemar p',
+                   'flag "p of wilcoxon_test would decide otherwise"',
+                   'an arm at the floor in at least 30 % of the seeds'):
+        assert legend in ' '.join(text.split()), legend
+    assert _report_cells(text, 'T-C1')['p perm adj F3'] == format(
+        16 / 2 ** 20, '.4g')
     assert '| C | 2 | T-C1 | periodic_predator_prey | vpt_multi_median ' \
         '| two-sided | cfc_lrc/ncp | gru/ncp | 20/20 | tested | PASS ' \
         '| exact |' in text
@@ -332,16 +359,21 @@ def test_mcnemar_row_on_the_learning_success(tmp_path):
     for k in ('p_perm', 'p_perm_adj', 'p_perm_adj_f3', 'verdict_flip',
               'w_plus_minus_w_minus', *WILCOXON_ONLY):
         assert pd.isna(r[k]), k
-    lines = f3_report(blocks, fits).splitlines()
-    head = next(ln for ln in lines if ln.startswith('| Family |'))
-    row = next(ln for ln in lines if '| T-A1 |' in ln)
-    cells = dict(zip(*([c.strip() for c in ln.split('|')[1:-1]]
-                       for ln in (head, row))))
+    cells = _report_cells(f3_report(blocks, fits), 'T-A1')
     for col in ('p perm', 'p perm adj', 'p perm adj F3',
                 'median delta [95% CI]', 'd_z', 'P(A>B) [95% CI]',
                 'seeds delta>0'):
         assert cells[col] == '—', col
     assert (cells['flags'], cells['floor_bound']) == ('A>B', 'YES (B)')
+    # eight discordant pairs, all n10: exact p 2/256 passes the family cut
+    # (m = 2) but not the F3-wide one (m_f3 = 8)
+    r = _row(tmp_path / 'cut', 'T-A1',
+             values={'T-A1': ([0.6] * n, [0.1] * 8 + [0.6] * 12)})
+    assert (r['n10'], r['n01']) == (8, 0)
+    assert r['p_adj'] == pytest.approx(4 / 256)
+    assert r['p_adj_f3'] == pytest.approx(16 / 256)
+    assert r['significant'] and not r['significant_f3']
+    assert r['only_under_family_cut'] and r['reading'] == 'PASS'
 
 
 def test_endpoint_field_of_the_registry_is_used(tmp_path):
@@ -643,6 +675,11 @@ def test_reading_follows_the_exact_permutation_p():
     assert (r['reading'], r['direction'], r['significant'],
             r['significant_f3'], r['verdict_flip']) == (
         'PASS', 'A>B', True, True, True)
+    cells = _report_cells(f3_report(
+        pd.DataFrame([r]).reindex(columns=F3_COLUMNS),
+        pd.DataFrame(columns=F3_FIT_COLUMNS)), 'T-C1')
+    assert cells['flags'] == 'A>B; p of wilcoxon_test would decide otherwise'
+    assert cells['p perm adj F3'] == format(48 / 1024, '.4g')
     r = _frow(tied)                                   # m_f3 = 8
     assert r['p_perm_adj_f3'] == pytest.approx(192 / 1024)
     assert not r['significant_f3'] and r['only_under_family_cut']

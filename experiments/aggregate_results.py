@@ -2889,7 +2889,8 @@ def f3_family_blocks(spec) -> tuple[pd.DataFrame, pd.DataFrame]:
         rows.append(_f3_test(test, entry, m, len(spec), a, b, seeds,
                              {'a': out_a, 'b': out_b}))
     return (pd.DataFrame(rows).reindex(columns=F3_COLUMNS).astype(
-        {'n10': 'Int64', 'n01': 'Int64'}), _f3_pa_fits(fits))
+        {'n10': 'Int64', 'n01': 'Int64', 'n_positive': 'Int64'}),
+        _f3_pa_fits(fits))
 
 
 def f3_report(blocks, pa_fits) -> str:
@@ -2934,7 +2935,8 @@ def f3_report(blocks, pa_fits) -> str:
                 'p_raw', 'p_adj', 'p_adj_f3', 'p_perm', 'p_perm_adj',
                 'p_perm_adj_f3'))
             + f" | {fl or '—'} | {med} | {_fmt(b['d_z'], '+.3f')} | {win} "
-            f"| {_fmt(b['n_positive'], '.0f')} | {txt(b['rate_a'])} "
+            f"| {'—' if pd.isna(b['n_positive']) else b['n_positive']} "
+            f"| {txt(b['rate_a'])} "
             f"| {txt(b['rate_b'])} | {b['floor_rule']} | {b['floor_a']} "
             f"| {b['floor_b']} | "
             + (f"YES ({b['floor_bound_arms']})" if yes(b['floor_bound'])
@@ -2968,7 +2970,9 @@ def f3_report(blocks, pa_fits) -> str:
               f'exclusive only) before PASS/FAIL (adj. p < {ALPHA}). The '
               'deciding p of a Wilcoxon row is the exact sign-flip '
               'permutation p of the Wilcoxon statistic (p perm; zero '
-              'differences dropped, mid-ranks, same side; E15); its p, p adj '
+              'differences dropped, mid-ranks, same side; E15): reading and '
+              'significant read p perm adj, significant_f3 p perm adj F3; '
+              'its p, p adj '
               'and p adj F3 are those of wilcoxon_test (exact without ties '
               'or zeros, else the normal approximation), reported, deciding '
               'nothing; flag "p of wilcoxon_test would decide otherwise" '
