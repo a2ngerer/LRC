@@ -658,6 +658,11 @@ def test_optimizer_variants_of_one_cell_pair_by_seed(tmp_path):
     assert (r['n_pairs'], r['n10'], r['n01'], r['reading']) == (
         18, 3, 6, 'incomplete')
     assert r['rate_a'].startswith('6/18') and r['rate_b'].startswith('9/18')
+    # each arm counts the other's records as another label (#151)
+    assert (r['n_other_label_a'], r['other_labels_a']) == (19,
+                                                           'lrc/ncp (19)')
+    assert (r['n_other_label_b'], r['other_labels_b']) == (
+        19, 'lrc/ncp [optimizer=rmsprop_legacy] (19)')
 
 
 def test_diverged_and_non_finite_fits_fail_and_enter_at_the_worst_value(
