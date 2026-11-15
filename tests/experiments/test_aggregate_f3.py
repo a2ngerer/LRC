@@ -13,12 +13,13 @@ import yaml
 from scipy.stats import wilcoxon
 
 from experiments.aggregate_results import (EXCLUDED, F3_FAMILIES,
-                                           F3_FIT_COLUMNS, F3_TESTS,
-                                           _f3_arm, _f3_test, _sequence_row,
-                                           _signed_ranks, arm_label,
-                                           f3_family_blocks, f3_report,
+                                           F3_FIT_COLUMNS, F3_SEEDS,
+                                           F3_TESTS, _f3_arm, _f3_test,
+                                           _sequence_row, _signed_ranks,
+                                           arm_label, f3_family_blocks,
+                                           f3_report, floor_share_bound,
                                            learning_success, load_f3_spec,
-                                           main, mcnemar_exact,
+                                           main, mcnemar_exact, not_learned,
                                            permutation_p)
 
 F1, F2, F3 = 'F1-2026-10-26', 'F2-2026-11-05', 'F3-2026-11-18'
@@ -177,9 +178,23 @@ def test_registry_defines_every_test_once_with_its_rules():
         'T-G2': 'test_macro_f1', 'T-H2': 'test_macro_f1'}
     assert F3_TESTS['T-A1']['a'] == 'lrc/ncp' + LEGACY
     assert F3_TESTS['T-A1']['success'] == ('threshold', 0.30)
-    assert F3_TESTS['T-A1']['match'] == ('lr', 'clipnorm', 'epochs',
-                                         'param_budget')
+    assert {t: e.get('match') for t, e in F3_TESTS.items()} == {
+        **{t: ('lr', 'clipnorm', 'epochs', 'param_budget')
+           for t in ('T-A1', 'T-A2')},
+        **{t: ('epochs', 'param_budget') for t in (
+            'T-C1', 'T-C2', 'T-D1', 'T-D2', 'T-F1', 'T-F2', 'T-G1', 'T-G2',
+            'T-H1', 'T-H2')}}
     assert F3_TESTS['T-F1']['success'] == ('floor+', 2.0)
+
+
+def test_floor_share_bound_cases():
+    """F-9: an arm is floor-bound from 30 % of its fits below the floor;
+    an empty arm is not; the F1/F2 rule not_learned keeps a fifth."""
+    for k, n in ((2, 5), (3, 10), (6, 20)):
+        assert floor_share_bound(k, n)
+    for k, n in ((1, 5), (2, 10), (5, 20), (0, 0)):
+        assert not floor_share_bound(k, n)
+    assert not_learned(5, 20) and not not_learned(1, 5)
 
 
 # --- exact statistics -----------------------------------------------------------
@@ -289,21 +304,44 @@ def test_world_through_main_writes_csv_and_summary(tmp_path):
         '| exact |' in text
 
 
+WILCOXON_ONLY = ('median_diff', 'median_diff_lo', 'median_diff_hi',
+                 'ci_units', 'd_z', 'p_a_gt_b', 'p_a_gt_b_lo', 'p_a_gt_b_hi',
+                 'n_positive', 'ci_includes_zero')
+
+
 def test_mcnemar_row_on_the_learning_success(tmp_path):
     """T-A1: the legacy arm learns on every seed, the reference on none
-    (below 0.30 and at chance); the floor marking is informational."""
+    (below 0.30 and at chance); the floor marking is informational. The
+    exact McNemar p decides (also F3-wide); the row carries counts, rates
+    and floor columns, no Wilcoxon-type column."""
     n = 20
-    r = _row(tmp_path, 'T-A1', values={'T-A1': ([0.6] * n, [0.1] * n)})
+    blocks, fits = f3_family_blocks(load_f3_spec(_world(
+        tmp_path, values={'T-A1': ([0.6] * n, [0.1] * n)})))
+    r = blocks.set_index('test').loc['T-A1']
     assert (r['method'], r['n10'], r['n01']) == ('mcnemar-exact', 20, 0)
     assert r['p_raw'] == pytest.approx(2 / 2 ** 20)
+    assert r['p_adj_f3'] == pytest.approx(16 / 2 ** 20)
+    assert r['significant'] and r['significant_f3']
     assert r['rate_a'].startswith('20/20') and r['rate_b'].startswith('0/20')
     assert r['rate_diff'] == 1.0
     assert (r['floor_b'], r['floor_bound'], r['floor_bound_arms']) == (
         '20/20', True, 'B')
-    assert (r['reading'], r['direction']) == ('PASS', 'A>B')
-    for k in ('p_perm', 'p_perm_adj', 'verdict_flip',
-              'w_plus_minus_w_minus'):
-        assert pd.isna(r[k])
+    assert r['n_nonfinite'] == 0
+    assert (r['status'], r['reading'], r['direction']) == ('tested', 'PASS',
+                                                           'A>B')
+    for k in ('p_perm', 'p_perm_adj', 'p_perm_adj_f3', 'verdict_flip',
+              'w_plus_minus_w_minus', *WILCOXON_ONLY):
+        assert pd.isna(r[k]), k
+    lines = f3_report(blocks, fits).splitlines()
+    head = next(ln for ln in lines if ln.startswith('| Family |'))
+    row = next(ln for ln in lines if '| T-A1 |' in ln)
+    cells = dict(zip(*([c.strip() for c in ln.split('|')[1:-1]]
+                       for ln in (head, row))))
+    for col in ('p perm', 'p perm adj', 'p perm adj F3',
+                'median delta [95% CI]', 'd_z', 'P(A>B) [95% CI]',
+                'seeds delta>0'):
+        assert cells[col] == '—', col
+    assert (cells['flags'], cells['floor_bound']) == ('A>B', 'YES (B)')
 
 
 def test_endpoint_field_of_the_registry_is_used(tmp_path):
@@ -377,22 +415,30 @@ def test_sequence_row_fields_are_opt_in():
 
 
 def test_floor_rule_exclusive_against_informational(tmp_path):
-    """Five of twenty fits of arm B below the floor make the arm not
-    learned: the exclusive C test reads floor-bound, the informational F
-    test (ten seeds, three below) keeps PASS and reports the marking."""
+    """F-9: five of twenty fits of arm B below the floor leave the
+    exclusive C test readable, six make the arm floor-bound and the test
+    reads floor-bound; the informational F test (ten seeds, three below) is
+    bound, keeps PASS and reports the marking."""
     s20, s10 = _seeds('T-C1'), _seeds('T-F1')
-    vc = [-1.0 if i < 5 else 20.0 for i in range(20)]
+    va = [21.0 + i for i in range(len(s20))]
+
+    def vc(k):
+        return [-1.0 if i < k else 20.0 for i in range(20)]
+
     vf = [-1.0 if i < 3 else 20.0 for i in range(10)]
     b = _blocks(_world(tmp_path, values={
-        'T-C1': ([21.0 + i for i in range(len(s20))], vc),
+        'T-C1': (va, vc(5)),
         'T-F1': ([21.0 + i for i in range(len(s10))], vf)}))
     c, f = b.loc['T-C1'], b.loc['T-F1']
     assert (c['floor_b'], c['floor_bound'], c['reading']) == (
-        '5/20', True, 'floor-bound')
-    assert c['p_adj'] < 0.05                       # still reported
+        '5/20', False, 'PASS')
     assert (f['floor_b'], f['floor_bound'], f['reading']) == (
         '3/10', True, 'PASS')
     assert f['rate_b'].startswith('7/10') and f['n10'] == 3
+    c = _row(tmp_path / 'six', 'T-C1', values={'T-C1': (va, vc(6))})
+    assert (c['floor_b'], c['floor_bound'], c['floor_bound_arms'],
+            c['reading']) == ('6/20', True, 'B', 'floor-bound')
+    assert c['p_perm_adj'] < 0.05                  # still reported
 
 
 def test_duffing_learning_success_at_floor_plus_two(tmp_path):
@@ -409,20 +455,23 @@ def test_duffing_learning_success_at_floor_plus_two(tmp_path):
 
 def test_incomplete_test_reports_its_statistics(tmp_path):
     r = _row(tmp_path, 'T-C1', skip={('T-C1', 'b'): [12]})
-    assert (r['n_expected'], r['n_pairs'], r['reading']) == (20, 19,
-                                                             'incomplete')
+    assert (r['n_expected'], r['n_pairs'], r['status'], r['reading']) == (
+        20, 19, 'incomplete', 'incomplete')
     assert r['p_raw'] == pytest.approx(2 / 2 ** 19)
+    assert r['p_perm'] == pytest.approx(2 / 2 ** 19)
     assert not r['significant'] and not r['significant_f3']
     r = _row(tmp_path / 'empty', 'T-C1', skip={('T-C1', 'b'): _seeds('T-C1')})
-    assert (r['n_pairs'], r['reading']) == (0, 'incomplete')
+    assert (r['n_pairs'], r['status'], r['reading']) == (0, 'incomplete',
+                                                         'incomplete')
+    assert (r['floor_b'], r['floor_bound']) == ('0/0', False)  # empty arm
 
 
 def test_incomplete_reads_before_floor_bound(tmp_path):
-    vb = [-1.0 if i < 5 else 20.0 for i in range(20)]
+    vb = [-1.0 if i < 6 else 20.0 for i in range(20)]
     r = _row(tmp_path, 'T-C1', skip={('T-C1', 'b'): [29]},
              values={'T-C1': ([21.0 + i for i in range(20)], vb)})
-    assert (r['floor_b'], r['floor_bound'], r['reading']) == (
-        '5/19', True, 'incomplete')
+    assert (r['floor_b'], r['floor_bound'], r['status'], r['reading']) == (
+        '6/19', True, 'incomplete', 'incomplete')
 
 
 def test_records_outside_the_seed_list_are_counted_not_used(tmp_path):
@@ -473,9 +522,20 @@ def test_t_a1_match_mismatch_names_the_seed(tmp_path, field, value):
             ('T-A1', 'b'): {15: {'extra': {field: value}}}}))
 
 
-def test_per_arm_lr_is_reported_without_a_match_entry(tmp_path):
+def test_per_arm_lr_is_reported_not_matched(tmp_path):
+    """T-D2 matches epochs and param_budget; lr is no match field."""
     r = _row(tmp_path / 'd', 'T-D2', opts={('T-D2', 'b'): {'lr': 1e-2}})
     assert (r['lr_a'], r['lr_b'], r['reading']) == ('0.003', '0.01', 'PASS')
+
+
+@pytest.mark.parametrize('test, field, value', [
+    ('T-D1', 'epochs', 60), ('T-G1', 'param_budget', 4100),
+    ('T-H2', 'param_budget', 31000)])
+def test_d_g_h_match_epochs_and_budget(tmp_path, test, field, value):
+    with pytest.raises(SystemExit,
+                       match=rf'{test}: .*differ in {field}.*\[13\]'):
+        _blocks(_world(tmp_path, REQUIRED + ['T-G1', 'T-G2', 'T-H1', 'T-H2'],
+                       opts={(test, 'b'): {13: {'extra': {field: value}}}}))
 
 
 def test_budget_exclusion(tmp_path):
@@ -557,12 +617,35 @@ def test_family_cut_permutation_flip_direction_and_non_finite():
     r = _frow([2, 3, 3, -2, 1, 4, 2, 4, -1, 4])
     assert r['method'] == 'approx'
     assert r['p_perm_adj'] == pytest.approx(52 / 1024)
-    assert r['verdict_flip'] and r['reading'] == 'PASS'
+    assert r['verdict_flip'] and r['reading'] == 'FAIL'
     r = _frow([-d for d in range(1, 11)])
     assert (r['reading'], r['direction']) == ('PASS', 'A<B')
     assert r['w_plus_minus_w_minus'] == -55
     r = _frow([float('nan'), *range(2, 11)])
     assert r['n_nonfinite'] == 1 and r['n_positive'] == 9
+
+
+def test_reading_follows_the_exact_permutation_p():
+    """E15: with ties the p of wilcoxon_test (normal approximation) is
+    reported and the exact permutation p decides, within the family and
+    F3-wide (m_f3 = m = 2 here, so both cuts read the same p)."""
+    r = _frow([2, 3, 3, -2, 1, 4, 2, 4, -1, 4], m_f3=2)
+    assert r['method'] == 'approx'
+    assert r['p_adj'] < 0.05 and r['p_adj_f3'] < 0.05
+    assert r['p_perm_adj'] == r['p_perm_adj_f3'] == pytest.approx(52 / 1024)
+    assert (r['reading'], r['significant'], r['significant_f3'],
+            r['verdict_flip']) == ('FAIL', False, False, True)
+    tied = [-2, -1, 1, 1, 3, 3, 3, 3, 3, 4]
+    r = _frow(tied, m_f3=2)
+    assert r['method'] == 'approx'
+    assert r['p_adj'] >= 0.05 and r['p_adj_f3'] >= 0.05
+    assert r['p_perm_adj'] == r['p_perm_adj_f3'] == pytest.approx(48 / 1024)
+    assert (r['reading'], r['direction'], r['significant'],
+            r['significant_f3'], r['verdict_flip']) == (
+        'PASS', 'A>B', True, True, True)
+    r = _frow(tied)                                   # m_f3 = 8
+    assert r['p_perm_adj_f3'] == pytest.approx(192 / 1024)
+    assert not r['significant_f3'] and r['only_under_family_cut']
 
 
 def test_budget_exclusion_spares_only_the_width_matched_arm():
@@ -621,6 +704,39 @@ def test_spec_rules(tmp_path):
     check(lambda s: s['T-C1']['b']['paths'].__setitem__(
         0, str(tmp_path / 'T-C1' / '*')), 'pattern')
     check(lambda s: s['T-C1']['b'].__setitem__('seeds', [10]), 'keys')
+
+
+def test_spec_seed_list_must_equal_the_family_list(tmp_path):
+    """F-1: a test of a family with a registry list names exactly those
+    seeds (any order); G and H have none."""
+    assert {f: list(r) for f, r in F3_SEEDS.items()} == {
+        **{f: list(range(10, 30)) for f in 'ABCD'},
+        'E': list(range(10, 15)), 'F': list(range(10, 20))}
+    with open(_world(tmp_path, REQUIRED + ['T-G1', 'T-G2']),
+              encoding='utf-8') as f:
+        good = yaml.safe_load(f)
+
+    def load(mutate):
+        s = json.loads(json.dumps(good))
+        mutate(s)
+        path = str(tmp_path / 'seeds.yaml')
+        with open(path, 'w', encoding='utf-8') as f:
+            yaml.safe_dump(s, f)
+        return load_f3_spec(path)
+
+    for mutate, match in (
+            (lambda s: s['T-C1']['seeds'].pop(),
+             r'T-C1\.seeds .*family C.*missing \[29\], extra \[\]'),
+            (lambda s: s['T-F2']['seeds'].extend([20, 9]),
+             r'T-F2\.seeds .*family F.*missing \[\], extra \[9, 20\]'),
+            (lambda s: s['T-A1'].__setitem__('seeds', [0, 1, *range(12, 30)]),
+             r'T-A1\.seeds .*missing \[10, 11\], extra \[0, 1\]')):
+        with pytest.raises(SystemExit, match=match):
+            load(mutate)
+    spec = load(lambda s: (s['T-D1']['seeds'].reverse(),
+                           s['T-G1'].__setitem__('seeds', [0, 1, 2])))
+    assert spec['T-D1']['seeds'][0] == 29 and spec['T-G1']['seeds'] == [0, 1,
+                                                                         2]
 
 
 def test_template_lists_every_registered_test_with_placeholders():

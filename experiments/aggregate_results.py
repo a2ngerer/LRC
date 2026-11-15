@@ -80,15 +80,18 @@ Optional sections:
   --f3-families SPEC.yaml  the F3 test families (protocol F3, F3_FAMILIES:
                    test kind, side, endpoint, floor rule, learning-success
                    rule, match fields and status per test) from a spec of
-                   an explicit seed list and explicit path lists per arm
+                   an explicit seed list (equal to the family's F3_SEEDS
+                   where it has one) and explicit path lists per arm
                    (template: configs/aggregate/f3_families.yaml); paired
-                   Wilcoxon with the exact permutation p, or the exact
-                   McNemar on the learning success; Bonferroni within the
-                   family and F3-wide (sensitivity), records outside the
-                   seed list counted, reading incomplete/floor-bound/
-                   PASS/FAIL; <out>/f3_families.csv and
-                   <out>/f3_pa_fits.csv (both Person Activity endpoint
-                   fields per fit, E14)
+                   Wilcoxon decided by the exact sign-flip permutation p
+                   (the p of wilcoxon_test reported, deciding nothing,
+                   E15), or the exact McNemar p on the learning success;
+                   Bonferroni within the family and F3-wide (sensitivity),
+                   records outside the seed list counted, an arm at the
+                   floor in at least 30 % of its seeds floor-bound (F-9),
+                   reading incomplete/floor-bound/PASS/FAIL;
+                   <out>/f3_families.csv and <out>/f3_pa_fits.csv (both
+                   Person Activity endpoint fields per fit, E14)
   --lambda-grid DIR  the vote-lambda grid at fixed weights (#137): every
                    *.lambda_grid.evalonly.json below DIR
                    (run_committee_benchmark.py --eval-only
@@ -2484,8 +2487,9 @@ def descriptive_report(blocks) -> str:
 #             'test_macro_f1_last' (last epoch, #138); no default. E14: a
 #             binary learning-success count reads the last epoch, a
 #             continuous endpoint (and its floor marking) the best-val one
-#   floor     'exclusive' (F1 rule: a floor-bound row reads floor-bound) |
-#             'informational' (marking reported, reading stays PASS/FAIL)
+#   floor     'exclusive' (a floor-bound row reads floor-bound) |
+#             'informational' (marking reported, reading stays PASS/FAIL);
+#             an arm is bound per floor_share_bound (F-9)
 #   success   optional learning success per fit (learning_success):
 #             ('threshold', t) = endpoint >= t; ('floor+', d) = VPT-multi
 #             median >= the fit's own floor + d
@@ -2500,6 +2504,18 @@ _LEGACY = ' [optimizer=rmsprop_legacy]'
 _VPT = 'vpt_multi_median'
 F3_PA_SUCCESS = 0.30   # learning success on Person Activity (E8)
 F3_PA_FIELDS = ('test_macro_f1', 'test_macro_f1_last')   # both per fit (E14)
+_EB = ('epochs', 'param_budget')
+# the final seeds per family (F-1); a spec test of a family listed here must
+# name exactly these seeds (E: per fold). G and H have no registry list.
+F3_SEEDS = {'A': range(10, 30), 'B': range(10, 30), 'C': range(10, 30),
+            'D': range(10, 30), 'E': range(10, 15), 'F': range(10, 20)}
+
+
+def floor_share_bound(n_below, n_fits) -> bool:
+    """Floor share of the F3 path (F-9): an arm is floor-bound if at least
+    30 % of its fits lie below the floor (2 of 5, 3 of 10, 6 of 20); an empty
+    arm is not. The F1/F2 paths keep not_learned."""
+    return n_fits > 0 and n_below * 10 >= 3 * n_fits
 
 
 def _f3(task, a, b, endpoint, floor, kind='wilcoxon', side='two-sided',
@@ -2521,30 +2537,29 @@ F3_FAMILIES = {
                     'test_macro_f1', 'exclusive', match=F3_CONFIG_FIELDS)}},
     'C': {'status': 'required', 'tests': {
         'T-C1': _f3(_LV, 'cfc_lrc/ncp', 'gru/ncp', _VPT, 'exclusive',
-                    match=('epochs', 'param_budget')),
+                    match=_EB),
         'T-C2': _f3(_LV, 'cfc_lrc/ncp', 'lstm/ncp', _VPT, 'exclusive',
-                    match=('epochs', 'param_budget'))}},
+                    match=_EB)}},
     'D': {'status': 'required', 'tests': {
-        'T-D1': _f3('pa', 'cfc_lrc/ncp', _EPS1, 'test_macro_f1', 'exclusive'),
+        'T-D1': _f3('pa', 'cfc_lrc/ncp', _EPS1, 'test_macro_f1', 'exclusive',
+                    match=_EB),
         'T-D2': _f3('pa', 'cfc_lrc/ncp', 'cfc_lrc_outer/ncp', 'test_macro_f1',
-                    'exclusive')}},
+                    'exclusive', match=_EB)}},
     'F': {'status': 'required', 'tests': {
         'T-F1': _f3('duffing', 'lrc_init/ncp', 'lrc/ncp', _VPT,
-                    'informational', success=('floor+', 2.0),
-                    match=('epochs', 'param_budget')),
+                    'informational', success=('floor+', 2.0), match=_EB),
         'T-F2': _f3('duffing', 'lrc_cal_duffing/ncp', 'lrc/ncp', _VPT,
-                    'informational', success=('floor+', 2.0),
-                    match=('epochs', 'param_budget'))}},
+                    'informational', success=('floor+', 2.0), match=_EB)}},
     'G': {'status': 'conditional', 'tests': {
         'T-G1': _f3(_LV, 'cfc_lrc/cncp', 'cfc_lrc/cncp_ff', _VPT,
-                    'exclusive'),
+                    'exclusive', match=_EB),
         'T-G2': _f3('pa', 'cfc_lrc/cncp', 'cfc_lrc/cncp_ff', 'test_macro_f1',
-                    'exclusive')}},
+                    'exclusive', match=_EB)}},
     'H': {'status': 'optional', 'tests': {
         'T-H1': _f3(_LV, 'cfc_mm_lrc/ncp', 'cfc_lrc/ncp', _VPT, 'exclusive',
-                    side='greater'),
+                    side='greater', match=_EB),
         'T-H2': _f3('pa', 'cfc_mm_lrc/ncp', 'cfc_lrc/ncp', 'test_macro_f1',
-                    'exclusive', side='greater')}},
+                    'exclusive', side='greater', match=_EB)}},
 }
 F3_TESTS = {test: {**t, 'family': family,
                    'status': t.get('status', f['status'])}
@@ -2558,10 +2573,12 @@ def load_f3_spec(path) -> dict:
     for the tests of F3_TESTS; every required test, the other tests of one
     family and status only all together or not at all (a conditional or
     optional family is left out as a whole, a lone optional test alone).
-    seeds: the explicit final seeds of the test (distinct integers); arm as
-    in load_f2_spec (keys F2_ARM_KEYS, label as in the registry), with F3
-    stamps only. Unknown or missing keys, a pattern, a missing path and a
-    non-F3 protocol_version raise SystemExit."""
+    seeds: the explicit final seeds of the test (distinct integers), as a
+    set equal to F3_SEEDS of its family where that has an entry; arm as in
+    load_f2_spec (keys F2_ARM_KEYS, label as in the registry), with F3
+    stamps only. Unknown or missing keys, a pattern, a missing path, a seed
+    list off the family list and a non-F3 protocol_version raise
+    SystemExit."""
     with open(path, encoding='utf-8') as f:
         spec = yaml.safe_load(f)
     if not isinstance(spec, dict):
@@ -2592,6 +2609,13 @@ def load_f3_spec(path) -> dict:
                 or len(set(seeds)) != len(seeds)):
             raise SystemExit(f'{path}: {test}.seeds must be a non-empty list '
                              'of distinct integers')
+        family = F3_TESTS[test]['family']
+        if family in F3_SEEDS and set(seeds) != set(F3_SEEDS[family]):
+            want = set(F3_SEEDS[family])
+            raise SystemExit(f'{path}: {test}.seeds must equal the seed list '
+                             f'of family {family} (F-1): missing '
+                             f'{sorted(want - set(seeds))}, extra '
+                             f'{sorted(set(seeds) - want)}')
         for side in 'ab':
             arm = entry[side]
             _check_spec_arm(path, f'{test}.{side}', arm, False)
@@ -2697,7 +2721,9 @@ def _check_match(p, fields, name):
 def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',)):
     """One F3 test row (F3_COLUMNS) from the fits of arm A and arm B on the
     test's seed list, paired on key (seed; family E pairs on fold and seed,
-    #133)."""
+    #133). The deciding p: the exact permutation p (p_perm_adj, F3-wide
+    p_perm_adj_f3) on a Wilcoxon row (E15), the exact McNemar p (p_adj,
+    p_adj_f3) on a McNemar row, which carries no Wilcoxon-type columns."""
     kind, side = entry['kind'], entry['side']
     row = {'family': entry['family'], 'test': test,
            'registry_status': entry['status'], 'task': entry['task'],
@@ -2711,7 +2737,7 @@ def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',)):
     for s, d in (('a', a), ('b', b)):
         k, n = (int(d['below'].sum()), len(d)) if len(d) else (0, 0)
         row[f'floor_{s}'] = f'{k}/{n}'
-        marks[s] = not_learned(k, n)
+        marks[s] = floor_share_bound(k, n)
         for f in F3_CONFIG_FIELDS:
             row[f'{f}_{s}'] = _config_values(d, f)
     row['floor_bound'] = marks['a'] or marks['b']
@@ -2733,7 +2759,7 @@ def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',)):
     row.update(n_pairs=n, n_nonfinite=int(p['diverged_a'].sum()
                                           + p['diverged_b'].sum()) if n
                else 0)
-    if n:
+    if n and kind != 'mcnemar':
         st = _pair_stats(p, p['task_a'].iloc[0], m, side)
         x, y = p['v_a'].to_numpy(float), p['v_b'].to_numpy(float)
         row.update({k: st[k] for k in (
@@ -2743,18 +2769,17 @@ def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',)):
             ci_includes_zero=(bool(st['median_diff_lo'] <= 0
                                    <= st['median_diff_hi'])
                               if entry['task'] == 'pa' else None))
-        if 'success' in entry:
-            sa, sb = p['success_a'].to_numpy(bool), p['success_b'].to_numpy(
-                bool)
-            _, n10, n01 = mcnemar_exact(sa, sb)
-            row.update(n10=n10, n01=n01, rate_a=_rate(int(sa.sum()), n),
-                       rate_b=_rate(int(sb.sum()), n),
-                       rate_diff=(int(sa.sum()) - int(sb.sum())) / n)
+    if n and 'success' in entry:
+        sa, sb = p['success_a'].to_numpy(bool), p['success_b'].to_numpy(bool)
+        _, n10, n01 = mcnemar_exact(sa, sb)
+        row.update(n10=n10, n01=n01, rate_a=_rate(int(sa.sum()), n),
+                   rate_b=_rate(int(sb.sum()), n),
+                   rate_diff=(int(sa.sum()) - int(sb.sum())) / n)
     if above:
         row.update(status=EXCLUDED, reading=None)
         return row
-    row['status'] = 'tested'
     complete = n == len(seeds)
+    row['status'] = 'tested' if complete else 'incomplete'
     if not n:
         row['reading'] = 'incomplete'
         return row
@@ -2771,19 +2796,23 @@ def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',)):
         p_perm = permutation_p(x, y, side)
         row.update(method=method, p_perm=p_perm,
                    p_perm_adj=min(1.0, m * p_perm),
+                   p_perm_adj_f3=min(1.0, m_f3 * p_perm),
                    w_plus_minus_w_minus=effect)
     row.update(p_raw=p_raw, p_adj=min(1.0, m * p_raw),
                p_adj_f3=min(1.0, m_f3 * p_raw))
-    row['significant'] = complete and row['p_adj'] < ALPHA
-    row['significant_f3'] = complete and row['p_adj_f3'] < ALPHA
+    # the deciding p: exact McNemar, else the exact permutation p (E15)
+    adj, adj_f3 = ((row['p_adj'], row['p_adj_f3']) if kind == 'mcnemar'
+                   else (row['p_perm_adj'], row['p_perm_adj_f3']))
+    row['significant'] = complete and adj < ALPHA
+    row['significant_f3'] = complete and adj_f3 < ALPHA
     row['only_under_family_cut'] = (row['significant']
                                     and not row['significant_f3'])
-    if kind != 'mcnemar':
+    if kind != 'mcnemar':   # the p of wilcoxon_test would decide otherwise
         row['verdict_flip'] = ((row['p_adj'] < ALPHA)
                                != (row['p_perm_adj'] < ALPHA))
     row['reading'] = ('incomplete' if not complete else 'floor-bound'
                       if entry['floor'] == 'exclusive' and row['floor_bound']
-                      else 'PASS' if row['p_adj'] < ALPHA else 'FAIL')
+                      else 'PASS' if adj < ALPHA else 'FAIL')
     if row['reading'] == 'PASS':
         row['direction'] = 'A>B' if effect > 0 else 'A<B'
         if kind != 'mcnemar':
@@ -2796,7 +2825,7 @@ F3_COLUMNS = ['family', 'test', 'registry_status', 'task', 'endpoint',
               'side', 'a', 'b', 'm', 'm_f3', 'n_expected', 'n_pairs',
               'n_outside_list', 'outside_list', 'status', 'reading',
               'direction', 'method', 'p_raw', 'p_adj', 'p_adj_f3', 'p_perm',
-              'p_perm_adj', 'significant', 'significant_f3',
+              'p_perm_adj', 'p_perm_adj_f3', 'significant', 'significant_f3',
               'only_under_family_cut', 'verdict_flip', 'median_sign_differs',
               'ci_includes_zero', 'w_plus_minus_w_minus', 'median_diff',
               'median_diff_lo', 'median_diff_hi', 'ci_units', 'd_z',
@@ -2836,14 +2865,15 @@ def f3_family_blocks(spec) -> tuple[pd.DataFrame, pd.DataFrame]:
     """(blocks, pa_fits). pa_fits: _f3_pa_fits of the Person Activity arms.
     blocks: one row per test of a load_f3_spec spec, in registry order (columns
     F3_COLUMNS): paired over the test's seed list with its own merge, delta
-    = A - B, the registry side; Wilcoxon (exact without ties or zeros, else
-    the normal approximation) with the exact permutation p next to it, or
-    the exact McNemar on the learning success; adjusted within the family
-    (m = its tests in the spec) and F3-wide (m_f3 = tests in the spec,
-    sensitivity); reading incomplete (fewer complete pairs than listed
-    seeds; statistics still reported) before the floor rule of the registry
-    before PASS/FAIL; the budget-tolerance exclusion of every arm except
-    the width-matched one."""
+    = A - B, the registry side; Wilcoxon decided by the exact sign-flip
+    permutation p (E15) with the p of wilcoxon_test (exact without ties or
+    zeros, else the normal approximation) reported next to it, or the exact
+    McNemar on the learning success; adjusted within the family (m = its
+    tests in the spec) and F3-wide (m_f3 = tests in the spec, sensitivity);
+    reading and status incomplete (fewer complete pairs than listed seeds;
+    statistics still reported) before the floor rule of the registry
+    (floor_share_bound, F-9) before PASS/FAIL; the budget-tolerance
+    exclusion of every arm except the width-matched one."""
     draws, rows, fits = {}, [], []
     for test, entry in F3_TESTS.items():
         if test not in spec:
@@ -2870,12 +2900,13 @@ def f3_report(blocks, pa_fits) -> str:
              f'F3-wide m={m_f3} as sensitivity)\n',
              '| Family | m | Test | Task | endpoint | side | A | B | n/listed '
              '| status | reading | method | p | p adj | p adj F3 | p perm '
-             '| p perm adj | flags | median delta [95% CI] | d_z '
-             '| P(A>B) [95% CI] | seeds delta>0 | success A | success B '
-             '| floor rule | floor A | floor B | floor_bound | non-finite |',
-             '|' + '---|' * 29]
+             '| p perm adj | p perm adj F3 | flags | median delta [95% CI] '
+             '| d_z | P(A>B) [95% CI] | seeds delta>0 | success A '
+             '| success B | floor rule | floor A | floor B | floor_bound '
+             '| non-finite |',
+             '|' + '---|' * 30]
     flags = (('only_under_family_cut', 'only under the family cut'),
-             ('verdict_flip', 'verdict flips with p perm'),
+             ('verdict_flip', 'p of wilcoxon_test would decide otherwise'),
              ('median_sign_differs', 'median sign differs'),
              ('ci_includes_zero', 'interval includes 0'))
 
@@ -2900,7 +2931,8 @@ def f3_report(blocks, pa_fits) -> str:
             f"| {b['n_pairs']}/{b['n_expected']} | {b['status']} "
             f"| {txt(b['reading'])} | {txt(b['method'])} | "
             + ' | '.join(_fmt(b[k]) for k in (
-                'p_raw', 'p_adj', 'p_adj_f3', 'p_perm', 'p_perm_adj'))
+                'p_raw', 'p_adj', 'p_adj_f3', 'p_perm', 'p_perm_adj',
+                'p_perm_adj_f3'))
             + f" | {fl or '—'} | {med} | {_fmt(b['d_z'], '+.3f')} | {win} "
             f"| {_fmt(b['n_positive'], '.0f')} | {txt(b['rate_a'])} "
             f"| {txt(b['rate_b'])} | {b['floor_rule']} | {b['floor_a']} "
@@ -2932,17 +2964,23 @@ def f3_report(blocks, pa_fits) -> str:
               + '. Fits without a test_macro_f1_last value (missing or '
               f"NaN): {int(pa_fits['test_macro_f1_last'].isna().sum())}.",
               '', 'reading: incomplete (fewer complete pairs than listed '
-              'seeds) before floor-bound (floor rule exclusive only) before '
-              f'PASS/FAIL (adj. p < {ALPHA}); the deciding p is that of '
-              'wilcoxon_test (exact without ties or zeros, else the normal '
-              'approximation) or the exact McNemar on the learning success, '
-              'p perm the exact sign-flip test over the mid-ranks with the '
-              'same side. success A/B: fits with learning success (Person '
-              'Activity: endpoint >= the registry threshold; rollouts: '
-              'VPT-multi median >= the fit\'s own floor + 2; a diverged or '
-              'non-finite fit fails). floor A/B: seeds below the floor, not '
-              'learned in more than a fifth of the seeds. A non-finite or '
-              'unbounded fit enters at the worst value.', '']
+              'seeds; status incomplete) before floor-bound (floor rule '
+              f'exclusive only) before PASS/FAIL (adj. p < {ALPHA}). The '
+              'deciding p of a Wilcoxon row is the exact sign-flip '
+              'permutation p of the Wilcoxon statistic (p perm; zero '
+              'differences dropped, mid-ranks, same side; E15); its p, p adj '
+              'and p adj F3 are those of wilcoxon_test (exact without ties '
+              'or zeros, else the normal approximation), reported, deciding '
+              'nothing; flag "p of wilcoxon_test would decide otherwise" '
+              '(possible only with ties or zero differences). The deciding p '
+              'of the McNemar row (T-A1) is the exact McNemar p on the '
+              'learning success (p, p adj, p adj F3). success A/B: fits with '
+              'learning success (Person Activity: endpoint >= the registry '
+              'threshold; rollouts: VPT-multi median >= the fit\'s own floor '
+              '+ 2; a diverged or non-finite fit fails). floor A/B: seeds '
+              'below the floor; floor_bound: an arm at the floor in at least '
+              '30 % of the seeds (F-9). A non-finite or unbounded fit enters '
+              'at the worst value.', '']
     return '\n'.join(lines)
 
 
@@ -2992,8 +3030,10 @@ def main(argv=None) -> int:
     p.add_argument('--f3-families', default=None, metavar='SPEC.yaml',
                    help='the F3 test families (F3_FAMILIES) from a spec of '
                         'seed lists and explicit path lists per arm '
-                        '(configs/aggregate/f3_families.yaml); writes '
-                        '<out>/f3_families.csv and <out>/f3_pa_fits.csv')
+                        '(configs/aggregate/f3_families.yaml); Wilcoxon '
+                        'rows decided by the exact permutation p, T-A1 by '
+                        'the exact McNemar p; writes <out>/f3_families.csv '
+                        'and <out>/f3_pa_fits.csv')
     p.add_argument('--lambda-grid', default=None, metavar='DIR',
                    help='the *.lambda_grid.evalonly.json files below DIR '
                         '(committee eval-only vote-lambda grid, #137); '
