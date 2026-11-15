@@ -12,16 +12,18 @@ import pytest
 import yaml
 from scipy.stats import wilcoxon
 
-from experiments.aggregate_results import (EXCLUDED, F3_COLUMNS,
+from experiments.aggregate_results import (CONVERGED, EXCLUDED, F3_COLUMNS,
                                            F3_FAMILIES, F3_FIT_COLUMNS,
-                                           F3_SEEDS,
-                                           F3_TESTS, _f3_arm, _f3_test,
-                                           _sequence_row, _signed_ranks,
-                                           arm_label, f3_family_blocks,
-                                           f3_report, floor_share_bound,
+                                           F3_SEEDS, F3_TESTS, N_BOOT,
+                                           _const_phase_flagged, _f3_arm,
+                                           _f3_test, _sequence_row,
+                                           _signed_ranks, arm_label,
+                                           f3_family_blocks, f3_report,
+                                           floor_share_bound,
                                            learning_success, load_f3_spec,
                                            main, mcnemar_exact, not_learned,
                                            permutation_p)
+from src.evaluation.stats import bootstrap_median_ci, crossed_median_diff_ci
 
 F1, F2, F3 = 'F1-2026-10-26', 'F2-2026-11-05', 'F3-2026-11-18'
 DS = 4242            # one data draw per system (floor 5.5 LV, 10.5 Duffing)
@@ -303,7 +305,6 @@ def test_world_through_main_writes_csv_and_summary(tmp_path):
     assert r['p_adj'] == pytest.approx(4 / 2 ** 20)
     assert r['p_adj_f3'] == pytest.approx(16 / 2 ** 20)
     assert r['p_perm'] == pytest.approx(r['p_raw'])
-    assert df.loc['T-D1', 'ci_units'] == 'seed x recording'
     assert df.loc['T-A2', 'ci_units'] == 'seed x recording'
     assert df.loc['T-A1', 'method'] == 'mcnemar-exact'
     assert df.loc['T-A1', 'reading'] == 'FAIL'     # 20/20 against 20/20
@@ -329,8 +330,50 @@ def test_world_through_main_writes_csv_and_summary(tmp_path):
     assert '| C | 2 | T-C1 | periodic_predator_prey | vpt_multi_median ' \
         '| two-sided | cfc_lrc/ncp | gru/ncp | 20/20 | tested | PASS ' \
         '| exact |' in text
+    # #151: the descriptive columns, appended in this order
+    with open(os.path.join(out, 'f3_families.csv'), encoding='utf-8') as f:
+        assert f.readline().rstrip('\n').split(',') == F3_COLUMNS
+    assert F3_COLUMNS[-len(NEW_COLUMNS):] == NEW_COLUMNS
+    assert F3_COLUMNS[-len(NEW_COLUMNS) - 1] == 'param_budget_b'
+    for t in REQUIRED:
+        fam = F3_TESTS[t]['family']
+        for c in ('n_diverged_a', 'n_diverged_b', 'n_other_label_a',
+                  'n_other_label_b'):
+            assert raw.loc[t, c] == '0', (t, c)            # Int64
+        for c in NEW_COLUMNS[-4:]:                          # flags: C and F
+            assert (raw.loc[t, c] == '0') if fam in 'CF' \
+                else pd.isna(raw.loc[t, c]), (t, c)
+        for c in NEW_COLUMNS[:5]:                           # intervals: D
+            assert pd.isna(raw.loc[t, c]) == (fam != 'D'), (t, c)
+        for c in ('crossed_ci_note', 'interval_note', 'other_labels_a',
+                  'other_labels_b'):
+            assert pd.isna(raw.loc[t, c]), (t, c)
+    for c in ('median_diff_lo', 'median_diff_hi', 'ci_units'):
+        assert pd.isna(df.loc['T-D1', c]), c
+    norm = ' '.join(text.split())
+    assert norm.count(D_LEGEND) == 1
+    assert 'Family D interval notes (E17): none.' in text
+    assert '- T-C1 a: none\n- T-C1 b: none' in text
+    assert '| T-C1 | 0 | 0 | 0 | 0 | 0 | 0 |' in text
+    assert '| T-D1 | 0 | 0 | — | — | — | — |' in text
+    assert 'The deciding p of the McNemar row (T-A1) is the exact McNemar p ' \
+        'on the learning success (p, p adj, p adj F3; reading and ' \
+        'significant read p adj, significant_f3 p adj F3)' in norm
 
 
+NEW_COLUMNS = ['median_diff_seed_lo', 'median_diff_seed_hi',
+               'median_diff_crossed_lo', 'median_diff_crossed_hi',
+               'seed_ci_includes_zero', 'crossed_ci_note', 'interval_note',
+               'n_diverged_a', 'n_diverged_b', 'n_other_label_a',
+               'n_other_label_b', 'other_labels_a', 'other_labels_b',
+               'n_flag_whole_a', 'n_flag_whole_b', 'n_flag_const_a',
+               'n_flag_const_b']
+D_LEGEND = ('Seed interval: percentile bootstrap of the median paired '
+            'difference over the 20 seeds, 10 000 draws, generator seed 0, '
+            '95 %, not adjusted for the two contrasts, test recordings held '
+            'fixed. Crossed interval: the same procedure, additionally '
+            'resampling the five test recordings. Both intervals describe; '
+            'the registered test decides at raw p < 0.025.')
 WILCOXON_ONLY = ('median_diff', 'median_diff_lo', 'median_diff_hi',
                  'ci_units', 'd_z', 'p_a_gt_b', 'p_a_gt_b_lo', 'p_a_gt_b_hi',
                  'n_positive', 'ci_includes_zero')
@@ -480,7 +523,7 @@ def test_duffing_learning_success_at_floor_plus_two(tmp_path):
     _lv(path, 'duffing', 'lrc/ncp', 10, 12.5)
     _lv(path, 'duffing', 'lrc/ncp', 11, 12.4)
     arm = {**spec['T-F1']['b'], 'paths': [path]}
-    df, _ = _f3_arm('T-F1', 'b', F3_TESTS['T-F1'], arm, [10, 11], {})
+    df, _, _ = _f3_arm('T-F1', 'b', F3_TESTS['T-F1'], arm, [10, 11], {})
     assert df['floor'].tolist() == [10.5, 10.5]
     assert df['success'].tolist() == [True, False]
 
@@ -571,9 +614,29 @@ def test_d_g_h_match_epochs_and_budget(tmp_path, test, field, value):
 
 
 def test_budget_exclusion(tmp_path):
-    r = _row(tmp_path, 'T-D1', opts={('T-D1', 'b'): {12: {'above': True}}})
+    """An excluded row reports p_perm (Wilcoxon rows) and the family D
+    intervals, but no other p, no significance, reading or interval note;
+    the McNemar row T-A1 has no p_perm, excluded or not."""
+    b = _blocks(_world(tmp_path, opts={
+        (t, 'b'): {12: {'above': True}} for t in ('T-A1', 'T-C1', 'T-D1')}))
+    r = b.loc['T-D1']
     assert r['status'] == EXCLUDED and pd.isna(r['reading'])
     assert pd.isna(r['p_raw']) and r['n_pairs'] == 20   # descriptive only
+    assert r['p_perm'] == pytest.approx(2 / 2 ** 20)
+    for k in ('p_adj', 'p_adj_f3', 'p_perm_adj', 'p_perm_adj_f3', 'method',
+              'significant', 'significant_f3', 'interval_note',
+              'crossed_ci_note', 'median_diff_lo', 'ci_units'):
+        assert pd.isna(r[k]), k
+    assert r['median_diff_seed_lo'] > 0
+    assert (r['seed_ci_includes_zero'], r['ci_includes_zero']) == (False,
+                                                                   False)
+    assert r['median_diff_crossed_lo'] == r['median_diff_crossed_hi'] == 0
+    c, a1 = b.loc['T-C1'], b.loc['T-A1']
+    assert c['status'] == EXCLUDED and pd.isna(c['p_raw'])
+    assert c['p_perm'] == pytest.approx(2 / 2 ** 20)
+    assert pd.isna(c['median_diff_seed_lo'])                # D only
+    assert a1['status'] == EXCLUDED and pd.isna(a1['p_perm'])
+    assert pd.isna(a1['p_raw']) and a1['n10'] == 0
 
 
 def test_optimizer_variants_of_one_cell_pair_by_seed(tmp_path):
@@ -595,6 +658,11 @@ def test_optimizer_variants_of_one_cell_pair_by_seed(tmp_path):
     assert (r['n_pairs'], r['n10'], r['n01'], r['reading']) == (
         18, 3, 6, 'incomplete')
     assert r['rate_a'].startswith('6/18') and r['rate_b'].startswith('9/18')
+    # each arm counts the other's records as another label (#151)
+    assert (r['n_other_label_a'], r['other_labels_a']) == (19,
+                                                           'lrc/ncp (19)')
+    assert (r['n_other_label_b'], r['other_labels_b']) == (
+        19, 'lrc/ncp [optimizer=rmsprop_legacy] (19)')
 
 
 def test_diverged_and_non_finite_fits_fail_and_enter_at_the_worst_value(
@@ -604,8 +672,8 @@ def test_diverged_and_non_finite_fits_fail_and_enter_at_the_worst_value(
                         11: {'extra': {'training_diverged': True}}},
         ('T-A1', 'b'): {10: {'extra': {'test_macro_f1_last': None}}}}))
     entry = F3_TESTS['T-F1']
-    df, _ = _f3_arm('T-F1', 'b', entry, spec['T-F1']['b'], _seeds('T-F1'),
-                    {})
+    df, _, _ = _f3_arm('T-F1', 'b', entry, spec['T-F1']['b'],
+                       _seeds('T-F1'), {})
     df = df.set_index('seed')
     assert df.loc[10, 'diverged'] and not df.loc[11, 'diverged']
     assert not df.loc[10, 'success'] and not df.loc[11, 'success']
@@ -616,6 +684,9 @@ def test_diverged_and_non_finite_fits_fail_and_enter_at_the_worst_value(
     assert b.loc['T-F1', 'n_positive'] == 10
     assert (b.loc['T-A1', 'n_nonfinite'], b.loc['T-A1', 'rate_b'][:5]) == (
         1, '19/20')
+    # diverged counts: the unbounded and the training_diverged fit (#151)
+    assert (b.loc['T-F1', 'n_diverged_a'], b.loc['T-F1', 'n_diverged_b'],
+            b.loc['T-A1', 'n_diverged_b']) == (0, 2, 1)
     with pytest.raises(SystemExit, match=r'T-D1: .*data key.*\[14\]'):
         _blocks(_world(tmp_path / 'dk', opts={
             ('T-D1', 'b'): {14: {'split_seed': 1}}}))
@@ -623,14 +694,16 @@ def test_diverged_and_non_finite_fits_fail_and_enter_at_the_worst_value(
 
 # --- one test row from frames ------------------------------------------------
 
-def _frame(vals, above=False, width=False):
+def _frame(vals, above=False, width=False, task='lv', tdiv=False, best=1,
+           curve=None, below=False):
     v = np.asarray(vals, float)
     return pd.DataFrame({
-        'seed': range(10, 10 + len(v)), 'metric': v, 'task': 'lv',
-        'diverged': ~np.isfinite(v), 'below': False,
-        'budget_above_tolerance': above, 'width_matched': width,
-        'data_key': 1, 'lr': 1e-3, 'clipnorm': None, 'epochs': 300,
-        'param_budget': 4000})
+        'seed': range(10, 10 + len(v)), 'metric': v, 'task': task,
+        'diverged': ~np.isfinite(v), 'training_diverged': tdiv,
+        'below': below, 'budget_above_tolerance': above,
+        'width_matched': width, 'data_key': 1, 'lr': 1e-3, 'clipnorm': None,
+        'epochs': 300, 'param_budget': 4000, 'best_val_epoch': best,
+        'val_loss_curve': [curve] * len(v)})
 
 
 def _frow(delta, m=2, m_f3=8, a=None, b=None):
@@ -706,6 +779,341 @@ def test_one_sided_h_test(tmp_path):
              values={'T-H1': (rev, [20.0] * 10)})
     assert r['p_raw'] == pytest.approx(1.0) and r['p_perm'] == 1.0
     assert r['reading'] == 'FAIL'
+
+
+# --- descriptive columns (#151) ---------------------------------------------
+
+CM = np.array(list(GOOD.values()), float)      # (recordings, C, C) of _pa
+
+
+def _dframe(vals, cms=None, **kw):
+    f = _frame(vals, task='pa', **kw)
+    f['confusion'] = pd.Series(cms or [CM] * len(f), index=f.index,
+                               dtype=object)
+    return f
+
+
+def _drow(delta, a=None, b=None, n_listed=20):
+    """_f3_test of T-D1 (m = 2) with B = 0.6 and A = 0.6 + delta on seeds
+    10, 11, ..., every fit with the confusions CM unless cms is given."""
+    return _f3_test('T-D1', F3_TESTS['T-D1'], 2, 8,
+                    _dframe([0.6 + d for d in delta], **(a or {})),
+                    _dframe([0.6] * len(delta), **(b or {})),
+                    list(range(10, 10 + n_listed)), {'a': [], 'b': []})
+
+
+# one delta vector per interval_note branch (reading, seed interval holds 0)
+NOTE_DELTAS = {
+    ('FAIL', True): [0.01 * (i + 1) * (-1) ** i for i in range(20)],
+    ('FAIL', False): [0.001 * k for k in range(1, 16)]
+    + [-(0.1 + 0.01 * k) for k in range(5)],
+    ('PASS', True): [-0.0001 * k for k in range(1, 8)]
+    + [0.1 + 0.01 * k for k in range(13)],
+    ('PASS', False): [0.01 * (i + 1) for i in range(20)]}
+
+
+def test_family_d_null_flag_reads_the_seed_interval(tmp_path):
+    """E17: T-D1 with A = B + 0.01 (i + 1): the seed interval of the paired
+    differences excludes 0, the crossed interval of the equal confusion
+    matrices is [0, 0] and contains it. The null flag, ci_includes_zero and
+    the report flag read the seed interval; the old interval columns stay
+    empty; the PASS row with the seed interval off 0 has no note."""
+    blocks, fits = f3_family_blocks(load_f3_spec(_world(tmp_path)))
+    r = blocks.set_index('test').loc['T-D1']
+    va = np.array([0.6 + 0.01 * (i + 1) for i in range(20)])
+    lo, hi = bootstrap_median_ci(va - 0.6, N_BOOT)
+    cms = np.stack([CM] * 20)
+    assert lo > 0
+    assert (r['median_diff_seed_lo'], r['median_diff_seed_hi']) == (lo, hi)
+    assert (r['median_diff_crossed_lo'], r['median_diff_crossed_hi']) == \
+        crossed_median_diff_ci(cms, cms, N_BOOT) == (0.0, 0.0)
+    assert r['median_diff'] == pytest.approx(np.median(va - 0.6))
+    assert (r['seed_ci_includes_zero'], r['ci_includes_zero']) == (False,
+                                                                   False)
+    assert r['reading'] == 'PASS'
+    for k in ('median_diff_lo', 'median_diff_hi', 'ci_units',
+              'interval_note', 'crossed_ci_note'):
+        assert pd.isna(r[k]), k
+    cells = _report_cells(f3_report(blocks, fits), 'T-D1')
+    assert cells['median delta [95% CI]'] == (
+        f"{r['median_diff']:+.4f} (seed [{lo:+.4f}, {hi:+.4f}]; crossed "
+        '[+0.0000, +0.0000])')
+    assert cells['flags'] == 'A>B'                  # no "interval includes 0"
+
+
+@pytest.mark.parametrize('reading, zero', list(NOTE_DELTAS))
+def test_interval_note_branches(reading, zero):
+    r = _drow(NOTE_DELTAS[(reading, zero)])
+    assert (r['reading'], r['seed_ci_includes_zero'],
+            r['ci_includes_zero']) == (reading, zero, zero)
+    lo, hi = r['median_diff_seed_lo'], r['median_diff_seed_hi']
+    assert (lo <= 0 <= hi) == zero
+    note = r.get('interval_note')
+    assert note == {
+        ('FAIL', True): 'not shown, no equivalence; median paired '
+        f'differences outside [{lo:+.4f}, {hi:+.4f}] macro-F1 (unadjusted '
+        '95 % seed interval) are not compatible with these seeds on this '
+        'split',
+        ('FAIL', False): 'not shown, no equivalence; The seed interval '
+        '(unadjusted 95 %) excludes 0, but the registered test is not '
+        'significant at its threshold (exact p ≥ 0.025). The test decides.',
+        ('PASS', True): 'The seed interval (unadjusted 95 %) contains 0, '
+        'while the registered test is significant at its threshold (exact '
+        'p < 0.025). The test decides.',
+        ('PASS', False): None}[(reading, zero)]
+    text = f3_report(pd.DataFrame([r]).reindex(columns=F3_COLUMNS),
+                     pd.DataFrame(columns=F3_FIT_COLUMNS))
+    assert ('interval includes 0' in _report_cells(text, 'T-D1')['flags']) \
+        == zero
+    assert [ln for ln in text.splitlines() if ln.startswith('- T-D1:')] == (
+        [f'- T-D1: {note}'] if note else [])
+
+
+def test_null_flag_reads_the_unrounded_seed_bounds():
+    """Deltas of order 1e-6 (15 above 0, five larger ones below): the seed
+    interval lies within 5e-5 above 0, so bounds rounded to four decimals
+    would hold 0; the unrounded flag is False and the FAIL row takes the
+    'excludes 0' branch."""
+    r = _drow([1e-6 * k for k in range(1, 16)]
+              + [-(1e-4 + 1e-5 * k) for k in range(5)])
+    lo, hi = r['median_diff_seed_lo'], r['median_diff_seed_hi']
+    assert 0 < lo < hi < 5e-5 and round(lo, 4) == round(hi, 4) == 0
+    assert (r['reading'], r['seed_ci_includes_zero'],
+            r['ci_includes_zero']) == ('FAIL', False, False)
+    assert r['interval_note'].startswith(
+        'not shown, no equivalence; The seed interval (unadjusted 95 %) '
+        'excludes 0')
+
+
+def test_interval_note_is_empty_without_pass_or_fail():
+    """floor-bound, incomplete and excluded D rows keep the median, both
+    intervals and p_perm, without a note."""
+    d = NOTE_DELTAS[('FAIL', True)]
+    for r, reading in (
+            (_drow(d, b={'below': [True] * 6 + [False] * 14}), 'floor-bound'),
+            (_drow(d[:19]), 'incomplete'),
+            (_drow(d, b={'above': True}), None)):
+        assert r['reading'] == reading and pd.isna(r.get('interval_note'))
+        assert r['p_perm'] == pytest.approx(permutation_p(
+            np.array([0.6 + v for v in d[:r['n_pairs']]]),
+            np.full(r['n_pairs'], 0.6)))
+        assert np.isfinite([r['median_diff'], r['median_diff_seed_lo'],
+                            r['median_diff_crossed_lo']]).all()
+
+
+def test_crossed_interval_not_available(tmp_path):
+    """One diverged fit (non-finite test_macro_f1) in a pair: no crossed
+    interval and no fallback onto the seed interval; the note names the
+    seed; the fit enters the seed interval at the worst value. Confusion
+    matrices of different shapes are the other reason."""
+    blocks, fits = f3_family_blocks(load_f3_spec(_world(tmp_path, opts={
+        ('T-D1', 'b'): {12: {'extra': {'test_macro_f1': None}}}})))
+    r = blocks.set_index('test').loc['T-D1']
+    note = 'crossed interval not available: diverged fits: seed 12 (B)'
+    assert r['crossed_ci_note'] == note
+    assert pd.isna(r['median_diff_crossed_lo']) and pd.isna(
+        r['median_diff_crossed_hi'])
+    va = np.array([0.6 + 0.01 * (i + 1) for i in range(20)])
+    vb = np.full(20, 0.6)
+    vb[2] = 0.0                                     # seed 12 at the worst
+    lo, hi = bootstrap_median_ci(va - vb, N_BOOT)
+    assert (r['median_diff_seed_lo'], r['median_diff_seed_hi']) == (lo, hi)
+    assert (r['n_nonfinite'], r['n_diverged_b']) == (1, 1)
+    text = f3_report(blocks, fits)
+    assert f'- T-D1: {note}' in text.splitlines()
+    assert _report_cells(text, 'T-D1')['median delta [95% CI]'] == (
+        f"{r['median_diff']:+.4f} (seed [{lo:+.4f}, {hi:+.4f}]; crossed —)")
+    three = np.stack([np.eye(3)] * 3)
+    d = NOTE_DELTAS[('PASS', False)]
+    r = _drow(d, b={'cms': [CM] * 19 + [three]})
+    assert r['crossed_ci_note'] == ('crossed interval not available: '
+                                    'confusion matrices of different shapes')
+    r = _drow([float('nan'), *d[1:]], b={'cms': [CM] * 19 + [three]})
+    assert r['crossed_ci_note'] == (
+        'crossed interval not available: diverged fits: seed 10 (A); '
+        'confusion matrices of different shapes')
+    assert np.isnan([r['median_diff_crossed_lo'],
+                     r['median_diff_crossed_hi']]).all()
+
+
+def test_training_diverged_fit_keeps_its_value_and_counts_as_diverged(
+        tmp_path):
+    """A training_diverged fit with a finite endpoint enters at its
+    best-epoch value (as in F1): it counts in n_diverged_b, not in
+    n_nonfinite. n_diverged counts every fit of the arm on the seed list,
+    paired or not; a record without training_diverged reads False."""
+    s = _seeds('T-C1')
+    va = [21.0 + i for i in range(20)]
+    va[2] = 10.0                                    # seed 12: A < B
+    spec = load_f3_spec(_world(
+        tmp_path, values={'T-C1': (va, [20.0] * 20)},
+        opts={('T-C1', 'b'): {12: {'extra': {'training_diverged': True}},
+                              13: {'unbounded': True}}},
+        skip={('T-C1', 'a'): [13]}))
+    df, _, _ = _f3_arm('T-C1', 'b', F3_TESTS['T-C1'], spec['T-C1']['b'], s,
+                       {})
+    df = df.set_index('seed')
+    assert df['training_diverged'].dtype == bool
+    assert df['training_diverged'].tolist() == [x == 12 for x in df.index]
+    assert (df.loc[12, 'diverged'], df.loc[12, 'metric']) == (False, 20.0)
+    assert df.loc[13, 'diverged'] and 'val_loss_curve' in df
+    pa, _, _ = _f3_arm('T-D1', 'b', F3_TESTS['T-D1'], spec['T-D1']['b'],
+                       _seeds('T-D1'), {})
+    assert 'val_macro_f1_curve' in pa and not pa['training_diverged'].any()
+    r = f3_family_blocks(spec)[0].set_index('test').loc['T-C1']
+    assert (r['n_diverged_a'], r['n_diverged_b'], r['n_nonfinite']) == (0, 2,
+                                                                        0)
+    # 19 pairs (seed 13 has no A); seed 12 pairs at A - B = -10
+    assert (r['n_pairs'], r['n_positive']) == (19, 18)
+
+
+def test_descriptive_counts_enter_no_reading():
+    """Diverged and flag counts on every fit leave reading, floor_bound,
+    significance and the statistics as they are (a PASS and a FAIL row)."""
+    down, seen = list(np.linspace(1.0, 0.1, 300)), set()
+    for delta in (list(range(1, 11)), [2, 3, 3, -2, 1, 4, 2, 4, -1, 4]):
+        base = _frow(delta)
+        seen.add(base['reading'])
+        busy = _frow(delta, a={'tdiv': True}, b={'tdiv': True, 'best': 300,
+                                                 'curve': down})
+        assert (base['n_diverged_b'], base['n_flag_whole_b'],
+                base['n_flag_const_b']) == (0, 0, 0)
+        assert (busy['n_diverged_a'], busy['n_diverged_b'],
+                busy['n_flag_whole_b'], busy['n_flag_const_b']) == (
+            10, 10, 10, 10)
+        for k in ('reading', 'floor_bound', 'significant', 'significant_f3',
+                  'p_perm_adj', 'p_adj', 'n_nonfinite', 'n_positive',
+                  'median_diff'):
+            assert busy[k] == base[k], k
+    assert seen == {'PASS', 'FAIL'}
+
+
+def test_other_labels_are_counted_named_and_not_used(tmp_path):
+    """Records under an arm's paths of the test's task and system with an
+    F3 stamp and another arm label are counted and named; records of
+    another system or task, and non-F3 records, are not counted."""
+    spec = load_f3_spec(_world(tmp_path))
+    folder = os.path.join(spec['T-C1']['a']['paths'][0], 'mixed')
+    for seed in (10, 11, 12):
+        _lv(folder, 'periodic_predator_prey', 'gru/ncp', seed, -50.0)
+    _lv(folder, 'periodic_predator_prey', 'gru/ncp', 100, -50.0,
+        name='tuning.json')                         # off the seed list
+    _lv(folder, 'periodic_predator_prey', 'cfc_lrc/ncp', 10, -50.0,
+        epochs=600, name='long.json')
+    _lv(folder, 'periodic_predator_prey', 'gru/ncp', 13, -50.0, pv=F1,
+        name='f1.json')
+    _lv(folder, 'duffing', 'gru/ncp', 10, -50.0, name='duffing.json')
+    _pa(folder, 'gru/ncp', 10, 0.1, name='pa.json')
+    r = f3_family_blocks(spec)[0].set_index('test').loc['T-C1']
+    assert (r['n_other_label_a'], r['other_labels_a']) == (
+        5, 'cfc_lrc/ncp [epochs=600] (1); gru/ncp (4)')
+    assert r['n_other_label_b'] == 0 and pd.isna(r['other_labels_b'])
+    assert r['n_pairs'] == 20 and r['p_raw'] == pytest.approx(2 / 2 ** 20)
+    assert r['n_outside_list'] == 0         # outside = the arm's own label
+    with open(tmp_path / 'spec2.yaml', 'w', encoding='utf-8') as f:
+        yaml.safe_dump(spec, f)
+    out = str(tmp_path / 'out')
+    assert main(['--runs', str(tmp_path / 'none'), '--out', out,
+                 '--f3-families', str(tmp_path / 'spec2.yaml')]) == 0
+    with open(os.path.join(out, 'summary.md'), encoding='utf-8') as f:
+        lines = f.read().splitlines()
+    assert '- T-C1 a: cfc_lrc/ncp [epochs=600] (1); gru/ncp (4)' in lines
+    assert '- T-C1 b: none' in lines
+    raw = pd.read_csv(os.path.join(out, 'f3_families.csv'),
+                      dtype=str).set_index('test')
+    assert raw.loc['T-C1', 'n_other_label_a'] == '5'
+
+
+def _curve(at, n=300, low=0.1):
+    """val_loss_curve of n epochs, V-shaped with its minimum at the 1-based
+    epoch at."""
+    return [low + abs(e - at) / n for e in range(1, n + 1)]
+
+
+def test_convergence_flags_on_c_and_f(tmp_path):
+    """F-5 on T-C1 (300 epochs: flagged from epoch 285, constant phase
+    epochs 151-300). Arm A is a clean fixture (best_val_epoch = the 1-based
+    argmin of the whole curve): n_flag_whole equals the count from that
+    argmin and n_flag_const agrees. Arm B has one fit whose whole-curve
+    minimum lies in the ramp phase and whose constant-phase minimum is
+    flagged: it counts in n_flag_const only."""
+    holes = _curve(300)
+    holes[295:] = [None] * 5                        # ignored: argmin 295
+    shapes = [_curve(300), _curve(100), _curve(285), _curve(284), holes]
+    curves_a = [shapes[i % 5] for i in range(20)]
+    best_a = [int(np.nanargmin(np.array(c, float))) + 1 for c in curves_a]
+    ramp = [1.0] * 150 + list(np.linspace(0.5, 0.1, 150))
+    ramp[49] = 0.01                                 # whole minimum: epoch 50
+    curves_b = [ramp] + [_curve(100)] * 19
+    best_b = [50] + [100] * 19
+    opts = {('T-C1', s): {seed: {'extra': {'val_loss_curve': c,
+                                           'best_val_epoch': e}}
+                          for seed, c, e in zip(_seeds('T-C1'), cs, bs)}
+            for s, cs, bs in (('a', curves_a, best_a),
+                              ('b', curves_b, best_b))}
+    blocks, fits = f3_family_blocks(load_f3_spec(_world(tmp_path,
+                                                        opts=opts)))
+    b = blocks.set_index('test')
+    r = b.loc['T-C1']
+    whole = sum(e >= CONVERGED * 300 for e in best_a)
+    assert whole == 12                              # 300, 285, 295 x 4
+    assert (r['n_flag_whole_a'], r['n_flag_const_a']) == (whole, whole)
+    assert (r['n_flag_whole_b'], r['n_flag_const_b']) == (0, 1)
+    assert r['reading'] == 'PASS'
+    assert (b.loc['T-F1', 'n_flag_whole_a'], b.loc['T-F1', 'n_flag_const_a']) \
+        == (0, 0)
+    for t in ('T-A1', 'T-A2', 'T-D1', 'T-D2'):
+        assert pd.isna(b.loc[t, 'n_flag_whole_a']), t
+    assert '| T-C1 | 0 | 0 | 12 | 0 | 12 | 1 |' in f3_report(blocks, fits)
+
+
+def test_flags_count_unpaired_fits_and_stay_empty_outside_c_and_f(tmp_path):
+    """Arm B of T-C1 has a flagged fit on seed 29, where arm A has no
+    record: it counts in both flags although it is not paired. The LV rows
+    of families G and H leave the flag columns empty."""
+    b = _blocks(_world(
+        tmp_path, REQUIRED + ['T-G1', 'T-G2', 'T-H1', 'T-H2'],
+        opts={('T-C1', 'b'): {29: {'extra': {'val_loss_curve': _curve(300),
+                                             'best_val_epoch': 300}}}},
+        skip={('T-C1', 'a'): [29]}))
+    r = b.loc['T-C1']
+    assert (r['n_pairs'], r['n_flag_whole_a'], r['n_flag_const_a'],
+            r['n_flag_whole_b'], r['n_flag_const_b']) == (19, 0, 0, 1, 1)
+    for t in ('T-G1', 'T-G2', 'T-H1', 'T-H2'):
+        for c in NEW_COLUMNS[-4:]:
+            assert pd.isna(b.loc[t, c]), (t, c)
+
+
+def test_const_phase_window_edges():
+    """Window epochs 11-20 of 20 (flagged from 19); 21 epochs: 11-21
+    (flagged from 19.95, i.e. 20). Non-finite values are ignored; a window
+    without a finite value, or none at all, is not flagged."""
+    def at(k, n=20, fill=1.0):
+        c = [fill] * n
+        c[k - 1] = 0.1
+        return c
+
+    assert _const_phase_flagged(at(19), 20)
+    assert not _const_phase_flagged(at(18), 20)
+    assert not _const_phase_flagged(at(5), 20)      # ramp minimum ignored
+    late = at(20, fill=1.0)
+    late[19] = 0.2
+    late[10] = 0.1              # epoch 11 opens the window: its argmin
+    assert not _const_phase_flagged(late, 20)
+    late[10], late[9] = 1.0, 0.1                    # epoch 10 lies outside
+    assert _const_phase_flagged(late, 20)
+    assert _const_phase_flagged(at(20, 21), 21)
+    assert not _const_phase_flagged(at(19, 21), 21)
+    assert _const_phase_flagged(at(20, fill=float('inf')), 20)
+    assert _const_phase_flagged([1.0] * 18 + [0.5, float('nan')], 20)
+    assert _const_phase_flagged([1.0] * 18 + [0.5, None], 20)
+    assert not _const_phase_flagged([1.0] * 10 + [None] * 10, 20)
+    assert not _const_phase_flagged([1.0] * 10, 20)
+    assert not _const_phase_flagged(None, 20)
+    assert _const_phase_flagged(np.array(at(19)), 20)    # array curve
+    assert not _const_phase_flagged(np.array([]), 20)
+    for epochs in (None, float('nan')):                 # as _flagged
+        assert not _const_phase_flagged(at(19), epochs)
 
 
 # --- spec ---------------------------------------------------------------------

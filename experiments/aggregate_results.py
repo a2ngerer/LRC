@@ -89,7 +89,10 @@ Optional sections:
                    Bonferroni within the family and F3-wide (sensitivity),
                    records outside the seed list counted, an arm at the
                    floor in at least 30 % of its seeds floor-bound (F-9),
-                   reading incomplete/floor-bound/PASS/FAIL;
+                   reading incomplete/floor-bound/PASS/FAIL; descriptive
+                   columns entering no reading: the family D seed and
+                   crossed intervals (E17), diverged and other-label counts
+                   per arm, convergence flags on C and F (F-5);
                    <out>/f3_families.csv and <out>/f3_pa_fits.csv (both
                    Person Activity endpoint fields per fit, E14)
   --lambda-grid DIR  the vote-lambda grid at fixed weights (#137): every
@@ -2639,37 +2642,43 @@ def learning_success(v, diverged, threshold) -> bool:
 
 
 def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
-    """(fits, outside) of one F3 arm. Every record in its paths with the
-    arm label must carry a protocol_version the arm lists, whatever its
+    """(fits, outside, other) of one F3 arm. Every record in its paths with
+    the arm label must carry a protocol_version the arm lists, whatever its
     seed (_check_protocol); a record whose seed is not in the test's seed
-    list is not used, its seed goes to outside. fits: one _sequence_row per
-    used record with the endpoint as metric (Person Activity: the registry
-    field, both F3_PA_FIELDS as columns; a diverged fit = non-finite
-    endpoint; the crossed interval only on the best-validation field its
-    confusions belong to), below and floor
-    (_floor_mark on that metric), success (with a registry success rule),
-    data_key, width_matched, param_budget and protocol_version; an empty
-    frame when no listed seed has a record. Two records of one key raise
-    SystemExit."""
+    list is not used, its seed goes to outside. other: {label: count} of the
+    records of the test's task (and system) with an F3 stamp and another
+    arm label, whatever their seed (not used). fits: one _sequence_row
+    (curves=True, training_diverged None read as False) per used record
+    with the endpoint as metric (Person Activity: the registry field, both
+    F3_PA_FIELDS as columns; a diverged fit = non-finite endpoint; the
+    crossed interval only on the best-validation field its confusions
+    belong to), below and floor (_floor_mark on that metric), success (with
+    a registry success rule), data_key, width_matched, param_budget and
+    protocol_version; an empty frame when no listed seed has a record. Two
+    records of one key raise SystemExit."""
     task, endpoint = entry['task'], entry['endpoint']
     runner = 'pa' if task == 'pa' else 'lv'
     label, versions = arm['label'], arm['protocol_version']
     name = f'{test}.{side} ({label})'
-    rows, outside = [], []
+    rows, outside, other = [], [], defaultdict(int)
     for path in _record_files(arm['paths']):
         with open(path, encoding='utf-8') as f:
             r = json.load(f)
         if (not isinstance(r, dict) or _record_task(r) != runner
-                or (runner == 'lv' and r.get('system') != task)
-                or arm_label(r) != label):
+                or (runner == 'lv' and r.get('system') != task)):
             continue
         eff = (r.get('config') or {}).get('effective') or {}
+        if arm_label(r) != label:
+            if str(eff.get('protocol_version') or '').startswith('F3-'):
+                other[arm_label(r)] += 1
+            continue
         _check_protocol(path, eff, versions, name)
         if r.get('seed') not in seeds:
             outside.append(r.get('seed'))
             continue
-        row = _sequence_row(path, r, runner,
+        row = _sequence_row(path, r, runner, curves=True,
                             fields=(endpoint,) if runner == 'pa' else ())
+        row['training_diverged'] = bool(row['training_diverged'])
         if runner == 'pa':
             v = row[endpoint]
             v = float('nan') if v is None else float(v)
@@ -2683,8 +2692,7 @@ def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
         if 'success' in entry:
             rule, t = entry['success']
             row['success'] = learning_success(
-                row['metric'],
-                row['diverged'] or bool(r.get('training_diverged')),
+                row['metric'], row['diverged'] or row['training_diverged'],
                 t if rule == 'threshold' else floor + t)
         rows.append({**row, 'width_matched': _width_matched(r),
                      'data_key': eff.get('split_seed' if runner == 'pa'
@@ -2698,7 +2706,7 @@ def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
         if not dup.empty:
             raise SystemExit(f'two records of {name} and one '
                              f'{"/".join(key)}: ' + ', '.join(dup['file']))
-    return df, outside
+    return df, outside, dict(other)
 
 
 def _config_values(d, field):
@@ -2718,12 +2726,81 @@ def _check_match(p, fields, name):
                              f'{bad}')
 
 
-def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',)):
+def _const_phase_flagged(curve, epochs) -> bool:
+    """F-5: the argmin of val_loss_curve over epochs epochs // 2 + 1 to
+    epochs (1-based; the constant phase of mixed forcing) lies at an epoch
+    >= CONVERGED x epochs. Non-finite values are ignored; a window without
+    a finite value, or a missing or non-finite epochs, is not flagged."""
+    if epochs is None or not np.isfinite(float(epochs)):    # as _flagged
+        return False
+    e = int(epochs)
+    w = np.asarray([np.nan if v is None else v for v in (
+        [] if curve is None else curve)[e // 2:e]], float)
+    ok = np.isfinite(w)
+    return bool(ok.any() and e // 2 + 1 + int(np.argmin(
+        np.where(ok, w, np.inf))) >= CONVERGED * e)
+
+
+def _family_d_intervals(p) -> dict:
+    """The interval columns of a family D row from its paired frame (E17):
+    the seed interval (bootstrap_median_ci of v_a - v_b) and the crossed
+    interval (crossed_median_diff_ci over seeds x test recordings) of the
+    median paired difference, percentile bootstrap, 95 %, unadjusted. The
+    crossed one is NaN with crossed_ci_note when a pair has a diverged fit
+    or the confusion matrices differ in shape; no fallback. The null flag
+    reads the unrounded seed bounds only; median_diff_lo, median_diff_hi
+    and ci_units stay empty."""
+    lo, hi = bootstrap_median_ci(p['v_a'].to_numpy(float)
+                                 - p['v_b'].to_numpy(float), N_BOOT)
+    div = [f'seed {s} ({k.upper()})' for s, da, db in zip(
+        p['seed'], p['diverged_a'], p['diverged_b'])
+        for k, dv in (('a', da), ('b', db)) if dv]
+    cms = (*p['confusion_a'], *p['confusion_b'])
+    why = ([f'diverged fits: {", ".join(div)}'] if div else []) + (
+        ['confusion matrices of different shapes']
+        if len({c.shape for c in cms}) > 1 else [])
+    c_lo, c_hi = ((np.nan, np.nan) if why else crossed_median_diff_ci(
+        np.stack(p['confusion_a']), np.stack(p['confusion_b']), N_BOOT))
+    zero = bool(lo <= 0 <= hi)
+    return {'median_diff_seed_lo': lo, 'median_diff_seed_hi': hi,
+            'median_diff_crossed_lo': c_lo, 'median_diff_crossed_hi': c_hi,
+            'seed_ci_includes_zero': zero, 'ci_includes_zero': zero,
+            'crossed_ci_note': ('crossed interval not available: '
+                                + '; '.join(why)) if why else None,
+            'median_diff_lo': None, 'median_diff_hi': None, 'ci_units': None}
+
+
+def _interval_note(row):
+    """The interval sentence of a family D row read PASS or FAIL (E17), by
+    reading and seed_ci_includes_zero; None on PASS with the seed interval
+    off 0 (the PASS wording is protocol text). The raw threshold is
+    ALPHA / m (0.025 at m = 2)."""
+    t, zero = f"{ALPHA / row['m']:g}", row['seed_ci_includes_zero']
+    if row['reading'] == 'FAIL':
+        return 'not shown, no equivalence; ' + (
+            f"median paired differences outside "
+            f"[{row['median_diff_seed_lo']:+.4f}, "
+            f"{row['median_diff_seed_hi']:+.4f}] macro-F1 (unadjusted 95 % "
+            'seed interval) are not compatible with these seeds on this '
+            'split' if zero else 'The seed interval (unadjusted 95 %) '
+            'excludes 0, but the registered test is not significant at its '
+            f'threshold (exact p ≥ {t}). The test decides.')
+    return ('The seed interval (unadjusted 95 %) contains 0, while the '
+            'registered test is significant at its threshold (exact p < '
+            f'{t}). The test decides.' if zero else None)
+
+
+def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',),
+             other=None):
     """One F3 test row (F3_COLUMNS) from the fits of arm A and arm B on the
     test's seed list, paired on key (seed; family E pairs on fold and seed,
     #133). The deciding p: the exact permutation p (p_perm_adj, F3-wide
     p_perm_adj_f3) on a Wilcoxon row (E15), the exact McNemar p (p_adj,
-    p_adj_f3) on a McNemar row, which carries no Wilcoxon-type columns."""
+    p_adj_f3) on a McNemar row, which carries no Wilcoxon-type columns.
+    other: {side: {label: count}} of _f3_arm. The descriptive columns
+    (family D intervals and interval_note, diverged and other-label counts,
+    the convergence flags of families C and F) enter no reading; p_perm
+    and the intervals are also reported on a budget-excluded row."""
     kind, side = entry['kind'], entry['side']
     row = {'family': entry['family'], 'test': test,
            'registry_status': entry['status'], 'task': entry['task'],
@@ -2733,13 +2810,25 @@ def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',)):
            'outside_list': '; '.join(f'{s}: seeds {_seed_runs(set(o))}'
                                      for s, o in outside.items() if o)
            or None, 'floor_rule': entry['floor']}
-    marks = {}
+    marks, other = {}, other or {}
     for s, d in (('a', a), ('b', b)):
         k, n = (int(d['below'].sum()), len(d)) if len(d) else (0, 0)
         row[f'floor_{s}'] = f'{k}/{n}'
         marks[s] = floor_share_bound(k, n)
         for f in F3_CONFIG_FIELDS:
             row[f'{f}_{s}'] = _config_values(d, f)
+        # every fit of the arm on the seed list, paired or not
+        row[f'n_diverged_{s}'] = int((d['diverged'] | d['training_diverged'])
+                                     .sum()) if n else 0
+        o = other.get(s) or {}
+        row[f'n_other_label_{s}'] = sum(o.values())
+        row[f'other_labels_{s}'] = '; '.join(
+            f'{lab} ({c})' for lab, c in sorted(o.items())) or None
+        if entry['family'] in ('C', 'F'):            # F-5
+            row[f'n_flag_whole_{s}'] = _flagged(d) if n else 0
+            row[f'n_flag_const_{s}'] = sum(map(
+                _const_phase_flagged, d['val_loss_curve'], d['epochs'])) \
+                if n else 0
     row['floor_bound'] = marks['a'] or marks['b']
     row['floor_bound_arms'] = ','.join(
         s.upper() for s in 'ab' if marks[s]) or None
@@ -2768,7 +2857,10 @@ def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',)):
             n_positive=int((x - y > 0).sum()),
             ci_includes_zero=(bool(st['median_diff_lo'] <= 0
                                    <= st['median_diff_hi'])
-                              if entry['task'] == 'pa' else None))
+                              if entry['task'] == 'pa' else None),
+            p_perm=permutation_p(x, y, side))
+        if entry['family'] == 'D':
+            row.update(_family_d_intervals(p))
     if n and 'success' in entry:
         sa, sb = p['success_a'].to_numpy(bool), p['success_b'].to_numpy(bool)
         _, n10, n01 = mcnemar_exact(sa, sb)
@@ -2793,9 +2885,8 @@ def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',)):
             p_raw = 1.0
         sign, ranks = _signed_ranks(x, y)
         effect = float((sign * ranks).sum())          # W+ - W-
-        p_perm = permutation_p(x, y, side)
-        row.update(method=method, p_perm=p_perm,
-                   p_perm_adj=min(1.0, m * p_perm),
+        p_perm = row['p_perm']
+        row.update(method=method, p_perm_adj=min(1.0, m * p_perm),
                    p_perm_adj_f3=min(1.0, m_f3 * p_perm),
                    w_plus_minus_w_minus=effect)
     row.update(p_raw=p_raw, p_adj=min(1.0, m * p_raw),
@@ -2818,6 +2909,8 @@ def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',)):
         if kind != 'mcnemar':
             row['median_sign_differs'] = bool(np.sign(row['median_diff'])
                                               != np.sign(effect))
+    if entry['family'] == 'D' and row['reading'] in ('PASS', 'FAIL'):
+        row['interval_note'] = _interval_note(row)
     return row
 
 
@@ -2833,7 +2926,15 @@ F3_COLUMNS = ['family', 'test', 'registry_status', 'task', 'endpoint',
               'n_nonfinite', 'n10', 'n01', 'rate_a', 'rate_b', 'rate_diff',
               'floor_rule', 'floor_a', 'floor_b', 'floor_bound',
               'floor_bound_arms',
-              *(f'{f}_{s}' for f in F3_CONFIG_FIELDS for s in 'ab')]
+              *(f'{f}_{s}' for f in F3_CONFIG_FIELDS for s in 'ab'),
+              # descriptive, entering no reading (#151)
+              'median_diff_seed_lo', 'median_diff_seed_hi',
+              'median_diff_crossed_lo', 'median_diff_crossed_hi',
+              'seed_ci_includes_zero', 'crossed_ci_note', 'interval_note',
+              'n_diverged_a', 'n_diverged_b', 'n_other_label_a',
+              'n_other_label_b', 'other_labels_a', 'other_labels_b',
+              'n_flag_whole_a', 'n_flag_whole_b', 'n_flag_const_a',
+              'n_flag_const_b']
 
 
 F3_FIT_COLUMNS = ['tests', 'arm', 'seed', *F3_PA_FIELDS,
@@ -2880,17 +2981,21 @@ def f3_family_blocks(spec) -> tuple[pd.DataFrame, pd.DataFrame]:
             continue
         seeds = spec[test]['seeds']
         m = sum(t in spec for t in F3_FAMILIES[entry['family']]['tests'])
-        (a, out_a), (b, out_b) = (
+        (a, out_a, oth_a), (b, out_b, oth_b) = (
             _f3_arm(test, side, entry, spec[test][side], seeds, draws)
             for side in 'ab')
         if entry['task'] == 'pa':
             fits += [d.assign(test=f'{test}.{s}')
                      for s, d in (('a', a), ('b', b)) if len(d)]
         rows.append(_f3_test(test, entry, m, len(spec), a, b, seeds,
-                             {'a': out_a, 'b': out_b}))
+                             {'a': out_a, 'b': out_b},
+                             other={'a': oth_a, 'b': oth_b}))
+    counts = ['n10', 'n01', 'n_positive',
+              *(c for c in F3_COLUMNS if c.startswith(('n_diverged_',
+                                                       'n_other_label_',
+                                                       'n_flag_')))]
     return (pd.DataFrame(rows).reindex(columns=F3_COLUMNS).astype(
-        {'n10': 'Int64', 'n01': 'Int64', 'n_positive': 'Int64'}),
-        _f3_pa_fits(fits))
+        dict.fromkeys(counts, 'Int64')), _f3_pa_fits(fits))
 
 
 def f3_report(blocks, pa_fits) -> str:
@@ -2921,6 +3026,13 @@ def f3_report(blocks, pa_fits) -> str:
         fl = '; '.join([*([b['direction']] if isinstance(b['direction'], str)
                           else []), *(t for k, t in flags if yes(b[k]))])
         med = ('—' if pd.isna(b['median_diff']) else
+               f"{b['median_diff']:+.4f} (seed "
+               f"[{b['median_diff_seed_lo']:+.4f}, "
+               f"{b['median_diff_seed_hi']:+.4f}]; crossed " + (
+                   '—' if pd.isna(b['median_diff_crossed_lo']) else
+                   f"[{b['median_diff_crossed_lo']:+.4f}, "
+                   f"{b['median_diff_crossed_hi']:+.4f}]") + ')'
+               if b['family'] == 'D' else
                f"{b['median_diff']:+.4g} [{b['median_diff_lo']:+.4g}, "
                f"{b['median_diff_hi']:+.4g}] ({b['ci_units']})")
         win = ('—' if pd.isna(b['p_a_gt_b']) else
@@ -2941,6 +3053,22 @@ def f3_report(blocks, pa_fits) -> str:
             f"| {b['floor_b']} | "
             + (f"YES ({b['floor_bound_arms']})" if yes(b['floor_bound'])
                else 'no') + f" | {b['n_nonfinite']} |")
+    d_rows = blocks[blocks['family'] == 'D'].to_dict('records')
+    if d_rows:
+        notes = [f"- {b['test']}: " + '; '.join(
+            t for t in (b['interval_note'], b['crossed_ci_note'])
+            if isinstance(t, str)) for b in d_rows
+            if isinstance(b['interval_note'], str)
+            or isinstance(b['crossed_ci_note'], str)]
+        lines += ['', 'Seed interval: percentile bootstrap of the median '
+                  'paired difference over the 20 seeds, 10 000 draws, '
+                  'generator seed 0, 95 %, not adjusted for the two '
+                  'contrasts, test recordings held fixed. Crossed interval: '
+                  'the same procedure, additionally resampling the five test '
+                  'recordings. Both intervals describe; the registered test '
+                  'decides at raw p < 0.025.', '',
+                  'Family D interval notes (E17):' + ('' if notes
+                                                      else ' none.'), *notes]
     lines += ['', '| Test | ' + ' | '.join(
         f'{f} A | {f} B' for f in F3_CONFIG_FIELDS) + ' |',
         '|' + '---|' * (1 + 2 * len(F3_CONFIG_FIELDS))]
@@ -2954,6 +3082,30 @@ def f3_report(blocks, pa_fits) -> str:
                   f"{t} {o} ({n})" for t, o, n in zip(
                       outside['test'], outside['outside_list'],
                       outside['n_outside_list'])) or 'none') + '.']
+    lines += ['', "Records under an arm's paths with an F3 stamp and another "
+              'arm label (counted, not used):',
+              *(f"- {b['test']} {s}: " + (
+                  b[f'other_labels_{s}'] if isinstance(
+                      b[f'other_labels_{s}'], str) else 'none')
+                for b in blocks.to_dict('records') for s in 'ab')]
+
+    def cnt(v):
+        return '—' if pd.isna(v) else str(v)
+
+    lines += ['', 'Diverged fits and convergence flags per arm (descriptive, '
+              'entering no reading): diverged = diverged or training_diverged '
+              'over all fits of the arm on the seed list (a training_diverged '
+              'fit with a finite endpoint keeps its best-epoch value); flag '
+              f'whole = best_val_epoch >= {CONVERGED:g} x epochs (F2 rule); '
+              'flag const = the argmin of val_loss_curve over epochs E // 2 + '
+              f'1 to E (the constant phase of mixed forcing) at an epoch >= '
+              f'{CONVERGED:g} x E (F-5, families C and F only).', '',
+              '| Test | diverged A | diverged B | flag whole A | flag whole B '
+              '| flag const A | flag const B |', '|' + '---|' * 7,
+              *('| ' + ' | '.join([b['test'], *(cnt(b[f'{c}_{s}']) for c in (
+                  'n_diverged', 'n_flag_whole', 'n_flag_const')
+                  for s in 'ab')]) + ' |'
+                for b in blocks.to_dict('records'))]
     differ = pa_fits[pa_fits['success_fields_differ'].eq(True)]
     lines += ['', 'Person Activity fits whose test_macro_f1 and '
               'test_macro_f1_last lie on different sides of '
@@ -2978,7 +3130,8 @@ def f3_report(blocks, pa_fits) -> str:
               'nothing; flag "p of wilcoxon_test would decide otherwise" '
               '(possible only with ties or zero differences). The deciding p '
               'of the McNemar row (T-A1) is the exact McNemar p on the '
-              'learning success (p, p adj, p adj F3). success A/B: fits with '
+              'learning success (p, p adj, p adj F3; reading and significant '
+              'read p adj, significant_f3 p adj F3). success A/B: fits with '
               'learning success (Person Activity: endpoint >= the registry '
               'threshold; rollouts: VPT-multi median >= the fit\'s own floor '
               '+ 2; a diverged or non-finite fit fails). floor A/B: seeds '
