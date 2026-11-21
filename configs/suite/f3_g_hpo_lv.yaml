@@ -1,8 +1,8 @@
 # F3 family G, HPO of the new arm (protocol F3 sections 2.7, 4; #156):
-# cfc_lrc/cncp_ff on periodic Lotka-Volterra, grid HPO on the tuning seeds 100 and 101.
-# 11 planned fits, 1 array task. Its selection feeds f3_g_lv_cncp_ff.yaml
-# (fallback without a winner: f3_g_lv_cncp_ff_fb.yaml). Production, no
-# condition.
+# cfc_lrc/cncp_ff on periodic Lotka-Volterra, grid HPO on the tuning seeds 100
+# and 101. 11 planned fits, 1 array task. Its selection feeds
+# f3_g_lv_cncp_ff.yaml (fallback without a winner: f3_g_lv_cncp_ff_fb.yaml).
+# Production, no condition.
 #   ./cluster/submit_suite.sh --wandb <submit copy of f3_g_hpo_lv.yaml> f3-g-hpo-lv
 task: lv
 stage: hpo

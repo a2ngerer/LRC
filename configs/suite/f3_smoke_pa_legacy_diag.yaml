@@ -1,6 +1,6 @@
-# F3 smoke SW1 (protocol F3 section 7; #156): lrc and lrc_cal on ncp under rmsprop_legacy with the RQ4 diagnostics,
-# 3 epochs, seed 0, fixed lr 0.001 without clipping, two per GPU (heavy).
-# 2 lines, 1 array task.
+# F3 smoke SW1 (protocol F3 section 7; #156): lrc and lrc_cal on ncp under
+# rmsprop_legacy with the RQ4 diagnostics, 3 epochs, seed 0, fixed lr 0.001
+# without clipping, two per GPU (heavy). 2 lines, 1 array task.
 #   BENCH=00_canary ./cluster/submit_suite.sh --wandb <submit copy of f3_smoke_pa_legacy_diag.yaml> f3-smoke-pa-legacy-diag
 task: pa
 stage: final

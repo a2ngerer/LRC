@@ -1,7 +1,7 @@
-# F3 family G (protocol F3 section 2.7; #156): cfc_lrc/cncp on periodic Lotka-Volterra,
-# seeds 10-19, lr and clip of the F1 selection (hpo_dir: copies of the F1
-# lv_hpo selection files). 10 fits, 2 array tasks (five per GPU).
-# Production, no condition.
+# F3 family G (protocol F3 section 2.7; #156): cfc_lrc/cncp on periodic
+# Lotka-Volterra, seeds 10-19, lr and clip of the F1 selection (hpo_dir:
+# copies of the F1 lv_hpo selection files). 10 fits, 2 array tasks (five per
+# GPU). Production, no condition.
 #   ./cluster/submit_suite.sh --wandb <submit copy of f3_g_lv_cncp.yaml> f3-g-lv-cncp
 task: lv
 stage: final

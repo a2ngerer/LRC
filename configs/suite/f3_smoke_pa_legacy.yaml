@@ -1,10 +1,12 @@
-# F3 smoke SW1 (protocol F3 section 7; #156): lrc, lrc_cal and lrc_init on ncp under rmsprop_legacy,
-# 3 epochs, seed 0, fixed lr 0.001 without clipping, two per GPU (heavy).
+# F3 smoke SW1 (protocol F3 section 7; #156): lrc, lrc_cal and lrc_init on
+# ncp under rmsprop_legacy, 3 epochs, seed 0, fixed lr 0.001 without clipping,
+# two per GPU (heavy).
 # 3 lines, 2 array tasks.
 # Submitted twice under --deterministic into two labels and run folders
 # (f3-smoke-pa-legacy-1, f3-smoke-pa-legacy-2); a third submit copy without
 # --deterministic runs only if a legacy smoke aborts under it.
-#   BENCH=00_canary ./cluster/submit_suite.sh --wandb <submit copy of f3_smoke_pa_legacy.yaml> f3-smoke-pa-legacy
+#   BENCH=00_canary ./cluster/submit_suite.sh --wandb configs/suite/f3_smoke_pa_legacy.yaml f3-smoke-pa-legacy-1
+#   BENCH=00_canary ./cluster/submit_suite.sh --wandb configs/suite/f3_smoke_pa_legacy.yaml f3-smoke-pa-legacy-2
 task: pa
 stage: final
 cells:
