@@ -1,0 +1,19 @@
+# F3 family C (protocol F3 section 2.3; #156): cfc_lrc, gru and lstm on ncp,
+# periodic Lotka-Volterra, seeds 10-29, lr and clip of the F1 selections
+# (hpo_dir: copies of the F1 lv_hpo selection files). 60 fits, 12 array tasks
+# (five per GPU). Production, no condition.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_c_lv.yaml> f3-c-lv
+task: lv
+stage: final
+cells:
+  cfc_lrc: [ncp]
+  gru: [ncp]
+  lstm: [ncp]
+param_budget: 4000
+seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: <selection copies>/lv_hpo
+cluster: {runs_per_gpu: 5, walltime: "04:00:00"}

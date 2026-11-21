@@ -1,0 +1,16 @@
+# F3 diagnostics check SW1 (protocol F3 section 2.1; #156): lrc_cal/ncp on
+# Person Activity, seed 0, 50 epochs, fixed lr 0.001 without clipping, without
+# the RQ4 diagnostics. 1 fit, 1 array task.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_diag_pa_cal50.yaml> f3-diag-pa-cal50
+task: pa
+stage: final
+cells:
+  lrc_cal: [ncp]
+param_budget: 30000
+seeds: [0]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 1, walltime: "06:00:00"}

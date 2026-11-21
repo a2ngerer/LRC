@@ -1,0 +1,16 @@
+# F3 guard SW1 (protocol F3 section 3.3; #156): cfc_lrc/cncp on periodic
+# Lotka-Volterra, seed 0, lr and clip of the F1 selection. 1 fit, 1 array
+# task.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_guard_g_lv.yaml> f3-guard-g-lv
+task: lv
+stage: final
+cells:
+  cfc_lrc: [cncp]
+param_budget: 4000
+seeds: [0]
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: <selection copies>/lv_hpo
+cluster: {runs_per_gpu: 1, walltime: "04:00:00"}

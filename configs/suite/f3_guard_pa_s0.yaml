@@ -1,0 +1,17 @@
+# F3 guard SW1 (protocol F3 section 3.3; #156): gru/ncp and cfc_lrc/dense3 on
+# Person Activity, seed 0, lr and clip of the F1 selections. 2 fits, 1 array
+# task.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_guard_pa_s0.yaml> f3-guard-pa-s0
+task: pa
+stage: final
+cells:
+  gru: [ncp]
+  cfc_lrc: [dense3]
+param_budget: 30000
+seeds: [0]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+hpo_dir: <selection copies>/pa_hpo
+cluster: {runs_per_gpu: 2, walltime: "06:00:00"}

@@ -67,6 +67,35 @@ out="$(DP_LV_ARGS="--epochs 3" ./cluster/submit_determinism_probe.sh -n smoke 2>
 check determinism "$out" "00_canary/runs/${today}_smoke" "DP_LV_ARGS='--epochs 3'" \
     "cluster/determinism_probe.sbatch" "test -f wk/code/data/person/ConfLongDemo_JSI.txt"
 
+out="$(EX_MODE=ablation EX_RESULTS='../benchmarks/a/runs/r/results/cfc_lrc_cncp_seed*.json ../b/*.json' EX_DATA_PATH=data/x.txt ./cluster/submit_eval_x.sh -n f3-x1-ablation 2>&1)"
+check eval_x_ablation "$out" "00_canary/runs/${today}_f3-x1-ablation" "cluster/eval_x.sbatch" \
+    "EX_MODE='ablation' EX_RESULTS='../benchmarks/a/runs/r/results/cfc_lrc_cncp_seed*.json ../b/*.json' EX_DATA_PATH='data/x.txt' RUN_DIR=" \
+    "fits: 1 job, eval-only" "output: results/cncp_ablation.csv (--out)" "test -f wk/code/data/person/ConfLongDemo_JSI.txt"
+
+out="$(BENCH=01_lotka_volterra EX_MODE=gains EX_RESULTS='../x/*_seed*.json' ./cluster/submit_eval_x.sh -n f3-x2-gains 2>&1)"
+check eval_x_gains "$out" "01_lotka_volterra/runs/${today}_f3-x2-gains" "cluster/eval_x.sbatch" \
+    "EX_MODE='gains' EX_RESULTS='../x/*_seed*.json' RUN_DIR=" "results/cncp_paths.csv"
+
+out="$(EX_MODE=gains EX_RESULTS=$'\n../x/*_seed*.json\n../y/*.json' ./cluster/submit_eval_x.sh -n f3-x2-gains 2>&1)"
+check eval_x_multiline "$out" "EX_RESULTS='../x/*_seed*.json ../y/*.json' RUN_DIR="
+
+eval_x_rejects() {  # eval_x_rejects <name> <message> <env assignment>... [-- <label>]
+    local name="$1" msg="$2" out label=smoke; shift 2
+    local env_args=()
+    while [[ $# -gt 0 && "$1" != -- ]]; do env_args+=("$1"); shift; done
+    [[ "${1:-}" == -- ]] && label="${2:-}"
+    # shellcheck disable=SC2086  # an empty label must vanish from the call
+    if out="$(env "${env_args[@]}" ./cluster/submit_eval_x.sh -n $label 2>&1)" \
+            || grep -q "run folder" <<<"$out" || ! grep -q "$msg" <<<"$out"; then
+        echo "FAIL [eval_x_$name]: accepted ${env_args[*]}, got past the check or no '$msg'"; fail=1
+    fi
+}
+eval_x_rejects mode "must be ablation or gains" EX_MODE=bogus EX_RESULTS=x.json
+eval_x_rejects empty "is empty" EX_MODE=gains "EX_RESULTS= "
+eval_x_rejects quote "single quote" EX_MODE=gains "EX_RESULTS=a'b.json"
+eval_x_rejects label "label is required" EX_MODE=gains EX_RESULTS=x.json -- setup
+eval_x_rejects data_path "ablation only" EX_MODE=gains EX_RESULTS=x.json EX_DATA_PATH=d.txt
+
 out="$(GH_TASK=co GH_CELL=cfc_lrc GH_WIRING=ncp GH_EXTRA="--grid-clip off --n-columns 3" ./cluster/submit_grid_hpo.sh -n smoke 2>&1)"
 check grid_hpo_co "$out" "04_column_voting/runs/${today}_smoke" "GH_TASK='co'" \
     "test -f wk/code/data/person/ConfLongDemo_JSI.txt"
@@ -102,7 +131,8 @@ if out="$(./cluster/submit_committee.sh -n 2>&1)"; then
 fi
 
 for f in cluster/lotka_volterra.sbatch cluster/person_activity.sbatch cluster/committee.sbatch \
-         cluster/grid_hpo.sbatch cluster/suite_array.sbatch cluster/determinism_probe.sbatch; do
+         cluster/grid_hpo.sbatch cluster/suite_array.sbatch cluster/determinism_probe.sbatch \
+         cluster/eval_x.sbatch; do
     if grep -q 'outputs/slurm\|results/\(person_activity\|lotka_volterra\|committee\)' "$f"; then
         echo "FAIL [$f]: still writes under the code tree"; fail=1
     fi
@@ -172,5 +202,32 @@ suite_task 1 nspecs_low  1 3 4 2    # slice 2..3, only index 2 < N_SPECS
 suite_task 0 partial     1 3 3 2    # last slice holds one row, N_SPECS = rows
 grep -q "skip\] line 3" "$tmp/suite_skipdone/logs/run-7_idx3.log" \
     || { echo "FAIL [suite_slice_skipdone]: runner was not started"; fail=1; }
+
+# eval_x.sbatch (#156): a fake uv logs every call and prints the eval call one
+# argument per bracket; the globs reach the script unexpanded (all lines of
+# EX_RESULTS), a bad EX_MODE or EX_RESULTS stops before any uv call.
+mkdir -p "$tmp/ex/bin" "$tmp/ex/home"
+printf '#!/usr/bin/env bash\necho "$*" >>"%s"\n[[ "$*" == *eval_cncp* ]] || exit 0\nprintf "[%%s]" "$@"; echo\n' \
+    "$tmp/ex/uv.log" >"$tmp/ex/bin/uv"
+chmod +x "$tmp/ex/bin/uv"
+eval_x_job() {  # eval_x_job <env assignment>...: runs the sbatch, prints its output
+    rm -f "$tmp/ex/uv.log"
+    env HOME="$tmp/ex/home" PATH="$tmp/ex/bin:$PATH" RUN_DIR="$tmp/ex/run" "$@" \
+        bash cluster/eval_x.sbatch 2>&1
+}
+out="$(eval_x_job EX_MODE=ablation "EX_RESULTS=cluster/*.sh  cluster/*.sbatch" EX_DATA_PATH=d.txt)"
+check eval_x_job_ablation "$out" "[experiments/eval_cncp_ablation.py][--results][cluster/*.sh][cluster/*.sbatch][--out][$tmp/ex/run/results/cncp_ablation.csv][--data-path][d.txt]"
+out="$(eval_x_job EX_MODE=ablation "EX_RESULTS=cluster/*.sh")"
+check eval_x_job_ablation_nodata "$out" "[experiments/eval_cncp_ablation.py][--results][cluster/*.sh][--out][$tmp/ex/run/results/cncp_ablation.csv]"
+grep -q -- "--data-path" <<<"$out" && { echo "FAIL [eval_x_job_ablation_nodata]: --data-path without EX_DATA_PATH"; fail=1; }
+out="$(eval_x_job EX_MODE=gains "EX_RESULTS=cluster/*.sh
+cluster/*.sbatch")"
+check eval_x_job_gains "$out" "[experiments/eval_cncp_gains.py][--results][cluster/*.sh][cluster/*.sbatch][--out][$tmp/ex/run/results/cncp_gains.csv][--paths][$tmp/ex/run/results/cncp_paths.csv]"
+for bad in "EX_MODE=bogus EX_RESULTS=x.json" "EX_MODE=gains EX_RESULTS="; do
+    # shellcheck disable=SC2086  # the assignments split on the space on purpose
+    if out="$(eval_x_job $bad)" || [[ -e "$tmp/ex/uv.log" ]] || ! grep -q FATAL <<<"$out"; then
+        echo "FAIL [eval_x_job]: '$bad' ran, called uv, exited 0 or printed no FATAL"; fail=1
+    fi
+done
 
 if [[ $fail -eq 0 ]]; then echo "launchers: OK"; else exit 1; fi

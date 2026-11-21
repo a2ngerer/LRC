@@ -676,3 +676,85 @@ set both placeholders). Its CSVs go to `aggregate_results.py --contrasts
 --robustness`, which then reports the seeds x recordings interval next to the
 seed interval. The YAML names the old seed streams (`seed_streams: v1`, #101);
 Person Activity has no rollout draw.
+
+### F3 campaigns and submit waves (#156)
+
+Protocol F3 runs from the 59 YAMLs `configs/suite/f3_*.yaml`: 29 production
+campaigns (580 planned fits: 525 finals and 55 hpo fits; 307 array tasks), 7
+conditional ones (the two diagnostics side-arm YAMLs and five fallbacks, submitted only
+under the condition in their comment block; a fallback replaces its regular
+final), 2 eval YAMLs (the lambda grids) and 21 SW1 YAMLs (smokes, time probe,
+guards, the diagnostics check, the lambda probe). `tests/experiments/test_f3_manifest.py`
+pins counts, arm matrix, flags and array tasks. Each YAML goes into its own
+run folder; the label is the YAML stem with dashes (`f3_a_rms_s10` ->
+`f3-a-rms-s10`):
+
+```bash
+./cluster/submit_suite.sh --wandb <submit copy of configs/suite/f3_<...>.yaml> <label>
+```
+
+Smokes and time probes go to `BENCH=00_canary`. `f3_smoke_pa_legacy` is
+submitted twice under `--deterministic` into two labels and run folders
+(`f3-smoke-pa-legacy-1`, `-2`); a third copy without `--deterministic` only if
+a legacy smoke aborts under it.
+
+Submit copies. The tagged YAMLs hold placeholders (`<...>`). A submit copy
+(outside the repository, next to the run notes) may differ from its tagged YAML
+only in `hpo_dir` (an F1 selection: the folder with the copies of the F1
+selection files, real files, no symlinks; a final after an F3 HPO chain: that
+fetched HPO run), `sources[].records_dir` (a cluster path
+`../benchmarks/<bench>/runs/<run>/results`), `cluster` / `heavy.cluster`, and
+the removal of `--diagnostics` or `--deterministic` after a protocol addendum.
+
+| wave | part | YAMLs | array tasks |
+|---|---|---|---|
+| SW1 | - | the 21 SW1 YAMLs (`f3_smoke_pa_legacy` twice; `f3_diag_pa_cal50_d` only if `f3_diag_pa_cal50` deviates) | 28 (29) |
+| SW2 | a | `f3_f_hpo_duffing_init` 2, `f3_d_hpo_eps1` 1, `f3_c_lv` 12, `f3_d_pa_inner_outer` 14, `f3_b_co_k30` 20 | 49 |
+| SW2 | b | `f3_a_legacy_s10` | 30 |
+| SW2 | c | `f3_a_rms_s10` | 30 |
+| SW3 | a | `f3_d_pa_eps1` 7, `f3_f_duffing_lrc`, `f3_f_duffing_init`, `f3_f_duffing_cal` 4 each | 19 |
+| SW3 | b | `f3_a_legacy_s20`, `f3_a_rms_s20` (one after the other) | 30 + 30 |
+| SW3 | c | `f3_e_pa_fold0` ... `f3_e_pa_fold4` | 25 |
+| SW4 | a | `f3_e_foldcheck` 20, `f3_a_budget` 5, `f3_a_script` 5 | 30 |
+| SW4 | b | `f3_a_dose` 30, `f3_a_comp` 20 | 50 |
+| SW5 | - | `f3_x_lambda_f1` 2, `f3_x_lambda_f3b` 2, X2 1 | 5 |
+| G | - | `f3_g_hpo_lv` 1, `f3_g_hpo_pa` 1, `f3_g_lv_cncp` 2, `f3_g_pa_cncp` 4; then `f3_g_lv_cncp_ff` 2, `f3_g_pa_cncp_ff` 4 (or their fallbacks) | 8 + 6 |
+
+Production total 307 tasks (293 in SW2 to SW4, 14 in block G). At most 50
+array tasks per user, running ones included: check `squeue` before every
+submit; every part above fits on its own. Block G is a submit part of its own:
+the two hpo chains and the `cfc_lrc/cncp` finals first, the `cfc_lrc/cncp_ff`
+final of a task after the hpo chain of that task is fetched. The side arm and
+the fallbacks go into free slots under their conditions.
+
+Eval-only cNCP jobs (X1, X2). `cluster/submit_eval_x.sh` submits one job of
+`cluster/eval_x.sbatch` (one GPU, 08:00:00; the scripts write their CSV only at
+the end) into its own run folder, default `00_canary` (`BENCH` overrides).
+Mode and record globs come from the environment; `EX_RESULTS` holds the globs
+separated by blanks (no single quotes), relative to the code tree on the
+cluster, and they reach the script unexpanded:
+
+```bash
+# X1, path ablation: the F1 cfc_lrc/cncp finals on periodic Lotka-Volterra,
+# Duffing and Person Activity, seeds 0-9 (three globs)
+EX_MODE=ablation EX_RESULTS='../benchmarks/01_lotka_volterra/runs/<lv-final run>/results/cfc_lrc_cncp_seed*.json ../benchmarks/02_duffing/runs/<duffing-final run>/results/cfc_lrc_cncp_seed*.json ../benchmarks/03_person_activity/runs/<pa-final run>/results/cfc_lrc_cncp_seed*.json' \
+    ./cluster/submit_eval_x.sh f3-x1-ablation
+# X2, gain chains (stored rollout fits only; the script skips Person Activity)
+EX_MODE=gains EX_RESULTS='<globs>' ./cluster/submit_eval_x.sh f3-x2-gains
+```
+
+X2 reads the F1 Lotka-Volterra finals of `cfc_lrc` on `cncp`, `ncp` and
+`dense3` and of `lrc/ncp`, the F2 Lotka-Volterra finals of
+`cfc_lrc/ncp_random`, the F1 Duffing finals of `cfc_lrc` on `cncp`, `ncp` and
+`dense3`, of `lrc/ncp` and of `ltc/ncp`, and the `cfc_lrc/cncp_ff` records of
+the F3 block G finals on Lotka-Volterra, each through a glob
+`../benchmarks/<bench>/runs/<run>/results/<cell>_<wiring>_seed*.json`. X1
+writes `results/cncp_ablation.csv` (optional `EX_DATA_PATH` for
+`--data-path`, relative to the code tree on the cluster), X2 `results/cncp_gains.csv` and `results/cncp_paths.csv`, both
+only into their own run folder (the scripts refuse an `--out` inside a source
+folder). Both are submitted after the protocol freeze from the same code tree
+as the suite campaigns: X1 as one task in a free slot, X2 in SW5 after the
+block G finals are fetched. A requeue reruns the whole job. SW1 (28 tasks)
+must be finished before SW2a (49 tasks) is submitted.
+`-n` prints the run folder, the environment and the sbatch call without
+touching the cluster.

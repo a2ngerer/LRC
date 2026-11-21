@@ -1,0 +1,20 @@
+# F3 family A (protocol F3 section 2.1; #156): lrc, lrc_cal and lrc_init on
+# ncp under rmsprop_legacy, seeds 10-19, one fixed recipe (lr 0.001, no
+# clipping), with the RQ4 diagnostics. 30 fits, 30 array tasks (one fit per
+# GPU). The other optimizer and the other seed half are campaigns of their
+# own (result names carry no optimizer). Production, no condition.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_a_legacy_s10.yaml> f3-a-legacy-s10
+task: pa
+stage: final
+cells:
+  lrc: [ncp]
+  lrc_cal: [ncp]
+  lrc_init: [ncp]
+param_budget: 30000
+seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--optimizer, rmsprop_legacy, --deterministic, --diagnostics]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 1, walltime: "06:00:00"}

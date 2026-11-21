@@ -1,0 +1,16 @@
+# F3 smoke SW1 (protocol F3 section 7; #156): the three arms of
+# f3_b_co_k30.yaml at K = 30 with seed-following corruption draws, 3 epochs,
+# seed 1, fixed lr 0.001 without clipping. 3 lines, 1 array task.
+#   BENCH=00_canary ./cluster/submit_suite.sh --wandb <submit copy of f3_smoke_co.yaml> f3-smoke-co
+task: co
+stage: final
+arms:
+  ncp_cons: {cell: cfc_lrc, wiring: ncp, corruption_seed: seed}
+  avg_in: {cell: cfc_lrc, wiring: ncp, view_average: mean, corruption_seed: seed}
+  fault_mean: {cell: cfc_lrc, wiring: ncp, view_average: fault_mean, corruption_seed: seed}
+param_budget: 30000
+seeds: [1]
+epochs: 3
+extra_args: [--n-columns, 30, --backbone-layers, 1, --deterministic]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 3, walltime: "01:00:00"}
