@@ -401,7 +401,6 @@ def _co_arm(argv):
     return 'cons'
 
 
-
 def _label(name, task, argv):
     """Expected label of one runner or hpo line (test 7 a)."""
     cell, wiring = _flag_value(argv, '--cell'), _flag_value(argv, '--wiring')
@@ -547,13 +546,14 @@ def test_3_arm_matrix(name, tmp_path):
         assert not cfg.get('hpo_dir') and not cfg.get('fixed')
     if name.startswith('f3_e_pa_fold'):
         # family E: each fold arm takes the F1 selection of its own arm
-        assert cfg['selection_from'] == {
+        assert cfg.get('selection_from') == {
             f'{c}_{w}_fold{name[-1]}': {'arm': f'{c}_{w}', 'cell': c,
                                         'wiring': w}
             for _, c, w, _ in arms(cfg)}
     elif name not in FALLBACKS:  # test 11 pins the fallbacks
         assert not cfg.get('selection_from')
     assert all(set(a) <= ARM_KEYS for a in (cfg.get('arms') or {}).values())
+    assert not cfg.get('per_cell')
     lines = _expand(name, tmp_path)
     for line in lines:
         argv = line['argv']
@@ -586,6 +586,9 @@ def test_3_arm_matrix(name, tmp_path):
 def test_4_line_flags(name, tmp_path):
     cfg = _raw(name)
     task = _task(cfg)
+    assert cfg['extra_args'] == [
+        *(['--optimizer', LEGACY] if name in LEGACY_YAMLS else []),
+        *TASK_ARGS[task], DET, *([DIAG] if name in DIAG_YAMLS else [])]
     for line in _expand(name, tmp_path):
         argv = line['argv']
         assert _flag_value(argv, '--param-budget') == str(BUDGET[task])
@@ -594,9 +597,6 @@ def test_4_line_flags(name, tmp_path):
         assert (_flag_value(argv, '--optimizer') == LEGACY) == (
             name in LEGACY_YAMLS)
         assert (DIAG in argv) == (name in DIAG_YAMLS)
-        assert cfg['extra_args'] == [
-            *(['--optimizer', LEGACY] if name in LEGACY_YAMLS else []),
-            *TASK_ARGS[task], DET, *([DIAG] if name in DIAG_YAMLS else [])]
         if task == CO:
             continue
         assert _flag_value(argv, '--ode-unfolds') == '6'

@@ -76,6 +76,9 @@ out="$(BENCH=01_lotka_volterra EX_MODE=gains EX_RESULTS='../x/*_seed*.json' ./cl
 check eval_x_gains "$out" "01_lotka_volterra/runs/${today}_f3-x2-gains" "cluster/eval_x.sbatch" \
     "EX_MODE='gains' EX_RESULTS='../x/*_seed*.json' RUN_DIR=" "results/cncp_paths.csv"
 
+out="$(EX_MODE=gains EX_RESULTS=$'\n../x/*_seed*.json\n../y/*.json' ./cluster/submit_eval_x.sh -n f3-x2-gains 2>&1)"
+check eval_x_multiline "$out" "EX_RESULTS='../x/*_seed*.json ../y/*.json' RUN_DIR="
+
 eval_x_rejects() {  # eval_x_rejects <name> <message> <env assignment>... [-- <label>]
     local name="$1" msg="$2" out label=smoke; shift 2
     local env_args=()

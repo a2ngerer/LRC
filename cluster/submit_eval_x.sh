@@ -27,6 +27,7 @@ read -r -d '' -a ex_globs <<<"${EX_RESULTS:-}" || true   # as eval_x.sbatch spli
 if [[ ${#ex_globs[@]} -eq 0 ]]; then
     echo "EX_RESULTS is empty: give one or more record globs" >&2; exit 2
 fi
+EX_RESULTS="${ex_globs[*]}"   # one line for the sbatch environment
 if [[ -n "${EX_DATA_PATH:-}" && "$EX_MODE" != ablation ]]; then
     echo "EX_DATA_PATH applies to EX_MODE=ablation only" >&2; exit 2
 fi
