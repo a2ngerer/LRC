@@ -1,0 +1,16 @@
+# F3 guard SW1 (protocol F3 section 3.3; #156): the three arms of
+# f3_b_co_k30.yaml at K = 30, seed 0, the F1 configuration: no corruption_seed
+# key (draw 0) and no epochs key (the selection's final_epochs apply), lr and
+# clip of the F1 K = 3 committee selection. 3 fits, 1 array task.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_guard_co.yaml> f3-guard-co
+task: co
+stage: final
+arms:
+  ncp_cons: {cell: cfc_lrc, wiring: ncp}
+  avg_in: {cell: cfc_lrc, wiring: ncp, view_average: mean}
+  fault_mean: {cell: cfc_lrc, wiring: ncp, view_average: fault_mean}
+param_budget: 30000
+seeds: [0]
+extra_args: [--n-columns, 30, --backbone-layers, 1, --deterministic]
+hpo_dir: <selection copies>/co_k3_hpo
+cluster: {runs_per_gpu: 3, walltime: "06:00:00"}

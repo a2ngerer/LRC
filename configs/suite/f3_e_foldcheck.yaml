@@ -1,0 +1,26 @@
+# F3 fold check of the repair (protocol F3 section 5.2; #156): lrc/ncp and
+# lrc_cal/ncp on each recording fold k = 0..4 (--split-fold k), seeds 10 and
+# 11, fixed lr 0.001 without clipping, with the RQ4 diagnostics. 20 fits, 20
+# array tasks (one fit per GPU). Production, no condition.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_e_foldcheck.yaml> f3-e-foldcheck
+task: pa
+stage: final
+arms:
+  lrc_ncp_fold0: {cell: lrc, wiring: ncp, split_fold: 0}
+  lrc_cal_ncp_fold0: {cell: lrc_cal, wiring: ncp, split_fold: 0}
+  lrc_ncp_fold1: {cell: lrc, wiring: ncp, split_fold: 1}
+  lrc_cal_ncp_fold1: {cell: lrc_cal, wiring: ncp, split_fold: 1}
+  lrc_ncp_fold2: {cell: lrc, wiring: ncp, split_fold: 2}
+  lrc_cal_ncp_fold2: {cell: lrc_cal, wiring: ncp, split_fold: 2}
+  lrc_ncp_fold3: {cell: lrc, wiring: ncp, split_fold: 3}
+  lrc_cal_ncp_fold3: {cell: lrc_cal, wiring: ncp, split_fold: 3}
+  lrc_ncp_fold4: {cell: lrc, wiring: ncp, split_fold: 4}
+  lrc_cal_ncp_fold4: {cell: lrc_cal, wiring: ncp, split_fold: 4}
+param_budget: 30000
+seeds: [10, 11]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic, --diagnostics]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 1, walltime: "06:00:00"}

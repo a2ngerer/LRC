@@ -1,0 +1,18 @@
+# F3 family F (protocol F3 section 2.6; #156): lrc_cal_duffing/ncp on Duffing, seeds
+# 10-19, lr and clip of the F3 HPO of f3_f_hpo_duffing_init.yaml (hpo_dir:
+# that fetched HPO run). 10 fits, 4 array tasks (three per GPU). Production,
+# no condition; f3_f_duffing_cal_fb.yaml replaces it when the HPO has no winner.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_f_duffing_cal.yaml> f3-f-duffing-cal
+task: lv
+system: duffing
+stage: final
+cells:
+  lrc_cal_duffing: [ncp]
+param_budget: 4000
+seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+epochs: 450
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: results/02_duffing/<f3-f-hpo-duffing-init run>/results/hpo
+cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

@@ -1,0 +1,18 @@
+# F3 family F (protocol F3 section 2.6; #156): lrc/ncp on Duffing, seeds
+# 10-19, lr and clip of the F1 Duffing selection (hpo_dir: copies of the F1
+# duffing_hpo selection files). 10 fits, 4 array tasks (three per GPU).
+# Production, no condition.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_f_duffing_lrc.yaml> f3-f-duffing-lrc
+task: lv
+system: duffing
+stage: final
+cells:
+  lrc: [ncp]
+param_budget: 4000
+seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+epochs: 450
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: <selection copies>/duffing_hpo
+cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

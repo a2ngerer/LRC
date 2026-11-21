@@ -1,0 +1,21 @@
+# F3 fallback for f3_g_lv_cncp_ff.yaml (protocol F3 section 4; #156): cfc_lrc/cncp_ff
+# on periodic Lotka-Volterra, seeds 10-19, lr and clip of the F1 selection of
+# cfc_lrc/cncp (selection_from cfc_lrc_cncp; hpo_dir: copies of the F1
+# lv_hpo selection files). 10 fits, 2 array tasks; it replaces the
+# regular final and adds nothing to the counts. Conditional: submitted only
+# when the F3 HPO of the arm has no winner.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_g_lv_cncp_ff_fb.yaml> f3-g-lv-cncp-ff-fb
+task: lv
+stage: final
+cells:
+  cfc_lrc: [cncp_ff]
+param_budget: 4000
+seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: <selection copies>/lv_hpo
+selection_from:
+  cfc_lrc_cncp_ff: {arm: cfc_lrc_cncp, cell: cfc_lrc, wiring: cncp}
+cluster: {runs_per_gpu: 5, walltime: "04:00:00"}

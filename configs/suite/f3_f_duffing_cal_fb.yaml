@@ -1,0 +1,22 @@
+# F3 fallback for f3_f_duffing_cal.yaml (protocol F3 section 4; #156): lrc_cal_duffing/ncp
+# on Duffing, seeds 10-19, lr and clip of the F1 selection of
+# lrc/ncp (selection_from lrc_ncp; hpo_dir: copies of the F1
+# duffing_hpo selection files). 10 fits, 4 array tasks; it replaces the
+# regular final and adds nothing to the counts. Conditional: submitted only
+# when the F3 HPO of the arm has no winner.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_f_duffing_cal_fb.yaml> f3-f-duffing-cal-fb
+task: lv
+system: duffing
+stage: final
+cells:
+  lrc_cal_duffing: [ncp]
+param_budget: 4000
+seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+epochs: 450
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: <selection copies>/duffing_hpo
+selection_from:
+  lrc_cal_duffing_ncp: {arm: lrc_ncp, cell: lrc, wiring: ncp}
+cluster: {runs_per_gpu: 3, walltime: "04:00:00"}

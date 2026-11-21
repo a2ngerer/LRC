@@ -1,0 +1,17 @@
+# F3 block A, descriptive script arm (protocol F3 section 5.1.3; #156): lrc/ncp,
+# seeds 10-14, 200 epochs, fixed lr 0.001 without clipping, rmsprop_legacy, with
+# the RQ4 diagnostics. 5 fits, 5 array tasks (one fit per GPU; the walltime
+# is four times the 50-epoch default). Production, no condition.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_a_script.yaml> f3-a-script
+task: pa
+stage: final
+cells:
+  lrc: [ncp]
+param_budget: 30000
+seeds: [10, 11, 12, 13, 14]
+epochs: 200
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--optimizer, rmsprop_legacy, --deterministic, --diagnostics]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 1, walltime: "24:00:00"}

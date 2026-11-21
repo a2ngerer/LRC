@@ -1,0 +1,29 @@
+# F3 smoke SW1 (protocol F3 section 7; #156): every new Person Activity arm
+# for 3 epochs, seed 0, fixed lr 0.001 without clipping. The LRC-NCP arms run
+# two per GPU (heavy). 11 lines, 5 array tasks (4 heavy + 1 default).
+#   BENCH=00_canary ./cluster/submit_suite.sh --wandb <submit copy of f3_smoke_pa.yaml> f3-smoke-pa
+task: pa
+stage: final
+cells:
+  lrc: [ncp]
+  lrc_cal: [ncp]
+  lrc_init: [ncp]
+  lrc_dose050: [ncp]
+  lrc_dose075: [ncp]
+  lrc_dose0875: [ncp]
+  lrc_fanin: [ncp]
+  lrc_ranges: [ncp]
+  cfc_lrc_eps1: [ncp]
+  cfc_lrc_outer: [ncp]
+  cfc_lrc: [cncp_ff]
+param_budget: 30000
+seeds: [0]
+epochs: 3
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 3, walltime: "01:00:00"}
+heavy:
+  arms: [lrc_ncp, lrc_cal_ncp, lrc_init_ncp, lrc_dose050_ncp, lrc_dose075_ncp, lrc_dose0875_ncp, lrc_fanin_ncp, lrc_ranges_ncp]
+  cluster: {runs_per_gpu: 2}

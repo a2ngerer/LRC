@@ -1,0 +1,20 @@
+# F3 smoke SW1 (protocol F3 section 7; #156): lrc and lrc_cal on ncp under rmsprop_legacy with the RQ4 diagnostics,
+# 3 epochs, seed 0, fixed lr 0.001 without clipping, two per GPU (heavy).
+# 2 lines, 1 array task.
+#   BENCH=00_canary ./cluster/submit_suite.sh --wandb <submit copy of f3_smoke_pa_legacy_diag.yaml> f3-smoke-pa-legacy-diag
+task: pa
+stage: final
+cells:
+  lrc: [ncp]
+  lrc_cal: [ncp]
+param_budget: 30000
+seeds: [0]
+epochs: 3
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--optimizer, rmsprop_legacy, --deterministic, --diagnostics]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 2, walltime: "01:00:00"}
+heavy:
+  arms: [lrc_ncp, lrc_cal_ncp]
+  cluster: {runs_per_gpu: 2}

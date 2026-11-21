@@ -1,0 +1,15 @@
+# F3 eval-only lambda grid on the F1 committee records (protocol F3 section
+# 5.3; #156): ncp_cons and cncp_cons of co_k30_final.yaml, seeds 0-9, at fixed
+# weights over five vote strengths; only arms with a learned vote weight. No
+# training. 20 lines, 2 array tasks. records_dir: the F1 K = 30 final run
+# (read only), set in the submit copy.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_x_lambda_f1.yaml> f3-x-lambda-f1
+task: co
+stage: eval
+sources:
+  - config: configs/suite/co_k30_final.yaml
+    records_dir: ../benchmarks/04_column_voting/runs/<co-k30 run>/results
+    arms: [ncp_cons, cncp_cons]
+    seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+vote_lambda_override: [0, 0.25, 0.5, 0.75, 1]
+cluster: {runs_per_gpu: 10, walltime: "02:00:00"}

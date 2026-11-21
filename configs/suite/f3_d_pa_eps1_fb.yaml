@@ -1,0 +1,21 @@
+# F3 fallback for f3_d_pa_eps1.yaml (protocol F3 section 4; #156): cfc_lrc_eps1/ncp
+# on Person Activity, seeds 10-29, lr and clip of the F1 selection of
+# cfc_lrc/ncp (selection_from cfc_lrc_ncp; hpo_dir: copies of the F1
+# pa_hpo selection files). 20 fits, 7 array tasks; it replaces the
+# regular final and adds nothing to the counts. Conditional: submitted only
+# when the F3 HPO of the arm has no winner.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_d_pa_eps1_fb.yaml> f3-d-pa-eps1-fb
+task: pa
+stage: final
+cells:
+  cfc_lrc_eps1: [ncp]
+param_budget: 30000
+seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+hpo_dir: <selection copies>/pa_hpo
+selection_from:
+  cfc_lrc_eps1_ncp: {arm: cfc_lrc_ncp, cell: cfc_lrc, wiring: ncp}
+cluster: {runs_per_gpu: 3, walltime: "06:00:00"}
