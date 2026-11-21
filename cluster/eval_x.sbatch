@@ -27,7 +27,7 @@ set -euo pipefail
 RUN_DIR="${RUN_DIR:?RUN_DIR not set: submit via cluster/submit_eval_x.sh}"
 
 # read -a splits on whitespace without pathname expansion: the globs stay quoted.
-read -r -a globs <<<"${EX_RESULTS:-}"
+read -r -d '' -a globs <<<"${EX_RESULTS:-}" || true   # all lines, split on blanks
 if [[ ${#globs[@]} -eq 0 ]]; then
     echo "FATAL: EX_RESULTS is empty" >&2; exit 2
 fi

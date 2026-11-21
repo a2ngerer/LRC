@@ -16,13 +16,14 @@ cd "$(dirname "$0")/.."
 source cluster/config.sh
 source cluster/_run.sh
 run_parse_args "$@"
+[[ -n "$LABEL" ]] || { echo "a label is required" >&2; exit 2; }
 
 case "${EX_MODE:-}" in
     ablation) EX_OUT="results/cncp_ablation.csv (--out)" ;;
     gains) EX_OUT="results/cncp_gains.csv (--out) and results/cncp_paths.csv (--paths)" ;;
     *) echo "EX_MODE must be ablation or gains, got '${EX_MODE:-}'" >&2; exit 2 ;;
 esac
-read -r -a ex_globs <<<"${EX_RESULTS:-}"   # as eval_x.sbatch splits them
+read -r -d '' -a ex_globs <<<"${EX_RESULTS:-}" || true   # as eval_x.sbatch splits them
 if [[ ${#ex_globs[@]} -eq 0 ]]; then
     echo "EX_RESULTS is empty: give one or more record globs" >&2; exit 2
 fi
@@ -32,12 +33,13 @@ fi
 
 EX_ENV=""
 for v in EX_MODE EX_RESULTS EX_DATA_PATH; do
+    if [[ "${!v:-}" == *"'"* ]]; then echo "$v must not contain a single quote" >&2; exit 2; fi
     if [[ -n "${!v:-}" ]]; then EX_ENV+="${v}='${!v}' "; fi
 done
 RUN_ENV="${EX_ENV}output in the run folder: ${EX_OUT}"
 RUN_COMMAND="${BENCH:+BENCH=${BENCH} }${EX_ENV}./cluster/submit_eval_x.sh ${LABEL}"
-RUN_COUNT="1 job, eval-only (${EX_OUT})"
-echo "fits: ${RUN_COUNT}"
+RUN_COUNT="1 job, eval-only"
+echo "fits: ${RUN_COUNT}; output: ${EX_OUT}"
 
 run_prepare "${BENCH:-00_canary}"   # reserve the run folder first, then touch the shared code tree
 run_rsync

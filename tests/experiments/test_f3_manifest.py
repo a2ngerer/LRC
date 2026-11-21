@@ -7,13 +7,11 @@
 # fallbacks, the initial weights under both optimizers and the two RMSprop
 # update rules. Stub data and stub selections only; F1 selection values are
 # not pinned (they live outside the repository), only their pass-through.
-import fnmatch
 import functools
 import json
 import math
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -27,7 +25,7 @@ from experiments import run_grid_hpo
 from experiments import run_lotka_volterra_benchmark as lv_runner
 from experiments import run_person_activity_benchmark as pa_runner
 from experiments.suite_manifest import (_eval_jobs, _flag_value, _source_path,
-                                        arms, count, expand, load, main,
+                                        arms, expand, load, main,
                                         resources, write)
 from src.benchmark.optimizers import make_optimizer
 from src.benchmark.registry import CELL_REGISTRY
@@ -38,6 +36,9 @@ PA, LV, DU, CO = 'pa', 'periodic_predator_prey', 'duffing', 'co'
 F1_EPOCHS = {PA: 50, LV: 300, DU: 450, CO: 60}
 BUDGET = {PA: 30000, LV: 4000, DU: 4000, CO: 30000}
 DET, DIAG, LEGACY = '--deterministic', '--diagnostics', 'rmsprop_legacy'
+TASK_ARGS = {PA: [], LV: ['--forcing', 'mixed'], DU: ['--forcing', 'mixed'],
+             CO: ['--n-columns', 30, '--backbone-layers', 1]}
+ARM_KEYS = {'cell', 'wiring', 'split_fold', 'corruption_seed', 'view_average'}
 
 
 def S(a, b):
@@ -387,6 +388,9 @@ def _arm_of(cfg, line):
 
 
 def _co_arm(argv):
+    # the defaults _co_arm_any requires for every committee arm
+    assert _flag_value(argv, '--view-mode') in (None, 'identical')
+    assert _flag_value(argv, '--train-corruption') in (None, 'on')
     va = _flag_value(argv, '--view-average')
     if va == 'mean':
         return 'avg_in'
@@ -395,6 +399,7 @@ def _co_arm(argv):
     assert va is None and _flag_value(argv, '--vote-lambda') is None
     assert _flag_value(argv, '--consensus') in (None, 'mean')
     return 'cons'
+
 
 
 def _label(name, task, argv):
@@ -540,6 +545,15 @@ def test_3_arm_matrix(name, tmp_path):
         assert source[1] in cfg['hpo_dir'] and not cfg.get('fixed')
     else:
         assert not cfg.get('hpo_dir') and not cfg.get('fixed')
+    if name.startswith('f3_e_pa_fold'):
+        # family E: each fold arm takes the F1 selection of its own arm
+        assert cfg['selection_from'] == {
+            f'{c}_{w}_fold{name[-1]}': {'arm': f'{c}_{w}', 'cell': c,
+                                        'wiring': w}
+            for _, c, w, _ in arms(cfg)}
+    elif name not in FALLBACKS:  # test 11 pins the fallbacks
+        assert not cfg.get('selection_from')
+    assert all(set(a) <= ARM_KEYS for a in (cfg.get('arms') or {}).values())
     lines = _expand(name, tmp_path)
     for line in lines:
         argv = line['argv']
@@ -580,6 +594,9 @@ def test_4_line_flags(name, tmp_path):
         assert (_flag_value(argv, '--optimizer') == LEGACY) == (
             name in LEGACY_YAMLS)
         assert (DIAG in argv) == (name in DIAG_YAMLS)
+        assert cfg['extra_args'] == [
+            *(['--optimizer', LEGACY] if name in LEGACY_YAMLS else []),
+            *TASK_ARGS[task], DET, *([DIAG] if name in DIAG_YAMLS else [])]
         if task == CO:
             continue
         assert _flag_value(argv, '--ode-unfolds') == '6'
@@ -630,9 +647,11 @@ def test_5_fixed_recipes():
 def test_5_selections_pass_through(name, wandb, tmp_path):
     """--lr and --clipnorm of every line are those of the stub selection of
     its reference arm; the selection's runner_args (from the reference hpo
-    YAML) agree with the line as flag-value sets (committee lines exempt: K,
-    epochs and the corruption draw differ from the K = 3 selection by
-    design)."""
+    YAML) agree with the line as flag-value sets (committee lines of
+    f3_b_co_k30 and f3_guard_co exempt: K = 30, epochs and the corruption
+    draw differ from the K = 3 selection by design). Drift between the
+    selections fetched in F1 and today's hpo YAMLs is not visible here; it
+    stays a check on the submit copies."""
     cfg, sels = _stub(name, tmp_path / 'hpo')
     for line in expand(cfg, wandb=wandb):
         argv = line['argv']
@@ -754,10 +773,10 @@ def test_7b_one_epoch_fit_carries_the_label(task, label, tmp_path, monkeypatch):
     (path,) = [p for p in out.glob('*.json')
                if not p.name.endswith('.evalonly.json')]
     rec = json.loads(path.read_text())
-    assert rec['dt_scale'] != 1
-    if task == CO:
+    if task == CO:  # the committee runner has no dt_scale
         assert (rec['cell'], rec['wiring'], agg._co_arm_any(rec)) == label
         return
+    assert rec['dt_scale'] != 1
     assert _strip_epochs(agg.arm_label(rec)) == _strip_epochs(label)
     rec['config']['effective']['epochs'] = int(_flag_value(
         line['argv'], '--epochs'))

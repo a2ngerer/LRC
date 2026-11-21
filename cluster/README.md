@@ -681,7 +681,7 @@ Person Activity has no rollout draw.
 
 Protocol F3 runs from the 59 YAMLs `configs/suite/f3_*.yaml`: 29 production
 campaigns (580 planned fits: 525 finals and 55 hpo fits; 307 array tasks), 7
-conditional ones (the diagnostics side arm and five fallbacks, submitted only
+conditional ones (the two diagnostics side-arm YAMLs and five fallbacks, submitted only
 under the condition in their comment block; a fallback replaces its regular
 final), 2 eval YAMLs (the lambda grids) and 21 SW1 YAMLs (smokes, time probe,
 guards, the diagnostics check, the lambda probe). `tests/experiments/test_f3_manifest.py`
@@ -730,8 +730,9 @@ the fallbacks go into free slots under their conditions.
 Eval-only cNCP jobs (X1, X2). `cluster/submit_eval_x.sh` submits one job of
 `cluster/eval_x.sbatch` (one GPU, 08:00:00; the scripts write their CSV only at
 the end) into its own run folder, default `00_canary` (`BENCH` overrides).
-Mode and record globs come from the environment; the globs are relative to the
-code tree on the cluster and reach the script unexpanded:
+Mode and record globs come from the environment; `EX_RESULTS` holds the globs
+separated by blanks (no single quotes), relative to the code tree on the
+cluster, and they reach the script unexpanded:
 
 ```bash
 # X1, path ablation: the F1 cfc_lrc/cncp finals on periodic Lotka-Volterra,
@@ -749,9 +750,11 @@ X2 reads the F1 Lotka-Volterra finals of `cfc_lrc` on `cncp`, `ncp` and
 the F3 block G finals on Lotka-Volterra, each through a glob
 `../benchmarks/<bench>/runs/<run>/results/<cell>_<wiring>_seed*.json`. X1
 writes `results/cncp_ablation.csv` (optional `EX_DATA_PATH` for
-`--data-path`), X2 `results/cncp_gains.csv` and `results/cncp_paths.csv`, both
+`--data-path`, relative to the code tree on the cluster), X2 `results/cncp_gains.csv` and `results/cncp_paths.csv`, both
 only into their own run folder (the scripts refuse an `--out` inside a source
 folder). Both are submitted after the protocol freeze from the same code tree
-as the suite campaigns, X2 in SW5 after the block G finals are fetched.
+as the suite campaigns: X1 as one task in a free slot, X2 in SW5 after the
+block G finals are fetched. A requeue reruns the whole job. SW1 (28 tasks)
+must be finished before SW2a (49 tasks) is submitted.
 `-n` prints the run folder, the environment and the sbatch call without
 touching the cluster.
