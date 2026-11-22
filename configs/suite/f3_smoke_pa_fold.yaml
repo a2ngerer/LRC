@@ -1,0 +1,20 @@
+# F3 smoke SW1 (protocol F3 section 7; #156): the fold rotation, cfc_lrc/ncp
+# on fold 1 and lrc_cal/ncp on fold 2 (--split-fold), 3 epochs, seed 0, fixed
+# lr 0.001 without clipping. 2 lines, 2 array tasks (1 default + 1 heavy).
+#   BENCH=00_canary ./cluster/submit_suite.sh --wandb <submit copy of f3_smoke_pa_fold.yaml> f3-smoke-pa-fold
+task: pa
+stage: final
+arms:
+  cfc_lrc_ncp_fold1: {cell: cfc_lrc, wiring: ncp, split_fold: 1}
+  lrc_cal_ncp_fold2: {cell: lrc_cal, wiring: ncp, split_fold: 2}
+param_budget: 30000
+seeds: [0]
+epochs: 3
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 1, walltime: "01:00:00"}
+heavy:
+  arms: [lrc_cal_ncp_fold2]
+  cluster: {runs_per_gpu: 2}

@@ -1,0 +1,19 @@
+# F3 block A, descriptive dose arms (protocol F3 section 5.1.4; #156):
+# lrc_dose050, lrc_dose075 and lrc_dose0875 on ncp, seeds 10-19, fixed lr
+# 0.001 without clipping, with the RQ4 diagnostics. 30 fits, 30 array tasks
+# (one fit per GPU). Production, no condition.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_a_dose.yaml> f3-a-dose
+task: pa
+stage: final
+cells:
+  lrc_dose050: [ncp]
+  lrc_dose075: [ncp]
+  lrc_dose0875: [ncp]
+param_budget: 30000
+seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic, --diagnostics]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 1, walltime: "06:00:00"}

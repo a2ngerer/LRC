@@ -1,0 +1,16 @@
+# F3 guard SW1 (protocol F3 section 3.3; #156): lrc/ncp on Duffing, seed 0, lr
+# and clip of the F1 selection. 1 fit, 1 array task.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_guard_duffing.yaml> f3-guard-duffing
+task: lv
+system: duffing
+stage: final
+cells:
+  lrc: [ncp]
+param_budget: 4000
+seeds: [0]
+epochs: 450
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: <selection copies>/duffing_hpo
+cluster: {runs_per_gpu: 1, walltime: "04:00:00"}

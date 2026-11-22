@@ -1,0 +1,19 @@
+# F3 family F, HPO of the new arms (protocol F3 sections 2.6, 4; #156):
+# lrc_init/ncp and lrc_cal_duffing/ncp on Duffing, grid HPO on the tuning
+# seeds 100 and 101. 22 planned fits, 2 array tasks. The selections feed
+# f3_f_duffing_init.yaml and f3_f_duffing_cal.yaml (fallbacks without a
+# winner: the _fb YAMLs). Production, no condition.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_f_hpo_duffing_init.yaml> f3-f-hpo-duffing-init
+task: lv
+system: duffing
+stage: hpo
+cells:
+  lrc_init: [ncp]
+  lrc_cal_duffing: [ncp]
+param_budget: 4000
+seeds: [100, 101]
+epochs: 450
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+cluster: {runs_per_gpu: 1, walltime: "12:00:00"}

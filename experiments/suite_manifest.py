@@ -235,6 +235,20 @@ def load(path):
                          "and fixed")
     if cfg["stage"] == "hpo" and cfg.get("fixed"):
         raise SystemExit(f"{path}: fixed applies to stage final only")
+    if cfg["stage"] == "hpo":
+        # Tuning runs on the default split only; a fold campaign reads the
+        # default-split selection (#156).
+        fold = "stage hpo tunes on the default split, not on a rotated fold"
+        for name, a in (cfg.get("arms") or {}).items():
+            if {"split_fold", "split-fold"} & set(a):
+                raise SystemExit(f"{path}: {fold}: arm {name} sets split_fold")
+        for cell, flags in (cfg.get("per_cell") or {}).items():
+            if {"split_fold", "split-fold"} & set(flags or {}):
+                raise SystemExit(f"{path}: {fold}: per_cell {cell} sets "
+                                 "split_fold")
+        if any(str(a).split("=")[0] == "--split-fold"
+               for a in cfg.get("extra_args") or []):
+            raise SystemExit(f"{path}: {fold}: extra_args carry --split-fold")
     fixed = cfg.get("fixed")
     if fixed and not (isinstance(fixed, dict)
                       and set(fixed) == {"lr", "clipnorm"}

@@ -1,0 +1,18 @@
+# F3 family G (protocol F3 section 2.7; #156): cfc_lrc/cncp_ff on periodic
+# Lotka-Volterra, seeds 10-19, lr and clip of the F3 HPO of f3_g_hpo_lv.yaml
+# (hpo_dir: that fetched HPO run). 10 fits, 2 array tasks (five per GPU).
+# Production, no condition; f3_g_lv_cncp_ff_fb.yaml replaces it when the HPO
+# has no winner.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_g_lv_cncp_ff.yaml> f3-g-lv-cncp-ff
+task: lv
+stage: final
+cells:
+  cfc_lrc: [cncp_ff]
+param_budget: 4000
+seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+epochs: 300
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+hpo_dir: results/01_lotka_volterra/<f3-g-hpo-lv run>/results/hpo
+cluster: {runs_per_gpu: 5, walltime: "04:00:00"}

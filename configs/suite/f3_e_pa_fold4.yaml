@@ -1,0 +1,24 @@
+# F3 family E (protocol F3 section 2.5; #156): gru/ncp, cfc_lrc/ncp and
+# cfc_lrc/dense3 on recording fold 4 (--split-fold 4), seeds 30-34, lr and
+# clip of the F1 selections of the same arms on the default split
+# (selection_from; hpo_dir: copies of the F1 pa_hpo selection files). 15
+# fits, 5 array tasks (three per GPU). Production, no condition.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_e_pa_fold4.yaml> f3-e-pa-fold4
+task: pa
+stage: final
+arms:
+  gru_ncp_fold4: {cell: gru, wiring: ncp, split_fold: 4}
+  cfc_lrc_ncp_fold4: {cell: cfc_lrc, wiring: ncp, split_fold: 4}
+  cfc_lrc_dense3_fold4: {cell: cfc_lrc, wiring: dense3, split_fold: 4}
+param_budget: 30000
+seeds: [30, 31, 32, 33, 34]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+hpo_dir: <selection copies>/pa_hpo
+selection_from:
+  gru_ncp_fold4: {arm: gru_ncp, cell: gru, wiring: ncp}
+  cfc_lrc_ncp_fold4: {arm: cfc_lrc_ncp, cell: cfc_lrc, wiring: ncp}
+  cfc_lrc_dense3_fold4: {arm: cfc_lrc_dense3, cell: cfc_lrc, wiring: dense3}
+cluster: {runs_per_gpu: 3, walltime: "06:00:00"}

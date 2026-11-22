@@ -1,0 +1,17 @@
+# F3 smoke SW1 (protocol F3 section 7; #156): lstm/ncp and cfc_lrc/cncp_ff on
+# periodic Lotka-Volterra, 3 epochs, seed 0, fixed lr 0.001 without clipping.
+# 2 lines, 1 array task.
+#   BENCH=00_canary ./cluster/submit_suite.sh --wandb <submit copy of f3_smoke_lv.yaml> f3-smoke-lv
+task: lv
+stage: final
+cells:
+  lstm: [ncp]
+  cfc_lrc: [cncp_ff]
+param_budget: 4000
+seeds: [0]
+epochs: 3
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--forcing, mixed, --deterministic]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 2, walltime: "01:00:00"}

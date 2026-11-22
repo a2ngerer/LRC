@@ -1,0 +1,20 @@
+# F3 family B (protocol F3 section 2.2; #156): committee K = 30, consensus
+# ncp_cons against the input-averaging monolith avg_in and the fault-aware
+# mean fault_mean, seeds 10-29, corruption draws following the seed (_cs<seed>),
+# 60 epochs (the campaign's --epochs comes after the selection's final_epochs
+# and wins). lr and clip of the F1 K = 3 committee selection (hpo_dir: copies
+# of the F1 co_k3 selection files). 60 fits, 20 array tasks (three per GPU).
+# Production, no condition.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_b_co_k30.yaml> f3-b-co-k30
+task: co
+stage: final
+arms:
+  ncp_cons: {cell: cfc_lrc, wiring: ncp, corruption_seed: seed}
+  avg_in: {cell: cfc_lrc, wiring: ncp, view_average: mean, corruption_seed: seed}
+  fault_mean: {cell: cfc_lrc, wiring: ncp, view_average: fault_mean, corruption_seed: seed}
+param_budget: 30000
+seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+epochs: 60
+extra_args: [--n-columns, 30, --backbone-layers, 1, --deterministic]
+hpo_dir: <selection copies>/co_k3_hpo
+cluster: {runs_per_gpu: 3, walltime: "06:00:00"}

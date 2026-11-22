@@ -1,0 +1,20 @@
+# F3 family A (protocol F3 section 2.1; #156): lrc, lrc_cal and lrc_init on
+# ncp under rmsprop, seeds 20-29, one fixed recipe (lr 0.001, no
+# clipping), with the RQ4 diagnostics. 30 fits, 30 array tasks (one fit per
+# GPU). The other optimizer and the other seed half are campaigns of their
+# own (result names carry no optimizer). Production, no condition.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_a_rms_s20.yaml> f3-a-rms-s20
+task: pa
+stage: final
+cells:
+  lrc: [ncp]
+  lrc_cal: [ncp]
+  lrc_init: [ncp]
+param_budget: 30000
+seeds: [20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic, --diagnostics]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 1, walltime: "06:00:00"}

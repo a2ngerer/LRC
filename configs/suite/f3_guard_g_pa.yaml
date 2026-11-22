@@ -1,0 +1,15 @@
+# F3 guard SW1 (protocol F3 section 3.3; #156): cfc_lrc/cncp on Person
+# Activity, seed 0, lr and clip of the F1 selection. 1 fit, 1 array task.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_guard_g_pa.yaml> f3-guard-g-pa
+task: pa
+stage: final
+cells:
+  cfc_lrc: [cncp]
+param_budget: 30000
+seeds: [0]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+hpo_dir: <selection copies>/pa_hpo
+cluster: {runs_per_gpu: 1, walltime: "06:00:00"}

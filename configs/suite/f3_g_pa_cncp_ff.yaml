@@ -1,0 +1,18 @@
+# F3 family G (protocol F3 section 2.7; #156): cfc_lrc/cncp_ff on Person
+# Activity, seeds 10-19, lr and clip of the F3 HPO of f3_g_hpo_pa.yaml
+# (hpo_dir: that fetched HPO run). 10 fits, 4 array tasks (three per GPU).
+# Production, no condition; f3_g_pa_cncp_ff_fb.yaml replaces it when the HPO
+# has no winner.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_g_pa_cncp_ff.yaml> f3-g-pa-cncp-ff
+task: pa
+stage: final
+cells:
+  cfc_lrc: [cncp_ff]
+param_budget: 30000
+seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+hpo_dir: results/03_person_activity/<f3-g-hpo-pa run>/results/hpo
+cluster: {runs_per_gpu: 3, walltime: "06:00:00"}

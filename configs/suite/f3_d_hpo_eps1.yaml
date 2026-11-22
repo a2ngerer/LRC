@@ -1,0 +1,16 @@
+# F3 family D, HPO of the new arm (protocol F3 sections 2.4, 4; #156):
+# cfc_lrc_eps1/ncp on Person Activity, grid HPO on the tuning seeds 100 and
+# 101. 11 planned fits, 1 array task. Its selection feeds f3_d_pa_eps1.yaml
+# (fallback without a winner: f3_d_pa_eps1_fb.yaml). Production, no condition.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_d_hpo_eps1.yaml> f3-d-hpo-eps1
+task: pa
+stage: hpo
+cells:
+  cfc_lrc_eps1: [ncp]
+param_budget: 30000
+seeds: [100, 101]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+cluster: {runs_per_gpu: 1, walltime: "12:00:00"}

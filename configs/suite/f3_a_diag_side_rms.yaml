@@ -1,0 +1,20 @@
+# F3 family A, diagnostics side arm (protocol F3 section 2.1; #156): lrc,
+# lrc_cal and lrc_init on ncp under rmsprop, seeds 10-12, fixed lr 0.001
+# without clipping, with the RQ4 diagnostics. 9 fits, 9 array tasks (one fit
+# per GPU). Conditional: submitted only if the diagnostics check of SW1
+# fails or cannot be read.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_a_diag_side_rms.yaml> f3-a-diag-side-rms
+task: pa
+stage: final
+cells:
+  lrc: [ncp]
+  lrc_cal: [ncp]
+  lrc_init: [ncp]
+param_budget: 30000
+seeds: [10, 11, 12]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic, --diagnostics]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 1, walltime: "06:00:00"}

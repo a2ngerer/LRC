@@ -1,0 +1,17 @@
+# F3 time probe SW1 (protocol F3 section 7; #156): lrc/ncp on Person
+# Activity, two fits sharing one GPU (seeds 0 and 1), 10 epochs, fixed lr
+# 0.001 without clipping (against f3_time_pa_solo.yaml). 2 lines, 1 array
+# task.
+#   BENCH=00_canary ./cluster/submit_suite.sh --wandb <submit copy of f3_time_pa_pair.yaml> f3-time-pa-pair
+task: pa
+stage: final
+cells:
+  lrc: [ncp]
+param_budget: 30000
+seeds: [0, 1]
+epochs: 10
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+fixed: {lr: 0.001, clipnorm: null}
+cluster: {runs_per_gpu: 2, walltime: "01:00:00"}

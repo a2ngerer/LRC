@@ -1,0 +1,15 @@
+# F3 lambda probe SW1 (protocol F3 section 5.3; #156): one eval line of the
+# lambda grid on one F1 K = 30 record (ncp_cons of co_k30_final.yaml, seed 0),
+# the same vote strengths as f3_x_lambda_f1.yaml. No training. 1 line, 1 array
+# task. records_dir: the F1 K = 30 final run (read only), set in the submit
+# copy.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_x_lambda_probe.yaml> f3-x-lambda-probe
+task: co
+stage: eval
+sources:
+  - config: configs/suite/co_k30_final.yaml
+    records_dir: ../benchmarks/04_column_voting/runs/<co-k30 run>/results
+    arms: [ncp_cons]
+    seeds: [0]
+vote_lambda_override: [0, 0.25, 0.5, 0.75, 1]
+cluster: {runs_per_gpu: 1, walltime: "01:00:00"}

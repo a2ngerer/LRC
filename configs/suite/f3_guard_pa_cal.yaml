@@ -1,0 +1,15 @@
+# F3 guard SW1 (protocol F3 section 3.3; #156): lrc_cal/ncp on Person
+# Activity, seed 0, fixed lr 0.01 without clipping. 1 fit, 1 array task.
+#   ./cluster/submit_suite.sh --wandb <submit copy of f3_guard_pa_cal.yaml> f3-guard-pa-cal
+task: pa
+stage: final
+cells:
+  lrc_cal: [ncp]
+param_budget: 30000
+seeds: [0]
+epochs: 50
+ode_unfolds: 6
+dt_scale: auto
+extra_args: [--deterministic]
+fixed: {lr: 0.01, clipnorm: null}
+cluster: {runs_per_gpu: 1, walltime: "06:00:00"}
