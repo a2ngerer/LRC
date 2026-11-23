@@ -1,0 +1,57 @@
+# Spec for `experiments/aggregate_results.py --f3-descriptive` (#152): the
+# descriptive F3 arms (protocol F3, constant F3_DESCRIPTIVE_ARMS in the
+# aggregator, which fixes label, lr, clipnorm, epochs and the seed list of
+# each arm). Per arm id:
+#   label             the arm label as arm_label returns it (fixed per arm)
+#   protocol_version  the F3 stamp every record of the arm with this label
+#                     carries, whatever its seed (a string or a list)
+#   paths             run folders (searched recursively, inside the folder
+#                     only) or record files; no patterns. An empty existing
+#                     folder is valid (an arm that was cut or never
+#                     submitted): its counts are 0 and its readings are not
+#                     readable
+# Every registered arm must be present. The block A arms run their seeds
+# 10-19 and 20-29 and their two optimizers in separate run folders (result
+# names carry no optimizer); the budget and script arms run in folders of
+# their own (their result names equal those of lrc/ncp). Replace every
+# <...> placeholder before use.
+
+# block A, rmsprop (one run folder per seed half holds all three cells)
+a_lrc:
+  label: lrc/ncp
+  protocol_version: F3-<FREEZE_DATE>
+  paths: [<F3_A_RMS_S10_RUN_DIR>/results, <F3_A_RMS_S20_RUN_DIR>/results]
+a_cal:
+  label: lrc_cal/ncp
+  protocol_version: F3-<FREEZE_DATE>
+  paths: [<F3_A_RMS_S10_RUN_DIR>/results, <F3_A_RMS_S20_RUN_DIR>/results]
+a_init:
+  label: lrc_init/ncp
+  protocol_version: F3-<FREEZE_DATE>
+  paths: [<F3_A_RMS_S10_RUN_DIR>/results, <F3_A_RMS_S20_RUN_DIR>/results]
+
+# block A, rmsprop_legacy
+a_lrc_legacy:
+  label: 'lrc/ncp [optimizer=rmsprop_legacy]'
+  protocol_version: F3-<FREEZE_DATE>
+  paths: [<F3_A_LEGACY_S10_RUN_DIR>/results, <F3_A_LEGACY_S20_RUN_DIR>/results]
+a_cal_legacy:
+  label: 'lrc_cal/ncp [optimizer=rmsprop_legacy]'
+  protocol_version: F3-<FREEZE_DATE>
+  paths: [<F3_A_LEGACY_S10_RUN_DIR>/results, <F3_A_LEGACY_S20_RUN_DIR>/results]
+a_init_legacy:
+  label: 'lrc_init/ncp [optimizer=rmsprop_legacy]'
+  protocol_version: F3-<FREEZE_DATE>
+  paths: [<F3_A_LEGACY_S10_RUN_DIR>/results, <F3_A_LEGACY_S20_RUN_DIR>/results]
+
+# budget arm: rmsprop, lr 1e-2, 200 epochs, seeds 10-14
+budget:
+  label: 'lrc/ncp [epochs=200]'
+  protocol_version: F3-<FREEZE_DATE>
+  paths: [<F3_A_BUDGET_RUN_DIR>/results]
+
+# script arm: rmsprop_legacy, lr 1e-3, 200 epochs, seeds 10-14
+script:
+  label: 'lrc/ncp [epochs=200, optimizer=rmsprop_legacy]'
+  protocol_version: F3-<FREEZE_DATE>
+  paths: [<F3_A_SCRIPT_RUN_DIR>/results]
