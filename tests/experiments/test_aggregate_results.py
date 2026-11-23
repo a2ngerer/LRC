@@ -437,20 +437,31 @@ def test_floors_needs_rollout_runs(tmp_path):
 
 def _write_co(dirpath, wiring, seed, f1_m15, auc_m0, auc_m15, view_average='off',
               vote_lambda=None, n_columns=30, above=False, consensus='mean',
-              **extra):
-    """A committee runner JSON with the fault-grid endpoints (#55)."""
+              epochs=None, protocol_version=None, corruption_seed=None,
+              test_macro_f1_by_fault=None, **extra):
+    """A committee runner JSON with the fault-grid endpoints (#55). epochs,
+    corruption_seed and protocol_version (config.effective) are written only
+    when given; test_macro_f1_by_fault replaces the whole fault-grid list."""
     grid = [0, 3, 9, 15, 20]
     tag = (f'{wiring}_{view_average}_{vote_lambda}_{consensus}_K{n_columns}'
            f'_seed{seed}')
+    opt = {k: v for k, v in (('epochs', epochs),
+                             ('corruption_seed', corruption_seed))
+           if v is not None}
+    if protocol_version is not None:
+        opt['config'] = {'effective': {'protocol_version': protocol_version}}
     with open(os.path.join(dirpath, f'{tag}.json'), 'w') as f:
         json.dump({'cell': 'cfc_lrc', 'wiring': wiring, 'seed': seed,
                    'n_columns': n_columns, 'view_mode': 'identical',
                    'train_corruption': 'on', 'view_average': view_average,
                    'vote_lambda': vote_lambda, 'consensus': consensus,
                    'budget_above_tolerance': above, 'fault_counts': grid,
-                   'test_macro_f1_by_fault': [0.7, 0.6, 0.5, f1_m15, 0.3],
+                   'test_macro_f1_by_fault': (
+                       [0.7, 0.6, 0.5, f1_m15, 0.3]
+                       if test_macro_f1_by_fault is None
+                       else test_macro_f1_by_fault),
                    'per_position_macro_f1_auc': [auc_m0, 0, 0, auc_m15, 0],
-                   **extra}, f)
+                   **opt, **extra}, f)
 
 
 GOOD, FLAT = [[9, 1], [1, 9]], [[5, 5], [5, 5]]   # macro-F1 0.9 and 0.5
