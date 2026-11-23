@@ -95,6 +95,22 @@ Optional sections:
                    per arm, convergence flags on C and F (F-5);
                    <out>/f3_families.csv and <out>/f3_pa_fits.csv (both
                    Person Activity endpoint fields per fit, E14)
+  --f3-descriptive SPEC.yaml  the descriptive F3 arms (F3_DESCRIPTIVE_ARMS:
+                   the six block A arms, the budget arm and the script arm;
+                   F-12) from explicit path lists per arm (template:
+                   configs/aggregate/f3_descriptive.yaml), Person Activity
+                   records only, seed lists and lr, clipnorm and epochs from
+                   the registry: per fit learning success
+                   (test_macro_f1_last >= 0.30, a diverged fit fails) and
+                   the exit epoch (first epoch with validation macro-F1
+                   above 0.0851, else censored); per arm counts, the
+                   Clopper-Pearson interval of the success rate and the
+                   censored exit-epoch median; the readings (manipulation
+                   check of E13 in its own block, then the exploratory
+                   sentences: lrc_init/ncp, the count next to T-A1, budget
+                   and script arm). No p-value, nothing enters m;
+                   <out>/f3_descriptive_fits.csv, f3_descriptive_arms.csv,
+                   f3_descriptive_readings.csv
   --lambda-grid DIR  the vote-lambda grid at fixed weights (#137): every
                    *.lambda_grid.evalonly.json below DIR
                    (run_committee_benchmark.py --eval-only
@@ -110,7 +126,8 @@ Usage:
         [--rollout-runs DIR [--floors]] [--co-runs DIR]
         [--contrasts [--floors-json PATH] [--robustness CSV ...]]
         [--f2-families SPEC.yaml] [--descriptive SPEC.yaml]
-        [--f3-families SPEC.yaml] [--lambda-grid DIR]
+        [--f3-families SPEC.yaml] [--f3-descriptive SPEC.yaml]
+        [--lambda-grid DIR]
 
     # the frozen suite: ROLLOUTS holds the final run folders of every rollout
     # system (searched recursively), PA the Person Activity final run
@@ -3171,6 +3188,413 @@ def f3_report(blocks, pa_fits) -> str:
     return '\n'.join(lines)
 
 
+# --- F3 descriptive path (protocol F3, block A readings, #152) --------------
+
+# arm id -> label (as arm_label returns it), lr, clipnorm and epochs every
+# record on the seed list must carry, seeds (the arm's seed list) and folds
+# (None: an arm without folds). Counts and intervals without a test (F-12):
+# no p-value, nothing counts in m. The arms of part 4 (#153) plug in here.
+def _desc_arm(label, lr, epochs, seeds):
+    return {'label': label, 'lr': lr, 'clipnorm': None, 'epochs': epochs,
+            'seeds': seeds, 'folds': None}
+
+
+F3_DESCRIPTIVE_ARMS = {
+    'a_lrc': _desc_arm('lrc/ncp', 1e-3, 50, range(10, 30)),
+    'a_lrc_legacy': _desc_arm('lrc/ncp' + _LEGACY, 1e-3, 50, range(10, 30)),
+    'a_cal': _desc_arm('lrc_cal/ncp', 1e-3, 50, range(10, 30)),
+    'a_cal_legacy': _desc_arm('lrc_cal/ncp' + _LEGACY, 1e-3, 50,
+                              range(10, 30)),
+    'a_init': _desc_arm('lrc_init/ncp', 1e-3, 50, range(10, 30)),
+    'a_init_legacy': _desc_arm('lrc_init/ncp' + _LEGACY, 1e-3, 50,
+                               range(10, 30)),
+    'budget': _desc_arm('lrc/ncp [epochs=200]', 1e-2, 200, range(10, 15)),
+    'script': _desc_arm('lrc/ncp [epochs=200, optimizer=rmsprop_legacy]',
+                        1e-3, 200, range(10, 15)),
+}
+MANIPULATION_MIN = 16   # lrc_cal/ncp successes of 20 that pass the check (E13)
+DESC_RECORD_FIELDS = ('test_macro_f1_last', 'test_macro_f1_curve',
+                      'split_fold')
+F3_DESC_FIT_COLUMNS = [
+    'arm', 'split_fold', 'seed', *F3_PA_FIELDS, 'success_fields_differ',
+    'diverged', 'success', 'exit_epoch', 'censored',
+    # 200-epoch arms only
+    'test_macro_f1_e50', 'test_macro_f1_e100', 'test_macro_f1_e200',
+    'test_macro_f1_max', 'success_e50', 'success_e100', 'success_e200',
+    # script arm only
+    'first_50_equal', 'first_50_max_abs_diff', 'file']
+F3_DESC_ARM_COLUMNS = [
+    'arm', 'label', 'split_fold', 'n_records', 'n_listed', 'k_success',
+    'success_rate', 'n_diverged', 'n_censored', 'exit_epoch_median',
+    'test_macro_f1_median', 'n_outside_list', 'outside_list',
+    'n_exit_after_50', 'n_exit_within_50']
+F3_DESC_READING_COLUMNS = ['reading', 'readable', 'counts', 'classification',
+                           'sentence']
+
+
+def load_f3_descriptive_spec(path) -> dict:
+    """The --f3-descriptive spec: {arm id: arm} for exactly the arms of
+    F3_DESCRIPTIVE_ARMS, arm as in load_f3_spec (keys F2_ARM_KEYS, label
+    equal to the registry label, F3 stamps only, paths checked by
+    _check_spec_arm; an empty existing folder is a valid arm). The seed
+    lists come from the registry. Unknown or missing arm ids, a pattern, a
+    missing path, another label and a non-F3 protocol_version raise
+    SystemExit."""
+    with open(path, encoding='utf-8') as f:
+        spec = yaml.safe_load(f)
+    got, want = (set(spec) if isinstance(spec, dict) else set(),
+                 set(F3_DESCRIPTIVE_ARMS))
+    if got != want:
+        raise SystemExit(f'{path}: the spec must hold exactly the arms '
+                         f'{list(F3_DESCRIPTIVE_ARMS)} (missing '
+                         f'{sorted(want - got)}, unknown '
+                         f'{sorted(map(str, got - want))})')
+    for aid, arm in spec.items():
+        _check_spec_arm(path, aid, arm, False)
+        label = F3_DESCRIPTIVE_ARMS[aid]['label']
+        if arm['label'] != label:
+            raise SystemExit(f'{path}: {aid}: label {arm["label"]!r}, '
+                             f'expected {label!r}')
+        bad = [v for v in arm['protocol_version'] if not v.startswith('F3-')]
+        if bad:
+            raise SystemExit(f'{path}: {aid}: protocol_version {bad} is not '
+                             'an F3 stamp')
+    return spec
+
+
+def _floats(values):
+    """A curve (or None) as a float array, None read as NaN."""
+    return np.asarray([np.nan if v is None else v for v in (values or [])],
+                      float)
+
+
+def _desc_fit(aid, row) -> dict:
+    """The f3_descriptive_fits row of one _sequence_row fit (plus the
+    validation curve, kept for the script-arm pairing and not written)."""
+    best, last = (np.nan if row[k] is None else float(row[k])
+                  for k in ('metric', 'test_macro_f1_last'))
+    diverged = bool(row['training_diverged']) or not np.isfinite(last)
+    val = _floats(row['val_macro_f1_curve'])
+    above = np.flatnonzero(val > B5_EXIT_THRESHOLD)    # NaN is not above
+    fit = {'arm': aid, 'split_fold': row['split_fold'], 'seed': row['seed'],
+           'test_macro_f1': best, 'test_macro_f1_last': last,
+           'success_fields_differ': (
+               bool((best >= F3_PA_SUCCESS) != (last >= F3_PA_SUCCESS))
+               if np.isfinite(best) and np.isfinite(last) else None),
+           'diverged': diverged,
+           'success': learning_success(last, diverged, F3_PA_SUCCESS),
+           'exit_epoch': int(above[0]) + 1 if above.size else None,
+           'censored': not above.size, 'file': row['file'],
+           'val_macro_f1_curve': val}
+    if F3_DESCRIPTIVE_ARMS[aid]['epochs'] == 200:
+        test = _floats(row['test_macro_f1_curve'])
+        for e in (50, 100, 200):
+            fit[f'test_macro_f1_e{e}'] = test[e - 1] if test.size >= e \
+                else np.nan
+        ok = test[np.isfinite(test)]
+        fit['test_macro_f1_max'] = float(ok.max()) if ok.size else np.nan
+        for e in (50, 100):
+            v = fit[f'test_macro_f1_e{e}']
+            fit[f'success_e{e}'] = bool(np.isfinite(v) and v >= F3_PA_SUCCESS)
+        fit['success_e200'] = fit['success']
+    return fit
+
+
+def _f3_desc_arm(aid, arm):
+    """(fits, outside) of one F3_DESCRIPTIVE_ARMS arm: the Person Activity
+    records in its paths whose label is the arm label (non-fit JSONs
+    skipped by _is_fit_record before arm_label), each with a
+    protocol_version the arm lists whatever its seed (_check_protocol) and
+    no split_fold. A record outside the arm's seed list goes to outside
+    (counted, named, not used); one on it must carry the registry lr,
+    clipnorm and epochs. SystemExit names the file; two records of one
+    (arm, split_fold, seed) also raise it."""
+    reg = F3_DESCRIPTIVE_ARMS[aid]
+    name = f'{aid} ({reg["label"]})'
+    fits, outside = [], []
+    for path in _record_files(arm['paths']):
+        with open(path, encoding='utf-8') as f:
+            r = json.load(f)
+        if (not isinstance(r, dict) or _record_task(r) != 'pa'
+                or not _is_fit_record(path, r)
+                or arm_label(r) != reg['label']):
+            continue
+        eff = (r.get('config') or {}).get('effective') or {}
+        _check_protocol(path, eff, arm['protocol_version'], name)
+        fold = r.get('split_fold', eff.get('split_fold'))
+        if fold is not None:                             # fold 0 is a fold
+            raise SystemExit(f'{path}: split_fold {fold} in {name}, an arm '
+                             'without folds')
+        if r.get('seed') not in reg['seeds']:
+            outside.append(r.get('seed'))
+            continue
+        bad = [f'{k} {r.get(k)!r} (registry {reg[k]!r})'
+               for k in ('lr', 'clipnorm', 'epochs') if r.get(k) != reg[k]]
+        if bad:
+            raise SystemExit(f'{path}: {name}: ' + ', '.join(bad))
+        fits.append(_desc_fit(aid, _sequence_row(
+            path, r, 'pa', curves=True, fields=DESC_RECORD_FIELDS)))
+    keys = [(f['arm'], f['split_fold'], f['seed']) for f in fits]
+    dup = [f['file'] for f, k in zip(fits, keys) if keys.count(k) > 1]
+    if dup:
+        raise SystemExit(f'two records of {name} and one (arm, split_fold, '
+                         'seed): ' + ', '.join(dup))
+    return fits, outside
+
+
+def _desc_arm_row(aid, fits, outside) -> dict:
+    """The f3_descriptive_arms row of one arm (an empty arm: counts 0)."""
+    reg = F3_DESCRIPTIVE_ARMS[aid]
+    n, budget = len(fits), reg['epochs']
+    k = sum(f['success'] for f in fits)
+    # censored seeds at infinity; an infinite median reads '> E' (budget E)
+    ex = [np.inf if f['censored'] else f['exit_epoch'] for f in fits]
+    med = float(np.median(ex)) if n else None
+    f1 = [f['test_macro_f1'] for f in fits]
+    row = {'arm': aid, 'label': reg['label'], 'split_fold': None,
+           'n_records': n, 'n_listed': len(reg['seeds']), 'k_success': k,
+           'success_rate': _rate(k, n) if n else None,
+           'n_diverged': sum(f['diverged'] for f in fits),
+           'n_censored': sum(f['censored'] for f in fits),
+           'exit_epoch_median': None if med is None else (
+               f'> {budget}' if np.isinf(med) else f'{med:g}'),
+           # a non-finite best-val value enters at the worst value, 0
+           'test_macro_f1_median': float(np.median(np.where(
+               np.isfinite(f1), f1, WORST['pa']))) if n else None,
+           'n_outside_list': len(outside),
+           'outside_list': _seed_runs(set(outside)) or None}
+    if aid == 'budget':
+        late = [e > 50 for e in ex if np.isfinite(e)]
+        row.update(n_exit_after_50=sum(late),
+                   n_exit_within_50=len(late) - sum(late))
+    return row
+
+
+def _exploratory(text, n):
+    return f'{text} (exploratory, {n} seeds, one split)'
+
+
+def _desc_readings(fits, arms) -> list:
+    """The rows of f3_descriptive_readings.csv (F3_DESC_READING_COLUMNS).
+    A reading needs every listed seed of every arm it uses, else it reads
+    'not readable (<n> of <N> records)'; the manipulation check and the
+    count next to T-A1 have rules of their own. No row depends on the
+    check."""
+    def missing(*aids):
+        n = sum(arms[a]['n_records'] for a in aids)
+        big_n = sum(arms[a]['n_listed'] for a in aids)
+        return None if n == big_n else f'not readable ({n} of {big_n} records)'
+
+    def unreadable(reading, why):
+        return {'reading': reading, 'readable': False, 'counts': None,
+                'classification': why, 'sentence': None}
+
+    def count(aid, key='success'):
+        return sum(bool(f[key]) for f in fits[aid])
+
+    rows = []
+    c = arms['a_cal']                                    # E13
+    big_m, n, big_n = c['k_success'], c['n_records'], c['n_listed']
+    if big_m >= MANIPULATION_MIN:
+        cls, cnt = 'passed', (f'{big_m} of {big_n}' if n == big_n
+                              else f'{big_m} of {n} records')
+    elif n == big_n:
+        cls, cnt = 'failed', f'{big_m} of {big_n}'
+    else:
+        cls, cnt = 'not readable', (f'{n} of {big_n} records; {big_m} with '
+                                    'learning success')
+    rows.append({'reading': 'manipulation_check',
+                 'readable': cls != 'not readable', 'counts': cnt,
+                 'classification': cls, 'sentence': None})
+
+    why = missing('a_init', 'a_init_legacy')
+    if why:
+        rows.append(unreadable('lrc_init', why))
+    else:
+        k, m, big_n = count('a_init'), count('a_init_legacy'), \
+            arms['a_init']['n_listed']
+        rows.append({'reading': 'lrc_init', 'readable': True,
+                     'counts': f'{k} of {big_n}; {m} of {big_n}',
+                     'classification': None, 'sentence': _exploratory(
+                         'the data-free initialisation reaches learning '
+                         f'success in {k} of {big_n} seeds under the suite '
+                         f'optimiser and in {m} of {big_n} under the legacy '
+                         'placement', big_n)})
+
+    a = arms['a_lrc_legacy']               # exception: J of n records
+    n, big_n, j = a['n_records'], a['n_listed'], a['k_success']
+    if not n:
+        rows.append(unreadable('count_t_a1', missing('a_lrc_legacy')))
+    else:
+        cnt = f'{j} of {big_n}' if n == big_n else f'{j} of {n} records'
+        rows.append({'reading': 'count_t_a1', 'readable': True,
+                     'counts': cnt, 'classification': None,
+                     'sentence': _exploratory(
+                         'at the end of 50 epochs, `lrc/ncp` reaches learning '
+                         f'success in {cnt}{" seeds" if n == big_n else ""} '
+                         'under the legacy placement', n)})
+
+    why = missing('budget')
+    if why:
+        rows.append(unreadable('budget', why))
+    else:
+        b, big_n = arms['budget'], arms['budget']['n_listed']
+        k, a_ = b['n_exit_after_50'], b['n_exit_within_50']
+        cnt = (f'{k} of {big_n} exit after epoch 50; {a_} of {big_n} within '
+               '50 epochs')
+        if k + a_ == 0:
+            cls = ('no seed escapes within four times the budget at learning '
+                   f'rate 10⁻² (0 of {big_n}; upper limit of the two-sided '
+                   '95 % Clopper–Pearson interval '
+                   f'{clopper_pearson(0, big_n)[1]:.2f})')
+            sentence = _exploratory(cls, big_n)
+        elif k + a_ == 1:
+            f = next(f for f in fits['budget'] if not f['censored'])
+            cls, sentence = f"exit epoch {f['exit_epoch']} (seed " \
+                f"{f['seed']})", None
+        else:
+            cls = (f'delayed escape (after epoch 50) in {k} of {big_n} seeds; '
+                   f'{a_} of {big_n} seeds escape within 50 epochs')
+            sentence = _exploratory(cls, big_n)
+        rows.append({'reading': 'budget', 'readable': True, 'counts': cnt,
+                     'classification': cls, 'sentence': sentence})
+
+    why = missing('script')
+    if why:
+        rows += [unreadable('script', why), unreadable('script_retained', why)]
+    else:
+        big_n = arms['script']['n_listed']
+        k, m, j = (count('script', f'success_e{e}') for e in (200, 100, 50))
+        r = sum(bool(f['success_e50'] and f['success_e200'])
+                for f in fits['script'])
+        cls = ('no learning success with four times the suite budget'
+               if k == 0 else 'learning success under the legacy placement '
+               'needs more than the suite budget in these seeds'
+               if k >= 4 and j <= 1 else None)
+        upper = (f'; upper limit of the 95 % Clopper–Pearson interval '
+                 f'{clopper_pearson(0, big_n)[1]:.2f}' if k == 0 else '')
+        rows += [
+            {'reading': 'script', 'readable': True,
+             'counts': f'{k} of {big_n} at epoch 200; {m} of {big_n} at '
+                       f'epoch 100; {j} of {big_n} at epoch 50',
+             'classification': cls, 'sentence': _exploratory(
+                 '`lrc/ncp` reaches learning success at the end of 200 epochs '
+                 f'in {k} of {big_n} seeds under the optimiser settings and '
+                 'the epoch budget of the LRC reference script '
+                 f'({m} of {big_n} at epoch 100, {j} of {big_n} at epoch 50'
+                 f'{upper})', big_n)},
+            {'reading': 'script_retained', 'readable': True,
+             'counts': f'{r} of {j}', 'classification': None,
+             'sentence': _exploratory(
+                 f'of the {j} seeds with learning success at epoch 50, {r} '
+                 'retain it at the end of 200 epochs', big_n)}]
+    return rows
+
+
+def f3_descriptive(spec):
+    """(fits, arms, readings) of a load_f3_descriptive_spec spec, in
+    registry order: f3_descriptive_fits (F3_DESC_FIT_COLUMNS; the script
+    arm paired per seed with the 50-epoch lrc/ncp [optimizer=rmsprop_legacy]
+    fit on val_macro_f1_curve[0:50], exact equality and the largest
+    absolute difference, both empty without the partner fit),
+    f3_descriptive_arms (F3_DESC_ARM_COLUMNS) and f3_descriptive_readings
+    (F3_DESC_READING_COLUMNS). Counts and intervals only: no p-value,
+    nothing enters m (F-12)."""
+    fits, arms = {}, {}
+    for aid in F3_DESCRIPTIVE_ARMS:
+        fits[aid], outside = _f3_desc_arm(aid, spec[aid])
+        arms[aid] = _desc_arm_row(aid, fits[aid], outside)
+    partner = {f['seed']: f['val_macro_f1_curve']
+               for f in fits['a_lrc_legacy']}
+    for f in fits['script']:
+        own, other = f['val_macro_f1_curve'][:50], partner.get(f['seed'])
+        f['first_50_equal'] = (None if other is None
+                               else bool(np.array_equal(own, other)))
+        f['first_50_max_abs_diff'] = (
+            None if other is None else float(np.max(np.abs(own - other)))
+            if own.shape == other.shape and own.size else np.nan)
+    rows = [f for aid in F3_DESCRIPTIVE_ARMS for f in fits[aid]]
+    return (pd.DataFrame(rows, columns=F3_DESC_FIT_COLUMNS).astype(
+                {'exit_epoch': 'Int64'}),
+            pd.DataFrame(list(arms.values()), columns=F3_DESC_ARM_COLUMNS)
+            .astype({c: 'Int64' for c in ('n_exit_after_50',
+                                          'n_exit_within_50')}),
+            pd.DataFrame(_desc_readings(fits, arms),
+                         columns=F3_DESC_READING_COLUMNS))
+
+
+def f3_descriptive_report(fits, arms, readings) -> str:
+    """Markdown of f3_descriptive: the manipulation-check block, then the
+    exploratory readings with the per-arm counts."""
+    rd = readings.set_index('reading')
+    check = rd.loc['manipulation_check']
+    lines = ['## F3 block A manipulation check\n',
+             f"{check['classification']}: {check['counts']} (lrc_cal/ncp "
+             f'under rmsprop, learning success = test_macro_f1_last >= '
+             f'{F3_PA_SUCCESS:g} and not diverged, records on seeds 10-29; '
+             f'passed at {MANIPULATION_MIN} or more, E13). A count, no '
+             'p-value; it gates block A in the protocol text.', '',
+             '## F3 descriptive readings (exploratory)\n']
+    if check['classification'] == 'failed':
+        lines.append('manipulation check failed: block A not readable\n')
+    elif check['classification'] == 'not readable':
+        c = arms.set_index('arm').loc['a_cal']
+        lines.append(f"manipulation check not readable ({c['n_records']} of "
+                     f"{c['n_listed']} records): block A not readable\n")
+    for name, r in rd.drop('manipulation_check').iterrows():
+        text = r['sentence'] if isinstance(r['sentence'], str) else (
+            r['classification'])
+        cls = r['classification']
+        extra = (f' ({cls})' if isinstance(cls, str) and cls not in text
+                 else '')
+        lines.append(f'- {name}: {text}{extra}')
+
+    def cell(v):
+        return '—' if v is None or (not isinstance(v, str) and pd.isna(v)) \
+            else str(v)
+
+    lines += ['', '| arm | label | records/listed | success [95% CI] '
+              '| diverged | censored | exit epoch median '
+              '| median test_macro_f1 | outside the list |',
+              '|' + '---|' * 9]
+    for a in arms.to_dict('records'):
+        lines.append(
+            f"| {a['arm']} | {a['label']} | {a['n_records']}/{a['n_listed']} "
+            f"| {cell(a['success_rate'])} | {a['n_diverged']} "
+            f"| {a['n_censored']} | {cell(a['exit_epoch_median'])} "
+            f"| {_fmt(a['test_macro_f1_median'], '.3f')} "
+            f"| {a['n_outside_list']} |")
+    out = arms[arms['n_outside_list'] > 0]
+    differ = fits[fits['success_fields_differ'].eq(True)]
+    unequal = fits[fits['first_50_equal'].eq(False)]
+    lines += ['', 'Records with the arm label outside the seed list (counted, '
+              'not used): ' + ('; '.join(
+                  f'{a} seeds {o} ({n})' for a, o, n in zip(
+                      out['arm'], out['outside_list'], out['n_outside_list']))
+                  or 'none') + '.',
+              '', 'Fits whose test_macro_f1 and test_macro_f1_last lie on '
+              f'different sides of {F3_PA_SUCCESS:g}: ' + ('; '.join(
+                  f'{a} seed {s} ({x:.3f} / {y:.3f})' for a, s, x, y in zip(
+                      differ['arm'], differ['seed'], differ['test_macro_f1'],
+                      differ['test_macro_f1_last'])) or 'none') + '.',
+              '', 'Script-arm seeds whose first 50 validation epochs differ '
+              'from the 50-epoch lrc/ncp [optimizer=rmsprop_legacy] fit of '
+              'the seed (their 200-epoch values are reported as usual): '
+              + (', '.join(str(s) for s in unequal['seed']) or 'none') + '.',
+              '', 'Learning success: test_macro_f1_last >= '
+              f'{F3_PA_SUCCESS:g}, a diverged fit (training_diverged or a '
+              'non-finite test_macro_f1_last) fails. Exit epoch: first '
+              f'epoch with validation macro-F1 > {B5_EXIT_THRESHOLD:g}; '
+              'seeds without one are censored at the budget, a median '
+              "beyond it reads '> E'. Median test_macro_f1: a non-finite "
+              'value enters at 0. Success intervals: Clopper–Pearson, 95 %, '
+              'two-sided. No p-value; no reading enters m or a confirmatory '
+              'verdict (F-12). A reading needs every listed seed of its arms '
+              '(except the manipulation check and the count next to T-A1).',
+              '']
+    return '\n'.join(lines)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument('--runs', nargs='+', default=['results/runs'])
@@ -3221,6 +3645,14 @@ def main(argv=None) -> int:
                         'rows decided by the exact permutation p, T-A1 by '
                         'the exact McNemar p; writes <out>/f3_families.csv '
                         'and <out>/f3_pa_fits.csv')
+    p.add_argument('--f3-descriptive', default=None, metavar='SPEC.yaml',
+                   help='the descriptive F3 arms (F3_DESCRIPTIVE_ARMS: block '
+                        'A, budget and script arm) from a spec of explicit '
+                        'path lists per arm (configs/aggregate/'
+                        'f3_descriptive.yaml); counts and Clopper-Pearson '
+                        'intervals, no p-value; writes <out>/'
+                        'f3_descriptive_fits.csv, f3_descriptive_arms.csv '
+                        'and f3_descriptive_readings.csv')
     p.add_argument('--lambda-grid', default=None, metavar='DIR',
                    help='the *.lambda_grid.evalonly.json files below DIR '
                         '(committee eval-only vote-lambda grid, #137); '
@@ -3242,7 +3674,7 @@ def main(argv=None) -> int:
     if df.empty and not (args.hpo_dir or args.pa_runs or args.rollout_runs
                          or args.co_runs or args.f2_families
                          or args.descriptive or args.f3_families
-                         or args.lambda_grid):
+                         or args.f3_descriptive or args.lambda_grid):
         print(f'No run JSONs found in {args.runs}', file=sys.stderr)
         return 1
 
@@ -3315,6 +3747,12 @@ def main(argv=None) -> int:
         f3.to_csv(os.path.join(args.out, 'f3_families.csv'), index=False)
         f3_fits.to_csv(os.path.join(args.out, 'f3_pa_fits.csv'), index=False)
         parts.append(f3_report(f3, f3_fits))
+    if args.f3_descriptive:
+        tables = f3_descriptive(load_f3_descriptive_spec(args.f3_descriptive))
+        for name, t in zip(('fits', 'arms', 'readings'), tables):
+            t.to_csv(os.path.join(args.out, f'f3_descriptive_{name}.csv'),
+                     index=False)
+        parts.append(f3_descriptive_report(*tables))
     if args.lambda_grid:
         grid = lambda_grid(args.lambda_grid)
         if grid.empty:
