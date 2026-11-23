@@ -16,19 +16,25 @@ import yaml
 from scipy.stats import wilcoxon
 
 from experiments.aggregate_results import (CONVERGED, EXCLUDED, F3_B_COLUMNS,
-                                           F3_COLUMNS, F3_FAMILIES,
-                                           F3_FIT_COLUMNS, F3_SEEDS, F3_TESTS,
-                                           N_BOOT, _const_phase_flagged,
-                                           _f2_arm, _f3_arm, _f3_test,
+                                           F3_COLUMNS, F3_E_COLUMNS,
+                                           F3_E_L17_RECORDINGS,
+                                           F3_E_NESTED_LABEL, F3_FAMILIES,
+                                           F3_FIT_COLUMNS, F3_FOLD_SEEDS,
+                                           F3_SEEDS, F3_TESTS, N_BOOT,
+                                           _const_phase_flagged,
+                                           _e_one_class, _f2_arm, _f3_arm,
+                                           _f3_test, _median_diff_ci,
                                            _sequence_row, _signed_ranks,
                                            arm_label, f3_family_b,
-                                           f3_family_blocks, f3_report,
-                                           floor_share_bound,
+                                           f3_family_blocks, f3_family_e,
+                                           f3_report, floor_share_bound,
                                            learning_success, load_f3_spec,
                                            load_sequence_runs, main,
                                            mcnemar_exact, not_learned,
                                            permutation_p, wilcoxon_test)
-from src.evaluation.stats import bootstrap_median_ci, crossed_median_diff_ci
+from src.evaluation.metrics import one_class_macro_f1
+from src.evaluation.stats import (bootstrap_median_ci, crossed_median_diff_ci,
+                                  nested_median_ci, stratified_median_ci)
 from tests.experiments.test_aggregate_results import _write_co
 
 F1, F2, F3 = 'F1-2026-10-26', 'F2-2026-11-05', 'F3-2026-11-18'
@@ -84,11 +90,12 @@ GOOD = {f'r{i}': [[6, 1], [1, 5]] for i in range(3)}   # one-class 0.35
 
 
 def _pa(path, label, seed, f1, pv=F3, last=None, lr=3e-3, budget=30000,
-        above=False, name=None, drop=(), split_seed=0, extra=None):
+        above=False, name=None, drop=(), split_seed=0, extra=None,
+        eff_extra=None):
     cell, wiring, build = _cell(label, lr)
     eff = {'task': 'person_activity', 'param_budget': budget, 'epochs': 50,
            'split_seed': split_seed, 'ode_unfolds': 6, 'protocol_version': pv,
-           'build': build}
+           'build': build, **(eff_extra or {})}
     rec = {'cell': cell, 'wiring': wiring, 'seed': seed, 'epochs': 50,
            'param_budget': budget, 'budget_deviation': 0.02,
            'budget_above_tolerance': above, 'lr': lr, 'clipnorm': 1.0,
@@ -100,6 +107,30 @@ def _pa(path, label, seed, f1, pv=F3, last=None, lr=3e-3, budget=30000,
         del rec[k]
     rec.update(extra or {})
     _dump(os.path.join(path, name or f'{cell}_{wiring}_seed{seed}.json'), rec)
+
+
+def _fold_recs(fold):
+    """The test recordings of fold k (#134): index k of every person."""
+    return [f'{p}{fold + 1:02d}' for p in 'ABCDE']
+
+
+def _pe(path, label, seed, f1, fold=None, per_rec=None, cms=None,
+        dt_scale=3.7, eff_fold=None, extra=None, **kw):
+    """A family E fold record (#133) through _pa: split_fold = the fold of
+    the seed (F3_FOLD_SEEDS) unless given, every test recording of the fold
+    at f1 (or per_rec) with the confusions GOOD['r0'] (or cms), the resolved
+    dt_scale at the top level and in config.effective; eff_fold sets
+    config.effective.split_fold alone."""
+    fold = (seed - 10) // 5 if fold is None else fold
+    recs = _fold_recs(fold)
+    _pa(path, label, seed, f1, extra={
+        'split_fold': fold, 'dt_scale': dt_scale,
+        'test_macro_f1_per_recording': per_rec or dict.fromkeys(recs, f1),
+        'test_confusion_by_recording': cms or dict.fromkeys(recs,
+                                                            GOOD['r0']),
+        **(extra or {})},
+        eff_extra={'split_fold': fold if eff_fold is None else eff_fold,
+                   'dt_scale': dt_scale}, **kw)
 
 
 CO_VIEW = {'cons': 'off', 'avg_in': 'mean', 'fault_mean': 'fault_mean'}
@@ -126,7 +157,9 @@ def _co(path, label, seed, f1, pv=F3, epochs=60, by_fault=None,
 
 def _write(test, side, path, seed, value, **kw):
     e = F3_TESTS[test]
-    if e['task'] == 'pa':
+    if e['family'] == 'E':
+        _pe(path, e[side], seed, value, **kw)
+    elif e['task'] == 'pa':
         _pa(path, e[side], seed, value, **kw)
     elif e['task'] == 'co':
         _co(path, e[side], seed, value, **kw)
@@ -200,8 +233,9 @@ def test_registry_defines_every_test_once_with_its_rules():
         'B': ('required', ['T-B1', 'T-B2']),
         'C': ('required', ['T-C1', 'T-C2']),
         'D': ('required', ['T-D1', 'T-D2']),
+        'E': ('required', ['T-E1', 'T-E2', 'T-E3']),
         'F': ('required', ['T-F1', 'T-F2']),
-        'G': ('conditional', ['T-G1', 'T-G2']),
+        'G': ('required', ['T-G1', 'T-G2']),
         'H': ('optional', ['T-H1', 'T-H2'])}
     for test, e in F3_TESTS.items():
         assert e['kind'] in ('wilcoxon', 'mcnemar', 'did')
@@ -212,7 +246,9 @@ def test_registry_defines_every_test_once_with_its_rules():
         assert e['floor'] == ('none' if e['family'] == 'B' else
                               'informational' if 'success' in e
                               else 'exclusive')
-        assert e['endpoint'] in (('test_macro_f1', 'test_macro_f1_last')
+        assert e['endpoint'] in (('test_macro_f1_per_recording',)
+                                 if e['family'] == 'E'
+                                 else ('test_macro_f1', 'test_macro_f1_last')
                                  if e['task'] == 'pa'
                                  else ('test_macro_f1_by_fault',)
                                  if e['task'] == 'co'
@@ -224,6 +260,8 @@ def test_registry_defines_every_test_once_with_its_rules():
             if e['task'] == 'pa'} == {
         'T-A1': 'test_macro_f1_last', 'T-A2': 'test_macro_f1',     # E14
         'T-D1': 'test_macro_f1', 'T-D2': 'test_macro_f1',
+        **dict.fromkeys(('T-E1', 'T-E2', 'T-E3'),
+                        'test_macro_f1_per_recording'),
         'T-G2': 'test_macro_f1', 'T-H2': 'test_macro_f1'}
     assert F3_TESTS['T-A1']['a'] == 'lrc/ncp' + LEGACY
     assert F3_TESTS['T-A1']['success'] == ('threshold', 0.30)
@@ -233,8 +271,8 @@ def test_registry_defines_every_test_once_with_its_rules():
         **{t: ('split_seed', 'corruption_seed', 'val_seed')
            for t in ('T-B1', 'T-B2')},
         **{t: ('epochs', 'param_budget') for t in (
-            'T-C1', 'T-C2', 'T-D1', 'T-D2', 'T-F1', 'T-F2', 'T-G1', 'T-G2',
-            'T-H1', 'T-H2')}}
+            'T-C1', 'T-C2', 'T-D1', 'T-D2', 'T-E1', 'T-E2', 'T-E3', 'T-F1',
+            'T-F2', 'T-G1', 'T-G2', 'T-H1', 'T-H2')}}
     assert F3_TESTS['T-F1']['success'] == ('floor+', 2.0)
     # family B (#132): the committee arms by name, the registry's record
     # fields, the fault levels each test reads
@@ -340,7 +378,7 @@ def test_world_through_main_writes_csv_and_summary(tmp_path):
                  '--f3-families', spec]) == 0
     df = pd.read_csv(os.path.join(out, 'f3_families.csv')).set_index('test')
     assert list(df.index) == REQUIRED
-    assert (df['m'] == 2).all() and (df['m_f3'] == 10).all()
+    assert (df['m'] == 2).all() and (df['m_f3'] == 14).all()
     assert (df['n_pairs'] == df['n_expected']).all()
     assert (df['n_outside_list'] == 0).all()
     raw = pd.read_csv(os.path.join(out, 'f3_families.csv'),
@@ -354,7 +392,7 @@ def test_world_through_main_writes_csv_and_summary(tmp_path):
                                                            'A>B')
     assert r['p_raw'] == pytest.approx(2 / 2 ** 20)
     assert r['p_adj'] == pytest.approx(4 / 2 ** 20)
-    assert r['p_adj_f3'] == pytest.approx(20 / 2 ** 20)
+    assert r['p_adj_f3'] == pytest.approx(28 / 2 ** 20)
     assert r['p_perm'] == pytest.approx(r['p_raw'])
     assert df.loc['T-A2', 'ci_units'] == 'seed x recording'
     assert df.loc['T-A1', 'method'] == 'mcnemar-exact'
@@ -363,10 +401,11 @@ def test_world_through_main_writes_csv_and_summary(tmp_path):
     assert str(df.loc['T-C1', 'lr_a']) == '0.001'
     fits = pd.read_csv(os.path.join(out, 'f3_pa_fits.csv'))
     assert list(fits.columns) == F3_FIT_COLUMNS
-    assert len(fits) == 8 * 20                 # A1, A2, D1, D2, two arms
+    # A1, A2, D1, D2 and G2 (ten seeds), two arms; E1, E2: 25 runs
+    assert len(fits) == 8 * 20 + 2 * 10 + 4 * 25
     with open(os.path.join(out, 'summary.md'), encoding='utf-8') as f:
         text = f.read()
-    assert '## F3 test families' in text and 'F3-wide m=10' in text
+    assert '## F3 test families' in text and 'F3-wide m=14' in text
     for legend in ('The deciding p of a Wilcoxon row is the exact sign-flip '
                    'permutation p of the Wilcoxon statistic',
                    'reading and significant read p perm adj, significant_f3 '
@@ -377,7 +416,7 @@ def test_world_through_main_writes_csv_and_summary(tmp_path):
                    'an arm at the floor in at least 30 % of the seeds'):
         assert legend in ' '.join(text.split()), legend
     assert _report_cells(text, 'T-C1')['p perm adj F3'] == format(
-        20 / 2 ** 20, '.4g')
+        28 / 2 ** 20, '.4g')
     assert '| C | 2 | T-C1 | periodic_predator_prey | vpt_multi_median ' \
         '| two-sided | cfc_lrc/ncp | gru/ncp | 20/20 | tested | PASS ' \
         '| exact |' in text
@@ -450,7 +489,7 @@ def test_mcnemar_row_on_the_learning_success(tmp_path):
     r = blocks.set_index('test').loc['T-A1']
     assert (r['method'], r['n10'], r['n01']) == ('mcnemar-exact', 20, 0)
     assert r['p_raw'] == pytest.approx(2 / 2 ** 20)
-    assert r['p_adj_f3'] == pytest.approx(20 / 2 ** 20)
+    assert r['p_adj_f3'] == pytest.approx(28 / 2 ** 20)
     assert r['significant'] and r['significant_f3']
     assert r['rate_a'].startswith('20/20') and r['rate_b'].startswith('0/20')
     assert r['rate_diff'] == 1.0
@@ -469,12 +508,12 @@ def test_mcnemar_row_on_the_learning_success(tmp_path):
         assert cells[col] == '—', col
     assert (cells['flags'], cells['floor_bound']) == ('A>B', 'YES (B)')
     # eight discordant pairs, all n10: exact p 2/256 passes the family cut
-    # (m = 2) but not the F3-wide one (m_f3 = 10)
+    # (m = 2) but not the F3-wide one (m_f3 = 14)
     r = _row(tmp_path / 'cut', 'T-A1',
              values={'T-A1': ([0.6] * n, [0.1] * 8 + [0.6] * 12)})
     assert (r['n10'], r['n01']) == (8, 0)
     assert r['p_adj'] == pytest.approx(4 / 256)
-    assert r['p_adj_f3'] == pytest.approx(20 / 256)
+    assert r['p_adj_f3'] == pytest.approx(28 / 256)
     assert r['significant'] and not r['significant_f3']
     assert r['only_under_family_cut'] and r['reading'] == 'PASS'
 
@@ -521,7 +560,9 @@ def test_pa_fits_carry_both_endpoint_fields(tmp_path):
         ('T-D1', 'b'): {14: {'drop': ('test_macro_f1_last',)}}}))
     spec['T-A2']['b']['paths'] = spec['T-A1']['a']['paths']
     blocks, fits = f3_family_blocks(spec)
-    assert list(fits.columns) == F3_FIT_COLUMNS and len(fits) == 7 * 20
+    # one A/D fit shared by two tests; G2 ten seeds, E1 and E2 25 runs
+    assert list(fits.columns) == F3_FIT_COLUMNS and len(fits) == (
+        7 * 20 + 2 * 10 + 4 * 25)
     shared = fits[fits['tests'] == 'T-A1.a; T-A2.b'].set_index('seed')
     assert len(shared) == 20
     assert shared.loc[12, ['test_macro_f1', 'test_macro_f1_last']].tolist() \
@@ -669,7 +710,7 @@ def test_per_arm_lr_is_reported_not_matched(tmp_path):
 def test_d_g_h_match_epochs_and_budget(tmp_path, test, field, value):
     with pytest.raises(SystemExit,
                        match=rf'{test}: .*differ in {field}.*\[13\]'):
-        _blocks(_world(tmp_path, REQUIRED + ['T-G1', 'T-G2', 'T-H1', 'T-H2'],
+        _blocks(_world(tmp_path, REQUIRED + ['T-H1', 'T-H2'],
                        opts={(test, 'b'): {13: {'extra': {field: value}}}}))
 
 
@@ -829,10 +870,10 @@ def test_one_sided_h_test(tmp_path):
     tests = REQUIRED + ['T-H1', 'T-H2']
     b = _blocks(_world(tmp_path, tests))
     r = b.loc['T-H1']
-    assert (r['side'], r['m'], r['m_f3']) == ('greater', 2, 12)
+    assert (r['side'], r['m'], r['m_f3']) == ('greater', 2, 16)
     assert r['p_raw'] == pytest.approx(1 / 1024)
     assert r['p_perm'] == pytest.approx(1 / 1024)
-    assert r['p_adj_f3'] == pytest.approx(12 / 1024)
+    assert r['p_adj_f3'] == pytest.approx(16 / 1024)
     assert (r['reading'], r['direction']) == ('PASS', 'A>B')
     rev = [20.0 - 0.1 * (i + 1) for i in range(10)]
     r = _row(tmp_path / 'rev', 'T-H1', tests,
@@ -1132,7 +1173,7 @@ def test_flags_count_unpaired_fits_and_stay_empty_outside_c_and_f(tmp_path):
     record: it counts in both flags although it is not paired. The LV rows
     of families G and H leave the flag columns empty."""
     b = _blocks(_world(
-        tmp_path, REQUIRED + ['T-G1', 'T-G2', 'T-H1', 'T-H2'],
+        tmp_path, REQUIRED + ['T-H1', 'T-H2'],
         opts={('T-C1', 'b'): {29: {'extra': {'val_loss_curve': _curve(300),
                                              'best_val_epoch': 300}}}},
         skip={('T-C1', 'a'): [29]}))
@@ -1179,7 +1220,7 @@ def test_const_phase_window_edges():
 # --- spec ---------------------------------------------------------------------
 
 def test_spec_rules(tmp_path):
-    spec = _world(tmp_path, REQUIRED + ['T-G1', 'T-G2'])
+    spec = _world(tmp_path, REQUIRED + ['T-H1', 'T-H2'])
     with open(spec, encoding='utf-8') as f:
         good = yaml.safe_load(f)
 
@@ -1194,9 +1235,11 @@ def test_spec_rules(tmp_path):
         with pytest.raises(SystemExit, match=match):
             load_f3_spec(path)
 
-    assert set(check(lambda s: [s.pop(t) for t in ('T-G1', 'T-G2')],
+    assert set(check(lambda s: [s.pop(t) for t in ('T-H1', 'T-H2')],
                      None)) == set(REQUIRED)
-    check(lambda s: s.pop('T-G2'), 'left out only together')
+    check(lambda s: s.pop('T-H2'), 'left out only together')
+    check(lambda s: [s.pop(t) for t in ('T-G1', 'T-G2')],
+          r"missing required tests \['T-G1', 'T-G2'\]")
     check(lambda s: s.pop('T-D1'), r"missing required tests \['T-D1'\]")
     check(lambda s: s.__setitem__('T-Z9', s['T-D1']), r"unknown.*T-Z9")
     check(lambda s: s['T-C1'].pop('seeds'), 'keys')
@@ -1213,11 +1256,12 @@ def test_spec_rules(tmp_path):
 
 def test_spec_seed_list_must_equal_the_family_list(tmp_path):
     """F-1: a test of a family with a registry list names exactly those
-    seeds (any order); G and H have none."""
+    seeds (any order); H has none."""
     assert {f: list(r) for f, r in F3_SEEDS.items()} == {
         **{f: list(range(10, 30)) for f in 'ABCD'},
-        'E': list(range(10, 15)), 'F': list(range(10, 20))}
-    with open(_world(tmp_path, REQUIRED + ['T-G1', 'T-G2']),
+        'E': list(range(10, 35)), 'F': list(range(10, 20)),
+        'G': list(range(10, 20))}
+    with open(_world(tmp_path, REQUIRED + ['T-H1', 'T-H2']),
               encoding='utf-8') as f:
         good = yaml.safe_load(f)
 
@@ -1239,15 +1283,16 @@ def test_spec_seed_list_must_equal_the_family_list(tmp_path):
         with pytest.raises(SystemExit, match=match):
             load(mutate)
     spec = load(lambda s: (s['T-D1']['seeds'].reverse(),
-                           s['T-G1'].__setitem__('seeds', [0, 1, 2])))
-    assert spec['T-D1']['seeds'][0] == 29 and spec['T-G1']['seeds'] == [0, 1,
+                           s['T-H1'].__setitem__('seeds', [0, 1, 2])))
+    assert spec['T-D1']['seeds'][0] == 29 and spec['T-H1']['seeds'] == [0, 1,
                                                                          2]
 
 
 def test_template_lists_every_registered_test_with_placeholders():
     """The template lists the registered tests whose status (test or
     family) is not optional, every path a <..._RUN_DIR>/results placeholder;
-    family A one path per seed half, family B one run folder."""
+    family A one path per seed half, family B one run folder, family E one
+    run folder per fold (T-E3 optional, not listed)."""
     path = os.path.join(REPO, 'configs/aggregate/f3_families.yaml')
     with open(path, encoding='utf-8') as f:
         t = yaml.safe_load(f)
@@ -1255,6 +1300,7 @@ def test_template_lists_every_registered_test_with_placeholders():
               if 'optional' not in (e['status'],
                                     F3_FAMILIES[e['family']]['status'])]
     assert list(t) == listed and 'T-H1' not in t and 'T-B1' in t
+    assert 'T-E3' not in t and {'T-E1', 'T-G1'} <= set(t)
     for test in listed:
         e = F3_TESTS[test]
         assert [t[test][s]['label'] for s in 'ab'] == [e['a'], e['b']]
@@ -1263,6 +1309,10 @@ def test_template_lists_every_registered_test_with_placeholders():
                    for s in 'ab' for p in t[test][s]['paths'])
         if e['family'] == 'A':
             assert all(len(t[test][s]['paths']) == 2 for s in 'ab')
+        if e['family'] == 'E':
+            assert all(t[test][s]['paths'] == [
+                f'<F3_E_PA_FOLD{k}_RUN_DIR>/results' for k in range(5)]
+                for s in 'ab')
     assert {p for test in ('T-B1', 'T-B2') for s in 'ab'
             for p in t[test][s]['paths']} == {'<F3_B_CO_K30_RUN_DIR>/results'}
     with pytest.raises(SystemExit, match='no such path'):
@@ -1459,12 +1509,12 @@ def test_family_b_rows_of_the_default_world(tmp_path):
     for t in ('T-B1', 'T-B2'):
         r = b.loc[t]
         assert (r['family'], r['task'], r['m'], r['m_f3'], r['side'],
-                r['floor_rule']) == ('B', 'co', 2, 10, 'greater', 'none')
+                r['floor_rule']) == ('B', 'co', 2, 14, 'greater', 'none')
         assert (r['n_pairs'], r['n_expected'], r['status'], r['reading'],
                 r['direction']) == (20, 20, 'tested', 'PASS', 'A>B')
         assert r['p_perm'] == pytest.approx(1 / 2 ** 20)
         assert r['p_perm_adj'] == pytest.approx(2 / 2 ** 20)
-        assert r['p_perm_adj_f3'] == pytest.approx(10 / 2 ** 20)
+        assert r['p_perm_adj_f3'] == pytest.approx(14 / 2 ** 20)
         assert (r['p_raw'], r['method']) == (pytest.approx(1 / 2 ** 20),
                                              'exact')
         assert r['n_positive'] == 20 and not r['median_sign_differs']
@@ -1494,7 +1544,7 @@ def test_t_b1_exact_one_sided_p_at_twenty_seeds(tmp_path):
     assert r['p_perm'] == pytest.approx(5 / 2 ** 20)
     assert (r['p_raw'], r['method']) == (pytest.approx(5 / 2 ** 20), 'exact')
     assert r['p_perm_adj'] == pytest.approx(10 / 2 ** 20)
-    assert r['p_perm_adj_f3'] == pytest.approx(50 / 2 ** 20)
+    assert r['p_perm_adj_f3'] == pytest.approx(70 / 2 ** 20)
     assert r['w_plus_minus_w_minus'] == 204
     assert (r['reading'], r['direction'], r['n_positive']) == ('PASS', 'A>B',
                                                                18)
@@ -1762,3 +1812,392 @@ def test_family_b_descriptive_rows_and_section(tmp_path):
     assert '| d15 | — | 15 | 20 |' in section
     assert not [w for w in ('p adj', 'p perm', 'significant', 'PASS', 'FAIL')
                 if w in section]
+
+
+# --- family E (#133) ----------------------------------------------------------
+
+E_SEEDS = list(range(10, 35))
+E_FOLDS = [(s - 10) // 5 for s in E_SEEDS]
+
+
+def test_family_e_registry_seeds_and_l17():
+    assert {k: list(r) for k, r in F3_FOLD_SEEDS.items()} == {
+        k: list(range(10 + 5 * k, 15 + 5 * k)) for k in range(5)}
+    assert sorted(s for r in F3_FOLD_SEEDS.values() for s in r) == E_SEEDS
+    l17 = [r for k, rs in F3_E_L17_RECORDINGS.items() for r in rs]
+    assert len(l17) == len(set(l17)) == 15
+    assert all(r in _fold_recs(k) for k, rs in F3_E_L17_RECORDINGS.items()
+               for r in rs)
+    assert F3_E_L17_RECORDINGS[2] == tuple(_fold_recs(2))
+    e = F3_TESTS['T-E3']
+    assert (e['status'], e['a'], e['b']) == ('optional', 'cfc/dense',
+                                             'cfc_static/dense')
+    assert 'T-E3' not in REQUIRED and {'T-E1', 'T-E2', 'T-G1'} <= set(
+        REQUIRED)
+    assert list(F3_TESTS).index('T-E1') == list(F3_TESTS).index('T-D2') + 1
+
+
+def test_family_e_rows_of_the_default_world(tmp_path):
+    """A = B + 0.01 (i + 1) on the 25 runs: exact p 2 / 2^25 (also the p of
+    wilcoxon_test), m = 2, n_expected 25, the fold-stratified interval;
+    T-E3 is not in the spec; with it the E rows and m_f3 stay the same."""
+    b = _blocks(_world(tmp_path))
+    d = np.array([0.6 + 0.01 * (i + 1) for i in range(25)]) - 0.6
+    for t in ('T-E1', 'T-E2'):
+        r = b.loc[t]
+        assert (r['family'], r['m'], r['m_f3'], r['n_expected'], r['n_pairs'],
+                r['status'], r['reading'], r['direction']) == (
+            'E', 2, 14, 25, 25, 'tested', 'PASS', 'A>B')
+        assert r['endpoint'] == 'test_macro_f1_per_recording'
+        assert r['p_perm'] == pytest.approx(2 / 2 ** 25)
+        assert (r['p_raw'], r['method']) == (pytest.approx(2 / 2 ** 25),
+                                             'exact')
+        assert r['p_perm_adj_f3'] == pytest.approx(28 / 2 ** 25)
+        assert not r['verdict_flip'] and not r['median_sign_differs']
+        assert r['ci_units'] == 'fold-stratified'
+        assert (r['median_diff_lo'], r['median_diff_hi']) == \
+            stratified_median_ci(d, E_FOLDS, N_BOOT)
+        assert r['median_diff'] == pytest.approx(0.13)
+        assert not r['ci_includes_zero'] and r['n_positive'] == 25
+        assert (r['floor_a'], r['floor_b'], r['floor_bound']) == (
+            '0/25', '0/25', False)
+        assert r['w_plus_minus_w_minus'] == 325
+    assert 'T-E3' not in b.index
+    with_e3 = _blocks(_world(tmp_path / 'e3', REQUIRED + ['T-E3']))
+    assert (with_e3['m_f3'] == 14).all()
+    assert with_e3.loc[['T-E1', 'T-E2'], 'm'].tolist() == [2, 2]
+
+
+def test_family_e_pass_with_median_zero(tmp_path):
+    """Run differences 11 x -1, 2 x 0, 2 x +2, 10 x +3 (x 0.01): exact
+    two-sided p 0.0194, median 0, PASS with median_sign_differs."""
+    units = [-1] * 11 + [0] * 2 + [2] * 2 + [3] * 10
+    r = _row(tmp_path, 'T-E1', values={
+        'T-E1': ([0.6 + 0.01 * u for u in units], [0.6] * 25)})
+    assert r['p_perm'] == pytest.approx(0.0194, abs=5e-5)
+    assert r['median_diff'] == 0 and r['w_plus_minus_w_minus'] == 144
+    assert (r['reading'], r['direction'], r['median_sign_differs']) == (
+        'PASS', 'A>B', True)
+
+
+def test_family_e_run_value_is_the_recording_mean(tmp_path):
+    """The run value averages the per-recording values of the fold (not the
+    pooled test_macro_f1); a non-finite one makes the run diverged, entering
+    at 0 and at the floor; training_diverged counts in n_diverged; both
+    pooled fields go to f3_pa_fits."""
+    per = dict(zip(_fold_recs(0), (0.5, 0.6, 0.7, 0.8, 0.9)))
+    spec = load_f3_spec(_world(tmp_path, opts={('T-E1', 'b'): {
+        10: {'per_rec': per},
+        11: {'per_rec': {**per, 'C01': None}},
+        12: {'extra': {'training_diverged': True}}}}))
+    df, _, _ = _f3_arm('T-E1', 'b', F3_TESTS['T-E1'], spec['T-E1']['b'],
+                       E_SEEDS, {}, ('split_fold', 'seed'))
+    df = df.set_index('seed')
+    assert df.loc[10, 'metric'] == pytest.approx(0.7)
+    assert df.loc[10, 'test_macro_f1'] == 0.6          # pooled, secondary
+    assert df.loc[11, 'diverged'] and df.loc[11, 'below']
+    assert df.loc[12, 'training_diverged'] and not df.loc[12, 'diverged']
+    blocks, fits = f3_family_blocks(spec)
+    r = blocks.set_index('test').loc['T-E1']
+    assert (r['n_diverged_a'], r['n_diverged_b'], r['n_nonfinite'],
+            r['floor_b']) == (0, 2, 1, '1/25')
+    e1 = fits[fits['tests'] == 'T-E1.b'].set_index('seed')
+    assert len(e1) == 25 and e1.loc[10, 'test_macro_f1'] == 0.6
+    assert list(fits.columns) == F3_FIT_COLUMNS
+
+
+# two recordings of unequal length with different class sets (rows = true):
+# pooled labels 90 / 13 / 7, majority class 0; one-class values 0.4737 (A01)
+# and 0 (B01, no class-0 window): recording mean 0.2368, pooled 0.30
+FLOOR_CMS = {'A01': [[85, 5, 0], [5, 5, 0], [0, 0, 0]],
+             'B01': [[0, 0, 0], [0, 2, 1], [0, 3, 4]]}
+
+
+def test_family_e_floor_on_the_recording_mean(tmp_path):
+    cms = np.array([FLOOR_CMS[k] for k in sorted(FLOOR_CMS)], float)
+    assert _e_one_class(cms) == pytest.approx((180 / 190) / 2 / 2)
+    assert one_class_macro_f1(cms.sum(axis=(0, 2))) == pytest.approx(0.3)
+    path = str(tmp_path / 'b')
+    for seed, (a01, b01) in ((10, (0.30, 0.24)), (11, (0.28, 0.20))):
+        _pe(path, 'gru/ncp', seed, 0.27, cms=FLOOR_CMS,
+            per_rec={'A01': a01, 'B01': b01})
+    arm = {'label': 'gru/ncp', 'protocol_version': [F3], 'paths': [path]}
+    df, _, _ = _f3_arm('T-E1', 'b', F3_TESTS['T-E1'], arm, E_SEEDS, {},
+                       ('split_fold', 'seed'))
+    # run 10 at 0.27: above 0.2368 + 0.01, at the pooled one-class 0.30;
+    # run 11 at 0.24: below the margin of the recording mean
+    assert df['metric'].tolist() == pytest.approx([0.27, 0.24])
+    assert df['below'].tolist() == [False, True]
+
+
+@pytest.mark.parametrize('k, bound', [(8, True), (7, False)])
+def test_family_e_floor_share(tmp_path, k, bound):
+    vb = [0.2] * k + [0.6] * (25 - k)
+    r = _row(tmp_path, 'T-E1', values={
+        'T-E1': ([0.7 + 0.01 * i for i in range(25)], vb)})
+    assert (r['floor_b'], r['floor_bound'], r['reading']) == (
+        f'{k}/25', bound, 'floor-bound' if bound else 'PASS')
+
+
+def test_family_e_records_off_their_fold_are_outside(tmp_path):
+    spec = load_f3_spec(_world(tmp_path))
+    folder = os.path.join(spec['T-E1']['a']['paths'][0], 'other')
+    _pe(folder, 'cfc_lrc/ncp', 12, 0.1, fold=3, name='off_fold.json')
+    _pe(folder, 'cfc_lrc/ncp', 40, 0.1, fold=0, name='off_list.json')
+    r = f3_family_blocks(spec)[0].set_index('test').loc['T-E1']
+    assert (r['n_outside_list'], r['outside_list']) == (
+        2, 'a: fold 0 seed 40, fold 3 seed 12')
+    assert r['n_pairs'] == 25 and r['p_perm'] == pytest.approx(2 / 2 ** 25)
+
+
+@pytest.mark.parametrize('opts, match', [
+    ({17: {'eff_fold': 2}},
+     r'T-E1: arms A and B differ in the data key \(split_seed, split_fold\)'
+     r': .*seed17\.json / .*seed17\.json'),
+    ({17: {'split_seed': 1}}, r'T-E1: .*data key.*seed17\.json'),
+    ({17: {'dt_scale': 4.2}},
+     r'T-E1: arms A and B differ in config\.effective\.dt_scale: '
+     r'.*seed17\.json'),
+    ({17: {'extra': {'split_fold': None}}},
+     r'seed17\.json: T-E1\.b \(gru/ncp\): record without split_fold'),
+    ({17: {'extra': {'epochs': 60}}}, r'T-E1: .*differ in epochs.*\[17\]')])
+def test_family_e_record_and_pair_rules(tmp_path, opts, match):
+    with pytest.raises(SystemExit, match=match):
+        _blocks(_world(tmp_path, opts={('T-E1', 'b'): opts}))
+
+
+def test_family_e_duplicate_run_raises(tmp_path):
+    spec = load_f3_spec(_world(tmp_path))
+    _pe(os.path.join(spec['T-E1']['b']['paths'][0], 'again'), 'gru/ncp', 22,
+        0.6)
+    with pytest.raises(SystemExit, match=r'two records of T-E1\.b \(gru/ncp\) '
+                                         r'and one split_fold/seed'):
+        f3_family_blocks(spec)
+
+
+def test_family_e_record_without_seed_names_the_file(tmp_path):
+    spec = load_f3_spec(_world(tmp_path))
+    _dump(os.path.join(spec['T-E1']['a']['paths'][0], 'noseed.json'), {
+        'cell': 'cfc_lrc', 'wiring': 'ncp', 'param_budget': 30000,
+        'test_macro_f1': 0.5, 'split_fold': 0,
+        'config': {'effective': {'protocol_version': F3, 'epochs': 50,
+                                 'task': 'person_activity', 'split_fold': 0}}})
+    with pytest.raises(SystemExit, match=r'noseed\.json: T-E1\.a '
+                                         r'\(cfc_lrc/ncp\): record without '
+                                         r'seed'):
+        f3_family_blocks(spec)
+    with pytest.raises(SystemExit, match=r'noseed\.json: .*without seed'):
+        f3_family_e(spec)
+
+
+def test_family_e_skips_wandb_summaries(tmp_path):
+    spec = load_f3_spec(_world(tmp_path))
+    want = f3_family_blocks(spec), f3_family_e(spec)
+    for t in ('T-E1', 'T-E2'):
+        for s in 'ab':
+            _run_folder(spec[t][s]['paths'][0])
+    got = f3_family_blocks(spec), f3_family_e(spec)
+    for g, w in zip((*got[0], got[1]), (*want[0], want[1])):
+        pd.testing.assert_frame_equal(g, w)
+
+
+def test_family_e_empty_fold_folders_are_incomplete(tmp_path):
+    spec = load_f3_spec(_world(tmp_path))
+    for s in 'ab':
+        spec['T-E1'][s]['paths'] = [str(tmp_path / 'empty' / s / f'fold{k}')
+                                    for k in range(5)]
+        for p in spec['T-E1'][s]['paths']:
+            os.makedirs(p)
+    r = f3_family_blocks(spec)[0].set_index('test').loc['T-E1']
+    assert (r['n_pairs'], r['status'], r['reading']) == (0, 'incomplete',
+                                                         'incomplete')
+    with open(tmp_path / 'spec2.yaml', 'w', encoding='utf-8') as f:
+        yaml.safe_dump(spec, f)
+    out = str(tmp_path / 'out')
+    assert main(['--runs', str(tmp_path / 'none'), '--out', out,
+                 '--f3-families', str(tmp_path / 'spec2.yaml')]) == 0
+    fe = pd.read_csv(os.path.join(out, 'f3_family_e.csv'))
+    assert set(fe['test']) == {'T-E2'}
+
+
+def test_family_e_incomplete_below_25_pairs(tmp_path):
+    r = _row(tmp_path, 'T-E1', skip={('T-E1', 'b'): [33]})
+    assert (r['n_expected'], r['n_pairs'], r['status'], r['reading']) == (
+        25, 24, 'incomplete', 'incomplete')
+    assert r['p_perm'] == pytest.approx(2 / 2 ** 24)
+    assert r['ci_units'] == 'fold-stratified'
+
+
+def test_family_e_arms_in_shared_fold_folders(tmp_path):
+    """The three arms of a fold in one run folder per fold, as the campaign
+    writes them: the statistics equal those of separate folders; each arm
+    counts the other two labels."""
+    spec = load_f3_spec(_world(tmp_path))
+    want = f3_family_blocks(spec)[0].set_index('test')
+    folds = [str(tmp_path / f'fold{k}' / 'results') for k in range(5)]
+    for p in folds:
+        os.makedirs(p)
+    for t in ('T-E1', 'T-E2'):
+        for s in 'ab':
+            src = spec[t][s]['paths'][0]
+            for name in os.listdir(src):
+                seed = int(name.split('seed')[1].split('.')[0])
+                shutil.copy(os.path.join(src, name), folds[(seed - 10) // 5])
+            spec[t][s]['paths'] = folds
+    got = f3_family_blocks(spec)[0].set_index('test')
+    for t in ('T-E1', 'T-E2'):
+        for c in ('n_pairs', 'p_perm', 'p_raw', 'median_diff',
+                  'median_diff_lo', 'median_diff_hi', 'reading'):
+            assert got.loc[t, c] == want.loc[t, c], (t, c)
+    r = got.loc['T-E1']
+    assert (r['n_other_label_a'], r['other_labels_a']) == (
+        50, 'cfc_lrc/dense3 (25); gru/ncp (25)')
+    assert r['other_labels_b'] == 'cfc_lrc/dense3 (25); cfc_lrc/ncp (25)'
+
+
+def test_family_e_never_calls_the_crossed_interval(tmp_path, monkeypatch):
+    spec = load_f3_spec(_world(tmp_path))
+    e = F3_TESTS['T-E1']
+    a, b = (_f3_arm('T-E1', s, e, spec['T-E1'][s], E_SEEDS, {},
+                    ('split_fold', 'seed'))[0] for s in 'ab')
+
+    def boom(*args, **kw):
+        raise AssertionError('crossed path called')
+
+    monkeypatch.setattr('experiments.aggregate_results.crossed_median_diff_ci',
+                        boom)
+    r = _f3_test('T-E1', e, 2, 14, a, b, E_SEEDS, {'a': [], 'b': []},
+                 ('split_fold', 'seed'))
+    assert (r['reading'], r['ci_units']) == ('PASS', 'fold-stratified')
+
+
+def test_median_diff_ci_refuses_records_on_other_recordings():
+    """Fold records stack into confusions of one shape; the guard on the
+    recording ids stops the crossed path. A frame without the column (every
+    caller before #133) keeps the crossed interval."""
+    a, b = _dframe([0.7] * 10), _dframe([0.6] * 10)
+    p = a.merge(b, on='seed', suffixes=('_a', '_b')).assign(
+        v_a=0.7, v_b=0.6)
+    want = _median_diff_ci(p, 'pa')
+    assert want[1] == 'seed x recording'
+    folds = [dict.fromkeys(_fold_recs(i % 2), 0.6) for i in range(10)]
+    for s in 'ab':
+        p[f'test_macro_f1_per_recording_{s}'] = folds
+    with pytest.raises(ValueError, match='arm A differ in their test '
+                                         'recordings'):
+        _median_diff_ci(p, 'pa')
+    for s in 'ab':
+        p[f'test_macro_f1_per_recording_{s}'] = [folds[0]] * 10
+    assert _median_diff_ci(p, 'pa') == want
+
+
+def test_nested_and_stratified_intervals():
+    rng = np.random.default_rng(3)
+    cells = rng.normal(size=(5, 5))
+    assert nested_median_ci(cells - cells) == (0.0, 0.0)
+    assert nested_median_ci(np.full((5, 5), 0.25)) == (0.25, 0.25)
+    lo, hi = nested_median_ci(cells)
+    assert lo < np.median(cells) < hi
+    assert stratified_median_ci(np.full(25, -0.1), E_FOLDS) == (-0.1, -0.1)
+    # one value per fold: every resample keeps it
+    v = np.repeat(np.arange(5.0), 5)
+    assert stratified_median_ci(v, E_FOLDS) == (2.0, 2.0)
+
+
+def _e_section(text):
+    return text[text.index('## F3 family E, descriptive'):]
+
+
+def test_family_e_descriptive_rows_and_section(tmp_path):
+    """The default world: run difference 0.01 (s - 9) on seed s, every
+    recording at the run value. Fold k: median and mean 0.01 (5k + 3); all
+    five folds have the sign of W+ - W-; cells = the fold medians, person
+    medians 0.13; L17 = the run differences; no run below 0.30."""
+    spec = _world(tmp_path)
+    fe = f3_family_e(load_f3_spec(spec))
+    assert list(fe.columns) == F3_E_COLUMNS
+    assert not [c for c in fe.columns if c == 'p' or c.startswith('p_')]
+    e1 = fe[fe['test'] == 'T-E1']
+    q = {k: g for k, g in e1.groupby('quantity')}
+    med = q['median run difference'].set_index('fold')['value']
+    assert med.tolist() == pytest.approx([0.01 * (5 * k + 3)
+                                          for k in range(5)])
+    va = q['median run value'].set_index(['fold', 'arm'])['value']
+    assert va[(0, 'cfc_lrc/ncp')] == pytest.approx(0.63)
+    assert va[(0, 'gru/ncp')] == pytest.approx(0.6)
+    r = q['folds with the sign of W+ - W-'].iloc[0]
+    assert (r['n'], r['value']) == (5, 5)
+    r = q['mean of fold means'].iloc[0]
+    means = np.array([0.01 * (5 * k + 3) for k in range(5)])
+    half = 2.7764451051977987 * means.std(ddof=1) / np.sqrt(5)
+    assert (r['value'], r['lo'], r['hi']) == (
+        pytest.approx(0.13), pytest.approx(0.13 - half),
+        pytest.approx(0.13 + half))
+    assert r['interval'] == 't interval (4 df)'
+    cells = q['cell'].set_index('recording')
+    assert len(cells) == 25 and (cells['n'] == 5).all()
+    assert cells.loc['C04', 'value'] == pytest.approx(0.18)
+    assert cells.loc['C04', 'person'] == 'C'
+    pm = q['person median']
+    assert len(pm) == 5 and (pm['n'] == 5).all()
+    assert pm['value'].tolist() == pytest.approx([0.13] * 5)
+    r = q['median over cells'].iloc[0]
+    grid = np.array([[0.01 * (5 * k + 3) for k in range(5)]] * 5)
+    assert r['value'] == pytest.approx(0.13)
+    assert (r['lo'], r['hi']) == pytest.approx(nested_median_ci(grid, N_BOOT))
+    assert r['interval'] == F3_E_NESTED_LABEL
+    r = q['L17 run difference'].iloc[0]
+    d = np.array([0.6 + 0.01 * (i + 1) for i in range(25)]) - 0.6
+    assert (r['n'], r['value']) == (25, pytest.approx(0.13))
+    assert (r['lo'], r['hi']) == pytest.approx(stratified_median_ci(
+        d, E_FOLDS, N_BOOT))
+    below = q['runs below 0.3']
+    assert len(below) == 10 and (below['value'] == 0).all()
+    assert (q['dt_scale']['dt_scale'] == '3.7').all()
+    assert set(fe['test']) == {'T-E1', 'T-E2'}
+    out = str(tmp_path / 'out')
+    assert main(['--runs', str(tmp_path / 'none'), '--out', out,
+                 '--f3-families', spec]) == 0
+    pd.testing.assert_frame_equal(
+        pd.read_csv(os.path.join(out, 'f3_family_e.csv')),
+        pd.read_csv(io.StringIO(fe.to_csv(index=False))))
+    with open(os.path.join(out, 'summary.md'), encoding='utf-8') as f:
+        section = _e_section(f.read())
+    assert F3_E_NESTED_LABEL in section
+    assert 'config.effective.dt_scale across folds: one value per test.' \
+        in section
+    assert not [w for w in ('p adj', 'p perm', 'significant', 'PASS', 'FAIL')
+                if w in section]
+
+
+def test_family_e_l17_cells_and_dt_scale_flag(tmp_path):
+    """Fold 0 of T-E1: arm A higher by 0.1 on the L17 recordings C01 and D01
+    only. The L17 difference of the fold-0 runs is 0.1, their run
+    difference 0.04; the cells C01 and D01 read 0.1, A01 0. A dt_scale of
+    4.2 on fold 4 (both arms) is flagged."""
+    per = dict.fromkeys(_fold_recs(0), 0.6)
+    hi = {**per, 'C01': 0.7, 'D01': 0.7}
+    opts = {('T-E1', 'a'): {s: {'per_rec': hi} for s in F3_FOLD_SEEDS[0]},
+            ('T-E1', 'b'): {s: {'per_rec': per} for s in F3_FOLD_SEEDS[0]}}
+    for side in 'ab':
+        opts[('T-E1', side)].update({s: {'dt_scale': 4.2}
+                                     for s in F3_FOLD_SEEDS[4]})
+    spec = _world(tmp_path, values={'T-E1': ([0.6] * 25, [0.6] * 25)},
+                  opts=opts)
+    fe = f3_family_e(load_f3_spec(spec))
+    e1 = fe[fe['test'] == 'T-E1']
+    cells = e1[e1['quantity'] == 'cell'].set_index('recording')['value']
+    assert (cells['C01'], cells['D01'], cells['A01'], cells['A02']) == (
+        pytest.approx(0.1), pytest.approx(0.1), 0.0, 0.0)
+    med = e1[e1['quantity'] == 'median run difference'].set_index('fold')
+    assert med.loc[0, 'value'] == pytest.approx(0.04)
+    r = e1[e1['quantity'] == 'L17 run difference'].iloc[0]
+    assert r['value'] == 0.0 and r['n'] == 25     # 5 of 25 runs at 0.1
+    dt = e1[e1['quantity'] == 'dt_scale'].set_index('fold')['dt_scale']
+    assert (dt[0], dt[4]) == ('3.7', '4.2')
+    out = str(tmp_path / 'out')
+    assert main(['--runs', str(tmp_path / 'none'), '--out', out,
+                 '--f3-families', spec]) == 0
+    with open(os.path.join(out, 'summary.md'), encoding='utf-8') as f:
+        assert 'config.effective.dt_scale across folds: differs in T-E1.' \
+            in _e_section(f.read())

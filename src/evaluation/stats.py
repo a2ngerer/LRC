@@ -13,6 +13,11 @@
   - crossed_median_diff_ci: its crossed seeds x test recordings version on
                        pooled Person Activity confusion matrices (optionally
                        one per fixed noise draw, #96)
+  - stratified_median_ci: its version resampling within strata (the folds
+                       of F3 family E, #133)
+  - nested_median_ci:  persons, then recordings within each drawn person, of
+                       a (persons, recordings) matrix of cells (F3 family E,
+                       descriptive, #133)
 """
 import numpy as np
 from scipy.stats import beta, kendalltau
@@ -127,3 +132,31 @@ def crossed_median_diff_ci(conf_a, conf_b, n_boot=10_000, alpha=0.05, seed=0):
         w, max(1, n_boot // 1000))])
     return _percentiles(np.median(np.take_along_axis(d, rows, axis=1),
                                   axis=1), alpha)
+
+
+def stratified_median_ci(values, strata, n_boot=10_000, alpha=0.05, seed=0):
+    """Percentile bootstrap interval (lo, hi) of the median of one value per
+    run, stratified: each resample draws, within every stratum (e.g. fold),
+    as many runs as it has, with replacement."""
+    v, strata = np.asarray(values, float), np.asarray(strata)
+    rng = np.random.default_rng(seed)
+    idx = np.concatenate([g[rng.integers(0, len(g), (n_boot, len(g)))]
+                          for g in (np.flatnonzero(strata == s)
+                                    for s in np.unique(strata))], axis=1)
+    return _percentiles(np.median(v[idx], axis=1), alpha)
+
+
+def nested_median_ci(cells, n_boot=10_000, alpha=0.05, seed=0):
+    """Nested percentile bootstrap interval (lo, hi) of the median over the
+    cells of a (persons, recordings) matrix: each resample draws the persons
+    with replacement and, within each drawn person, its recordings with
+    replacement; the statistic is the median over the drawn cells.
+    Descriptive (a handful of persons): not a confidence interval for new
+    persons."""
+    c = np.asarray(cells, float)
+    p, r = c.shape
+    rng = np.random.default_rng(seed)
+    persons = rng.integers(0, p, (n_boot, p))
+    recs = rng.integers(0, r, (n_boot, p, r))
+    return _percentiles(np.median(c[persons[:, :, None], recs]
+                                  .reshape(n_boot, -1), axis=1), alpha)
