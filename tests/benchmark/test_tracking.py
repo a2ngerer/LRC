@@ -106,8 +106,8 @@ def test_runner_works_without_wandb(runner, tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, 'wandb', None)   # import wandb fails
     path = RUNNERS[runner][0](tmp_path, monkeypatch)
     eff = json.loads(path.read_text())['config']['effective']
-    assert eff['protocol_version'] == PROTOCOL_VERSION == 'F2-2026-11-05'
-    assert re.fullmatch(r'F2-\d{4}-\d{2}-\d{2}', PROTOCOL_VERSION)
+    assert eff['protocol_version'] == PROTOCOL_VERSION == 'F3-2026-11-22'
+    assert re.fullmatch(r'F3-\d{4}-\d{2}-\d{2}', PROTOCOL_VERSION)
     # the stored hash is the hash of the stored (round-tripped) config
     assert eff['config_hash'] == config_hash(eff)
 
@@ -276,13 +276,18 @@ def test_config_hash_tells_training_and_evaluation_knobs_apart(
         assert eff['config_hash'] == config_hash(eff) == hashes[5]
 
 
-# --- F1 records stay valid under the F2 constant (#106) ----------------------
-F1 = 'F1-2026-10-26'
+# --- F1 and F2 records stay valid under the F3 constant (#106, #139) ---------
+F1, F2 = 'F1-2026-10-26', 'F2-2026-11-05'
 _SYNTHETIC = {'task': 'lotka_volterra', 'build': {'lr': 0.001,
                                                   'wiring': 'ncp'}, 'seed': 3}
 # sha256 of _SYNTHETIC stamped with F1, recorded on main before #106
 _SYNTHETIC_F1_HASH = (
     '35db0c62122376cc7b2dcadb10564343d0b41fae5f25f75482b4ae8d9c42949e')
+# sha256 of _SYNTHETIC stamped with F2, recorded on main before #139
+_SYNTHETIC_F2_HASH = (
+    'd7e74e3588fc690966f9134c70fdf643126c2084bab5caea4c5f828c4862cfd5')
+# earlier protocol -> hash of _SYNTHETIC stamped with it
+EARLIER = {F1: _SYNTHETIC_F1_HASH, F2: _SYNTHETIC_F2_HASH}
 
 
 def _unstamped(eff):
@@ -290,53 +295,58 @@ def _unstamped(eff):
             if k not in ('protocol_version', 'config_hash')}
 
 
-def test_stamp_protocol_mechanism_is_unchanged_for_f1_and_f2(monkeypatch):
+@pytest.mark.parametrize('old', sorted(EARLIER))
+def test_stamp_protocol_mechanism_is_unchanged_for_an_earlier_protocol(
+        old, monkeypatch):
     with monkeypatch.context() as m:
-        m.setattr('src.benchmark.checkpoints.PROTOCOL_VERSION', F1)
-        f1 = stamp_protocol(_SYNTHETIC)
-    f2 = stamp_protocol(_SYNTHETIC)
-    assert f1 == {**_SYNTHETIC, 'protocol_version': F1,
-                  'config_hash': _SYNTHETIC_F1_HASH}
-    assert f2['protocol_version'] == PROTOCOL_VERSION != F1
-    assert _unstamped(f1) == _unstamped(f2) == _SYNTHETIC
-    assert f2['config_hash'] == config_hash(f2) != f1['config_hash']
+        m.setattr('src.benchmark.checkpoints.PROTOCOL_VERSION', old)
+        before = stamp_protocol(_SYNTHETIC)
+    now = stamp_protocol(_SYNTHETIC)
+    assert before == {**_SYNTHETIC, 'protocol_version': old,
+                      'config_hash': EARLIER[old]}
+    assert now['protocol_version'] == PROTOCOL_VERSION != old
+    assert _unstamped(before) == _unstamped(now) == _SYNTHETIC
+    assert now['config_hash'] == config_hash(now) != before['config_hash']
 
 
-def test_f1_stamped_config_keeps_a_valid_hash_under_the_f2_constant():
+@pytest.mark.parametrize('old', sorted(EARLIER))
+def test_earlier_stamped_config_keeps_a_valid_hash_under_the_constant(old):
     with pytest.MonkeyPatch.context() as m:
-        m.setattr('src.benchmark.checkpoints.PROTOCOL_VERSION', F1)
+        m.setattr('src.benchmark.checkpoints.PROTOCOL_VERSION', old)
         stored = json.loads(json.dumps(stamp_protocol(_SYNTHETIC)))
-    assert stored['protocol_version'] == F1 != PROTOCOL_VERSION
-    assert config_hash(stored) == stored['config_hash']
+    assert stored['protocol_version'] == old != PROTOCOL_VERSION
+    assert config_hash(stored) == stored['config_hash'] == EARLIER[old]
 
 
+@pytest.mark.parametrize('old', sorted(EARLIER))
 @pytest.mark.parametrize('runner', sorted(RUNNERS))
-def test_runners_differ_between_f1_and_f2_only_in_the_two_stamped_keys(
-        runner, tmp_path, monkeypatch):
+def test_runners_differ_between_protocols_only_in_the_two_stamped_keys(
+        runner, old, tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, 'wandb', None)
     run_fit = RUNNERS[runner][0]
     with monkeypatch.context() as m:
-        m.setattr('src.benchmark.checkpoints.PROTOCOL_VERSION', F1)
-        f1 = json.loads(run_fit(tmp_path / 'f1', monkeypatch).read_text())
-    f2 = json.loads(run_fit(tmp_path / 'f2', monkeypatch).read_text())
-    e1, e2 = f1['config']['effective'], f2['config']['effective']
-    assert (e1['protocol_version'], e2['protocol_version']) == (
-        F1, PROTOCOL_VERSION)
-    assert _unstamped(e1) == _unstamped(e2)
+        m.setattr('src.benchmark.checkpoints.PROTOCOL_VERSION', old)
+        before = json.loads(run_fit(tmp_path / 'old', monkeypatch).read_text())
+    now = json.loads(run_fit(tmp_path / 'now', monkeypatch).read_text())
+    e0, e1 = before['config']['effective'], now['config']['effective']
+    assert (e0['protocol_version'], e1['protocol_version']) == (
+        old, PROTOCOL_VERSION)
+    assert _unstamped(e0) == _unstamped(e1)
+    assert e0['config_hash'] == config_hash(e0)
     assert e1['config_hash'] == config_hash(e1)
-    assert e2['config_hash'] == config_hash(e2)
-    assert e1['config_hash'] != e2['config_hash']
+    assert e0['config_hash'] != e1['config_hash']
 
 
-def test_eval_only_keeps_the_f1_stamp_under_the_f2_constant(tmp_path,
-                                                            monkeypatch):
+@pytest.mark.parametrize('old', sorted(EARLIER))
+def test_eval_only_keeps_an_earlier_stamp_under_the_constant(old, tmp_path,
+                                                             monkeypatch):
     monkeypatch.setitem(sys.modules, 'wandb', None)
     with monkeypatch.context() as m:
-        m.setattr('src.benchmark.checkpoints.PROTOCOL_VERSION', F1)
+        m.setattr('src.benchmark.checkpoints.PROTOCOL_VERSION', old)
         path = _run_lv(tmp_path / 'fit', monkeypatch)
     lv_runner.eval_only(str(path), str(tmp_path / 'ev'), (2, 3), 4, 0.5)
     (out,) = (tmp_path / 'ev').glob('*.json')
     eff = json.loads(out.read_text())['config']['effective']
     assert eff['anchors'] == [2, 3]
-    assert eff['protocol_version'] == F1 != PROTOCOL_VERSION
+    assert eff['protocol_version'] == old != PROTOCOL_VERSION
     assert eff['config_hash'] == config_hash(eff)
