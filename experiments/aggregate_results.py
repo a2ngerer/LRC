@@ -3508,10 +3508,15 @@ def f3_descriptive(spec):
                for f in fits['a_lrc_legacy']}
     for f in fits['script']:
         own, other = f['val_macro_f1_curve'][:50], partner.get(f['seed'])
-        f['first_50_equal'] = (None if other is None
-                               else bool(np.array_equal(own, other)))
+        # A non-finite value at the same place counts as equal and stays out
+        # of the difference; NaN on one side only makes the difference NaN.
+        f['first_50_equal'] = (None if other is None else bool(
+            np.array_equal(own, other, equal_nan=True)))
         f['first_50_max_abs_diff'] = (
-            None if other is None else float(np.max(np.abs(own - other)))
+            None if other is None else float(np.max(
+                np.abs(own - other)[~((own == other) | (np.isnan(own)
+                                                        & np.isnan(other)))],
+                initial=0.0))
             if own.shape == other.shape and own.size else np.nan)
     rows = [f for aid in F3_DESCRIPTIVE_ARMS for f in fits[aid]]
     return (pd.DataFrame(rows, columns=F3_DESC_FIT_COLUMNS).astype(

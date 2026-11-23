@@ -613,3 +613,22 @@ def test_script_pairing_with_the_50_epoch_fit(tmp_path):
         text = ' '.join(fh.read().split())
     assert 'fit of the seed (their 200-epoch values are reported as usual): ' \
         '11.' in text
+
+
+def test_script_pairing_treats_nan_at_the_same_place_as_equal(tmp_path):
+    base = _curve(5, 50)
+    gap = list(base)
+    gap[20] = None                                # JSON null, read as NaN
+    opts = {'script': {10: {'val_curve': gap + [0.3] * 150},
+                       11: {'val_curve': gap + [0.3] * 150},
+                       12: {'val_curve': [None] * 50 + [0.3] * 150}},
+            'a_lrc_legacy': {10: {'val_curve': gap}, 11: {'val_curve': base},
+                             12: {'val_curve': [None] * 50}}}
+    fits, _, _ = _run(tmp_path, opts=opts)
+    f = fits[fits['arm'] == 'script'].set_index('seed')
+    assert f.loc[10, 'first_50_equal'] is True
+    assert f.loc[10, 'first_50_max_abs_diff'] == 0.0
+    assert f.loc[11, 'first_50_equal'] is False
+    assert pd.isna(f.loc[11, 'first_50_max_abs_diff'])
+    assert f.loc[12, 'first_50_equal'] is True
+    assert f.loc[12, 'first_50_max_abs_diff'] == 0.0
