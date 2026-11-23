@@ -1,6 +1,7 @@
 # tests/experiments/test_aggregate_f3.py
 """The F3 family engine of experiments/aggregate_results.py (#131), on
 synthetic records and frames only."""
+import copy
 import json
 import os
 import time
@@ -15,13 +16,14 @@ from scipy.stats import wilcoxon
 from experiments.aggregate_results import (CONVERGED, EXCLUDED, F3_COLUMNS,
                                            F3_FAMILIES, F3_FIT_COLUMNS,
                                            F3_SEEDS, F3_TESTS, N_BOOT,
-                                           _const_phase_flagged, _f3_arm,
-                                           _f3_test, _sequence_row,
+                                           _const_phase_flagged, _f2_arm,
+                                           _f3_arm, _f3_test, _sequence_row,
                                            _signed_ranks, arm_label,
                                            f3_family_blocks, f3_report,
                                            floor_share_bound,
                                            learning_success, load_f3_spec,
-                                           main, mcnemar_exact, not_learned,
+                                           load_sequence_runs, main,
+                                           mcnemar_exact, not_learned,
                                            permutation_p)
 from src.evaluation.stats import bootstrap_median_ci, crossed_median_diff_ci
 
@@ -1245,3 +1247,119 @@ def test_optimizer_tags_and_f3_epochs_gate():
                        ('pa', 50)):
         assert arm_label(_rec(F3, system, ep)) == 'lrc/ncp'
         assert arm_label(_rec(F1, system, 2 * ep)) == 'lrc/ncp'
+
+
+# --- run folders and folds (#159) ---------------------------------------------
+
+# the wandb summary of an offline Person Activity run: test_macro_f1, no
+# cell, wiring, seed or config
+SUMMARY = {'_step': 49, 'best_val_epoch': 12, 'val_macro_f1': 0.5,
+           'test_macro_f1': 0.5, 'test_accuracy': 0.6}
+OFFLINE = 'offline-run-20261122_000000-abcd1234'
+
+
+def _run_folder(run):
+    """Next to <run>/results: wandb/wandb/<offline run>/files/
+    wandb-summary.json and the latest-run link (found twice by a recursive
+    glob, as on the cluster)."""
+    w = os.path.join(run, 'wandb', 'wandb')
+    _dump(os.path.join(w, OFFLINE, 'files', 'wandb-summary.json'), SUMMARY)
+    os.symlink(OFFLINE, os.path.join(w, 'latest-run'))
+    return run
+
+
+def test_f3_run_folders_equal_their_results_subfolders(tmp_path):
+    """Every Person Activity arm listed as its run folder (records under
+    results/, wandb summaries next to them) gives the frames of the same
+    spec on the results/ subfolders."""
+    runs = load_f3_spec(_world(tmp_path))
+    on_results = copy.deepcopy(runs)
+    for test in (t for t in REQUIRED if F3_TESTS[t]['task'] == 'pa'):
+        for side in 'ab':
+            p = runs[test][side]['paths'][0]
+            os.rename(p, p + '.tmp')
+            os.makedirs(p)
+            os.rename(p + '.tmp', os.path.join(p, 'results'))
+            _run_folder(p)
+            on_results[test][side]['paths'] = [os.path.join(p, 'results')]
+    for got, want in zip(f3_family_blocks(runs),
+                         f3_family_blocks(on_results)):
+        pd.testing.assert_frame_equal(got, want)
+
+
+def test_f1_and_f2_loaders_skip_wandb_summaries(tmp_path):
+    """load_sequence_runs and _f2_arm read a run folder as its results/;
+    _f2_arm no longer rests on the seed check running first."""
+    run = str(tmp_path / 'run')
+    res = os.path.join(run, 'results')
+    for seed in (0, 1, 10):
+        _pa(res, 'lrc/ncp', seed, 0.5, pv=F2)
+    _run_folder(run)
+    pd.testing.assert_frame_equal(load_sequence_runs(run, 'pa'),
+                                  load_sequence_runs(res, 'pa'))
+    arm = {'label': 'lrc/ncp', 'protocol_version': [F2]}
+    (got, _), (want, _) = (_f2_arm('t', 'b', 'pa', {**arm, 'paths': [p]}, {})
+                           for p in (run, res))
+    assert len(got) == 2
+    pd.testing.assert_frame_equal(got, want)
+
+
+@pytest.mark.parametrize('half, missing', [
+    ({'cell': 'lrc'}, r"\['wiring'\]"),
+    ({'config': {'effective': {}}}, r"\['cell', 'wiring'\]")])
+def test_pa_record_without_wiring_names_the_file(tmp_path, half, missing):
+    """Also in _f2_arm, where the record has no seed: the helper runs
+    before the seed filter."""
+    run = str(tmp_path / 'run')
+    _pa(os.path.join(run, 'results'), 'lrc/ncp', 10, 0.5)
+    _dump(os.path.join(run, 'half.json'), {**SUMMARY, **half})
+    arm = {'label': 'lrc/ncp', 'protocol_version': [F3], 'paths': [run]}
+    with pytest.raises(SystemExit, match=r'half\.json.*' + missing):
+        _f3_arm('T-A1', 'b', F3_TESTS['T-A1'], arm, _seeds('T-A1'), {})
+    with pytest.raises(SystemExit, match=r'half\.json.*' + missing):
+        load_sequence_runs(run, 'pa')
+    with pytest.raises(SystemExit, match=r'half\.json.*' + missing):
+        _f2_arm('t', 'b', 'pa', arm, {})
+
+
+def _fold_arm(tmp_path, folds):
+    """A T-A2.b arm with one record per (seed, split_fold); split_fold
+    'none' leaves the field out, ('eff', f) sets it in config.effective
+    only."""
+    path = str(tmp_path / 'b')
+    label = F3_TESTS['T-A2']['b']
+    for i, (seed, fold) in enumerate(folds):
+        _pa(path, label, seed, 0.6, name=f'r{i}.json', extra=(
+            {} if fold == 'none' or isinstance(fold, tuple)
+            else {'split_fold': fold}))
+        if isinstance(fold, tuple):
+            with open(os.path.join(path, f'r{i}.json'), encoding='utf-8') as f:
+                rec = json.load(f)
+            rec['config']['effective']['split_fold'] = fold[1]
+            _dump(os.path.join(path, f'r{i}.json'), rec)
+    return {'label': label, 'protocol_version': [F3], 'paths': [path]}
+
+
+@pytest.mark.parametrize('seed, fold', [(11, 2), (11, 0), (3, 2),
+                                        (11, ('eff', 1))])
+def test_fold_record_in_a_test_without_folds_names_the_file(tmp_path, seed,
+                                                            fold):
+    arm = _fold_arm(tmp_path, [(10, None), (seed, fold)])
+    f = fold[1] if isinstance(fold, tuple) else fold
+    with pytest.raises(SystemExit, match=rf'r1\.json: split_fold {f} in '
+                                         r'T-A2\.b'):
+        _f3_arm('T-A2', 'b', F3_TESTS['T-A2'], arm, _seeds('T-A2'), {})
+
+
+def test_null_or_missing_fold_loads_and_fold_keys_accept_folds(tmp_path):
+    seeds = _seeds('T-A2')
+    df, _, _ = _f3_arm('T-A2', 'b', F3_TESTS['T-A2'],
+                       _fold_arm(tmp_path, [(10, None), (11, 'none')]),
+                       seeds, {})
+    assert df['seed'].tolist() == [10, 11]
+    assert df['split_fold'].tolist() == [None, None]
+    df, _, _ = _f3_arm('T-A2', 'b', F3_TESTS['T-A2'],
+                       _fold_arm(tmp_path / 'e', [(10, 2), (10, 3), (11, 0)]),
+                       seeds, {}, key=('split_fold', 'seed'))
+    assert df[['split_fold', 'seed']].values.tolist() == [[2, 10], [3, 10],
+                                                         [0, 11]]
