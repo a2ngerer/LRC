@@ -55,3 +55,41 @@ script:
   label: 'lrc/ncp [epochs=200, optimizer=rmsprop_legacy]'
   protocol_version: F3-<FREEZE_DATE>
   paths: [<F3_A_SCRIPT_RUN_DIR>/results]
+
+# dose arms (#153, E16b): rmsprop, lr 1e-3, 50 epochs, seeds 10-19; one run
+# folder holds the three cells (alpha 0 and 1 are a_lrc and a_cal on seeds
+# 10-19)
+dose050:
+  label: lrc_dose050/ncp
+  protocol_version: F3-<FREEZE_DATE>
+  paths: [<F3_A_DOSE_RUN_DIR>/results]
+dose075:
+  label: lrc_dose075/ncp
+  protocol_version: F3-<FREEZE_DATE>
+  paths: [<F3_A_DOSE_RUN_DIR>/results]
+dose0875:
+  label: lrc_dose0875/ncp
+  protocol_version: F3-<FREEZE_DATE>
+  paths: [<F3_A_DOSE_RUN_DIR>/results]
+
+# component arms (#153, E16b): same frame as the dose arms
+fanin:
+  label: lrc_fanin/ncp
+  protocol_version: F3-<FREEZE_DATE>
+  paths: [<F3_A_COMP_RUN_DIR>/results]
+ranges:
+  label: lrc_ranges/ncp
+  protocol_version: F3-<FREEZE_DATE>
+  paths: [<F3_A_COMP_RUN_DIR>/results]
+
+# fold check (#153, E16a): the block A labels on folds 0-4, seeds 10-11 per
+# fold, every record with its split_fold; a folder of its own (the block A
+# arms reject fold records)
+fold_lrc:
+  label: lrc/ncp
+  protocol_version: F3-<FREEZE_DATE>
+  paths: [<F3_E_FOLDCHECK_RUN_DIR>/results]
+fold_cal:
+  label: lrc_cal/ncp
+  protocol_version: F3-<FREEZE_DATE>
+  paths: [<F3_E_FOLDCHECK_RUN_DIR>/results]

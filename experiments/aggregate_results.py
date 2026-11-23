@@ -104,8 +104,9 @@ Optional sections:
                    <out>/f3_family_e.csv (fold medians, person-recording
                    cells with the nested interval, L17 sensitivity)
   --f3-descriptive SPEC.yaml  the descriptive F3 arms (F3_DESCRIPTIVE_ARMS:
-                   the six block A arms, the budget arm and the script arm;
-                   F-12) from explicit path lists per arm (template:
+                   the six block A arms, the budget arm, the script arm and,
+                   #153, the dose, component and fold-check arms; F-12)
+                   from explicit path lists per arm (template:
                    configs/aggregate/f3_descriptive.yaml), Person Activity
                    records only, seed lists and lr, clipnorm and epochs from
                    the registry: per fit learning success
@@ -116,9 +117,13 @@ Optional sections:
                    censored exit-epoch median; the readings (manipulation
                    check of E13 in its own block, then the exploratory
                    sentences: lrc_init/ncp, the count next to T-A1, budget
-                   and script arm). No p-value, nothing enters m;
+                   and script arm, dose, component and fold check; fold-check
+                   fits carry no exit epoch, their arms rows are per fold
+                   and hold counts only). No p-value, nothing enters m;
                    <out>/f3_descriptive_fits.csv, f3_descriptive_arms.csv,
-                   f3_descriptive_readings.csv
+                   f3_descriptive_readings.csv, f3_descriptive_stages.csv
+                   (one row per dose and component stage on seeds 10-19,
+                   the figure input)
   --lambda-grid DIR  the vote-lambda grid at fixed weights (#137): every
                    *.lambda_grid.evalonly.json below DIR
                    (run_committee_benchmark.py --eval-only
@@ -3798,7 +3803,31 @@ F3_DESCRIPTIVE_ARMS = {
     'budget': _desc_arm('lrc/ncp [epochs=200]', 1e-2, 200, range(10, 15)),
     'script': _desc_arm('lrc/ncp [epochs=200, optimizer=rmsprop_legacy]',
                         1e-3, 200, range(10, 15)),
+    # dose and component arms (E16b, #153): rmsprop, lr 1e-3, 50 epochs
+    'dose050': _desc_arm('lrc_dose050/ncp', 1e-3, 50, range(10, 20)),
+    'dose075': _desc_arm('lrc_dose075/ncp', 1e-3, 50, range(10, 20)),
+    'dose0875': _desc_arm('lrc_dose0875/ncp', 1e-3, 50, range(10, 20)),
+    'fanin': _desc_arm('lrc_fanin/ncp', 1e-3, 50, range(10, 20)),
+    'ranges': _desc_arm('lrc_ranges/ncp', 1e-3, 50, range(10, 20)),
+    # fold check (E16a, #153): the block A labels on folds 0-4, seeds 10-11
+    'fold_lrc': {**_desc_arm('lrc/ncp', 1e-3, 50, range(10, 12)),
+                 'folds': range(5)},
+    'fold_cal': {**_desc_arm('lrc_cal/ncp', 1e-3, 50, range(10, 12)),
+                 'folds': range(5)},
 }
+# stage -> (arm id, alpha) of f3_descriptive_stages.csv and the dose and
+# component readings (#153); the block A end stages lrc, lrc_cal and
+# lrc_init restricted to STAGE_SEEDS
+F3_STAGES = {'lrc': ('a_lrc', 0), 'lrc_dose050': ('dose050', 0.5),
+             'lrc_dose075': ('dose075', 0.75),
+             'lrc_dose0875': ('dose0875', 0.875), 'lrc_cal': ('a_cal', 1),
+             'lrc_init': ('a_init', None), 'lrc_fanin': ('fanin', None),
+             'lrc_ranges': ('ranges', None)}
+STAGE_SEEDS = range(10, 20)
+DOSE_STAGES = ['lrc', 'lrc_dose050', 'lrc_dose075', 'lrc_dose0875', 'lrc_cal']
+F3_DESC_STAGE_COLUMNS = ['stage', 'alpha', 'k', 'n_records', 'cp_lo', 'cp_hi',
+                         'n_censored', 'exit_epoch_median',
+                         'test_macro_f1_median']
 MANIPULATION_MIN = 16   # lrc_cal/ncp successes of 20 that pass the check (E13)
 DESC_RECORD_FIELDS = ('test_macro_f1_last', 'test_macro_f1_curve',
                       'split_fold')
@@ -3873,6 +3902,9 @@ def _desc_fit(aid, row) -> dict:
            'exit_epoch': int(above[0]) + 1 if above.size else None,
            'censored': not above.size, 'file': row['file'],
            'val_macro_f1_curve': val}
+    if F3_DESCRIPTIVE_ARMS[aid]['folds'] is not None:
+        # the exit threshold is the one-class value of split 0 (#153)
+        fit.update(exit_epoch=None, censored=None)
     if F3_DESCRIPTIVE_ARMS[aid]['epochs'] == 200:
         test = _floats(row['test_macro_f1_curve'])
         for e in (50, 100, 200):
@@ -3892,10 +3924,11 @@ def _f3_desc_arm(aid, arm):
     records in its paths whose label is the arm label (non-fit JSONs
     skipped by _is_fit_record before arm_label), each with a
     protocol_version the arm lists whatever its seed (_check_protocol) and
-    no split_fold. A record outside the arm's seed list goes to outside
-    (counted, named, not used); one on it must carry the registry lr,
-    clipnorm and epochs. SystemExit names the file; two records of one
-    (arm, split_fold, seed) also raise it."""
+    no split_fold, or, in a fold-check arm, a split_fold of its fold list.
+    A record outside the arm's seed list goes to outside (counted, named,
+    not used; in a fold-check arm as (split_fold, seed)); one on it must
+    carry the registry lr, clipnorm and epochs. SystemExit names the file;
+    two records of one (arm, split_fold, seed) also raise it."""
     reg = F3_DESCRIPTIVE_ARMS[aid]
     name = f'{aid} ({reg["label"]})'
     fits, outside = [], []
@@ -3909,11 +3942,17 @@ def _f3_desc_arm(aid, arm):
         eff = (r.get('config') or {}).get('effective') or {}
         _check_protocol(path, eff, arm['protocol_version'], name)
         fold = r.get('split_fold', eff.get('split_fold'))
-        if fold is not None:                             # fold 0 is a fold
+        if reg['folds'] is None and fold is not None:    # fold 0 is a fold
             raise SystemExit(f'{path}: split_fold {fold} in {name}, an arm '
                              'without folds')
+        if reg['folds'] is not None and fold not in reg['folds']:
+            raise SystemExit(f'{path}: {name}: ' + (
+                'record without split_fold' if fold is None else
+                f'split_fold {fold} off the fold list '
+                f'{_seed_runs(reg["folds"])}'))
         if r.get('seed') not in reg['seeds']:
-            outside.append(r.get('seed'))
+            outside.append(r.get('seed') if reg['folds'] is None
+                           else (fold, r.get('seed')))
             continue
         bad = [f'{k} {r.get(k)!r} (registry {reg[k]!r})'
                for k in ('lr', 'clipnorm', 'epochs') if r.get(k) != reg[k]]
@@ -3955,6 +3994,19 @@ def _desc_arm_row(aid, fits, outside) -> dict:
         row.update(n_exit_after_50=sum(late),
                    n_exit_within_50=len(late) - sum(late))
     return row
+
+
+def _fold_arm_rows(aid, fits, outside) -> list:
+    """The f3_descriptive_arms rows of a fold-check arm, one per fold:
+    counts only, no rate on two seeds (#153)."""
+    reg = F3_DESCRIPTIVE_ARMS[aid]
+    return [{'arm': aid, 'split_fold': k,
+             'n_records': sum(f['split_fold'] == k for f in fits),
+             'n_listed': len(reg['seeds']),
+             'k_success': sum(f['success'] for f in fits
+                              if f['split_fold'] == k),
+             'n_outside_list': sum(o[0] == k for o in outside)}
+            for k in reg['folds']]
 
 
 def _exploratory(text, n):
@@ -4075,6 +4127,116 @@ def _desc_readings(fits, arms) -> list:
              'sentence': _exploratory(
                  f'of the {j} seeds with learning success at epoch 50, {r} '
                  'retain it at the end of 200 epochs', big_n)}]
+    return rows + _stage_readings(fits) + _fold_readings(arms)
+
+
+def _stage_fits(fits, stage) -> list:
+    """The fits of an F3_STAGES stage ({arm id: fits}) on STAGE_SEEDS."""
+    return [f for f in fits.get(F3_STAGES[stage][0], ())
+            if f['seed'] in STAGE_SEEDS]
+
+
+def _stage_readings(fits) -> list:
+    """The dose and component reading rows (#153, protocol F3 5.1.4 and
+    5.1.5) on seeds 10-19, each needing every listed seed of its stages."""
+    n10 = len(STAGE_SEEDS)
+
+    def missing(*stages):
+        n = sum(len(_stage_fits(fits, s)) for s in stages)
+        big_n = n10 * len(stages)
+        return None if n == big_n else f'not readable ({n} of {big_n} records)'
+
+    def count(stage):
+        return sum(bool(f['success']) for f in _stage_fits(fits, stage))
+
+    def row(reading, why, counts=None, cls=None, sentence=None):
+        return {'reading': reading, 'readable': not why,
+                'counts': None if why else counts,
+                'classification': why or cls,
+                'sentence': None if why else sentence and _exploratory(
+                    sentence, n10)}
+
+    k = [count(s) for s in DOSE_STAGES]
+    cls, sentence = 'none', None
+    if k[0] <= 2 and k[-1] >= 8:                             # precondition
+        low = max(i for i, x in enumerate(k) if x <= 2)
+        high = min(i for i, x in enumerate(k) if x >= 8)
+        if any(k[j] <= k[i] - 4 for i in range(len(k))
+               for j in range(i + 1, len(k))):
+            cls = 'non-monotone'
+        elif high == low + 1:
+            a, b = (F3_STAGES[DOSE_STAGES[i]][1] for i in (low, high))
+            cls, sentence = 'step', ('Learning success sets in between '
+                                     f'α = {a:g} and α = {b:g}')
+        elif any(3 <= x <= 7 for x in k):
+            cls, sentence = 'graded', (
+                'Learning success rises with the scale of the initialisation '
+                f'({", ".join(map(str, k))} of {n10})')
+    rows = [row('dose', missing(*DOSE_STAGES), '; '.join(
+        f'{s} {x} of {n10}' for s, x in zip(DOSE_STAGES, k)), cls, sentence)]
+
+    for reading, stage in (('component_fanin', 'lrc_fanin'),
+                           ('component_ranges', 'lrc_ranges')):
+        x = count(stage)
+        lo, hi = clopper_pearson(x, n10)
+        rows.append(row(reading, missing(stage), f'{x} of {n10}', None,
+                        f'`{stage}/ncp` reaches learning success alone in '
+                        f'{x} of {n10} seeds at learning rate 10⁻³ at the end '
+                        f'of 50 epochs (95 % interval [{lo:.2f}, {hi:.2f}])'))
+
+    comp = ['lrc_fanin', 'lrc_ranges', 'lrc_init', 'lrc']
+    k, m, i, r = (count(s) for s in comp)
+    cls, sentence = 'none', None
+    if i >= 8 and r <= 2:                                    # precondition
+        if k <= 2 and m <= 2:
+            cls, sentence = 'neither', (
+                'neither part alone reaches learning success in more than 2 '
+                f'of 10 seeds at this budget (fan-in rule {k} of 10, range '
+                f'changes {m} of 10)')
+        elif k <= 2 and m >= 8:
+            cls, sentence = 'ranges_only', (
+                f'the range changes alone reach learning success in {m} of '
+                f'10 seeds, the fan-in rule alone in {k} of 10, at this '
+                'budget')
+        elif k >= 8 and m <= 2:
+            cls, sentence = 'fanin_only', (
+                f'the fan-in rule alone reaches learning success in {k} of '
+                f'10 seeds, the range changes alone in {m} of 10, at this '
+                'budget')
+        elif k >= 8 and m >= 8:
+            cls, sentence = 'both', (
+                'each part alone reaches learning success in at least 8 of '
+                f'10 seeds at this budget ({k} and {m} of 10)')
+    rows.append(row('component', missing(*comp), '; '.join(
+        f'{s} {x} of {n10}' for s, x in zip(comp, (k, m, i, r))), cls,
+        sentence))
+    return rows
+
+
+def _fold_readings(arms) -> list:
+    """The fold-check rows fold_0 to fold_4 (#153, protocol F3 5.2): counts
+    per fold from the fold-check arm rows, no rate, no pairing."""
+    rows = []
+    for k in F3_DESCRIPTIVE_ARMS['fold_cal']['folds']:
+        ref, cal = arms[('fold_lrc', k)], arms[('fold_cal', k)]
+        n = ref['n_records'] + cal['n_records']
+        big_n = ref['n_listed'] + cal['n_listed']
+        if n != big_n:
+            rows.append({'reading': f'fold_{k}', 'readable': False,
+                         'counts': None, 'sentence': None,
+                         'classification': f'not readable ({n} of {big_n} '
+                                           'records)'})
+            continue
+        hit = (cal['k_success'] == cal['n_listed'] and ref['k_success'] == 0)
+        rows.append({
+            'reading': f'fold_{k}', 'readable': True,
+            'counts': f"lrc_cal/ncp {cal['k_success']} of {cal['n_listed']}; "
+                      f"lrc/ncp {ref['k_success']} of {ref['n_listed']}",
+            'classification': 'cal2_ref0' if hit else 'none',
+            'sentence': (
+                f'On fold {k} the calibrated initialisation reaches learning '
+                'success in 2 of 2 seeds and the reference initialisation in '
+                f'0 of 2 (exploratory, 2 seeds, fold {k})') if hit else None})
     return rows
 
 
@@ -4086,11 +4248,16 @@ def f3_descriptive(spec):
     absolute difference, both empty without the partner fit),
     f3_descriptive_arms (F3_DESC_ARM_COLUMNS) and f3_descriptive_readings
     (F3_DESC_READING_COLUMNS). Counts and intervals only: no p-value,
-    nothing enters m (F-12)."""
+    nothing enters m (F-12). A fold-check arm gives one arms row per fold
+    (keyed (arm id, fold)) and fits without exit epoch or censoring."""
     fits, arms = {}, {}
-    for aid in F3_DESCRIPTIVE_ARMS:
+    for aid, reg in F3_DESCRIPTIVE_ARMS.items():
         fits[aid], outside = _f3_desc_arm(aid, spec[aid])
-        arms[aid] = _desc_arm_row(aid, fits[aid], outside)
+        if reg['folds'] is None:
+            arms[aid] = _desc_arm_row(aid, fits[aid], outside)
+        else:
+            arms.update(((aid, a['split_fold']), a)
+                        for a in _fold_arm_rows(aid, fits[aid], outside))
     partner = {f['seed']: f['val_macro_f1_curve']
                for f in fits['a_lrc_legacy']}
     for f in fits['script']:
@@ -4107,12 +4274,36 @@ def f3_descriptive(spec):
             if own.shape == other.shape and own.size else np.nan)
     rows = [f for aid in F3_DESCRIPTIVE_ARMS for f in fits[aid]]
     return (pd.DataFrame(rows, columns=F3_DESC_FIT_COLUMNS).astype(
-                {'exit_epoch': 'Int64'}),
+                {'split_fold': 'Int64', 'exit_epoch': 'Int64'}),
             pd.DataFrame(list(arms.values()), columns=F3_DESC_ARM_COLUMNS)
-            .astype({c: 'Int64' for c in ('n_exit_after_50',
+            .astype({c: 'Int64' for c in ('split_fold', 'n_diverged',
+                                          'n_censored', 'n_exit_after_50',
                                           'n_exit_within_50')}),
             pd.DataFrame(_desc_readings(fits, arms),
                          columns=F3_DESC_READING_COLUMNS))
+
+
+def f3_descriptive_stages(fits) -> pd.DataFrame:
+    """f3_descriptive_stages.csv (F3_DESC_STAGE_COLUMNS), the figure input of
+    the dose and component arms (#153): one row per F3_STAGES stage from the
+    f3_descriptive fits frame on seeds 10-19, k of n_records with the
+    two-sided 95 % Clopper-Pearson bounds (empty without records), censored
+    seeds, the exit-epoch median ('> 50' if infinite) and the median
+    test_macro_f1, as in f3_descriptive_arms. No difference column."""
+    by_arm = {a: g.to_dict('records') for a, g in fits.groupby('arm')}
+    rows = []
+    for stage, (aid, alpha) in F3_STAGES.items():
+        a = _desc_arm_row(aid, _stage_fits(by_arm, stage), [])
+        lo, hi = (clopper_pearson(a['k_success'], a['n_records'])
+                  if a['n_records'] else (None, None))
+        rows.append({'stage': stage, 'alpha': alpha, 'k': a['k_success'],
+                     'n_records': a['n_records'], 'cp_lo': lo, 'cp_hi': hi,
+                     'n_censored': a['n_censored'],
+                     'exit_epoch_median': a['exit_epoch_median'],
+                     'test_macro_f1_median': a['test_macro_f1_median']})
+    st = pd.DataFrame(rows, columns=F3_DESC_STAGE_COLUMNS)
+    st['alpha'] = pd.Series([r['alpha'] for r in rows], dtype=object)  # 0, 1
+    return st
 
 
 def f3_descriptive_report(fits, arms, readings) -> str:
@@ -4139,6 +4330,8 @@ def f3_descriptive_report(fits, arms, readings) -> str:
         cls = r['classification']
         extra = (f' ({cls})' if isinstance(cls, str) and cls not in text
                  else '')
+        if cls == 'none':                    # #153: the counts, no sentence
+            extra = f" ({r['counts']})"
         lines.append(f'- {name}: {text}{extra}')
 
     def cell(v):
@@ -4150,10 +4343,12 @@ def f3_descriptive_report(fits, arms, readings) -> str:
               '| median test_macro_f1 | outside the list |',
               '|' + '---|' * 9]
     for a in arms.to_dict('records'):
+        arm = a['arm'] if pd.isna(a['split_fold']) else \
+            f"{a['arm']} fold {a['split_fold']}"
         lines.append(
-            f"| {a['arm']} | {a['label']} | {a['n_records']}/{a['n_listed']} "
-            f"| {cell(a['success_rate'])} | {a['n_diverged']} "
-            f"| {a['n_censored']} | {cell(a['exit_epoch_median'])} "
+            f"| {arm} | {cell(a['label'])} | {a['n_records']}/{a['n_listed']} "
+            f"| {cell(a['success_rate'])} | {cell(a['n_diverged'])} "
+            f"| {cell(a['n_censored'])} | {cell(a['exit_epoch_median'])} "
             f"| {_fmt(a['test_macro_f1_median'], '.3f')} "
             f"| {a['n_outside_list']} |")
     out = arms[arms['n_outside_list'] > 0]
@@ -4161,8 +4356,10 @@ def f3_descriptive_report(fits, arms, readings) -> str:
     unequal = fits[fits['first_50_equal'].eq(False)]
     lines += ['', 'Records with the arm label outside the seed list (counted, '
               'not used): ' + ('; '.join(
-                  f'{a} seeds {o} ({n})' for a, o, n in zip(
-                      out['arm'], out['outside_list'], out['n_outside_list']))
+                  f'{a} seeds {o} ({n})' if isinstance(o, str) else
+                  f'{a} fold {f} ({n})' for a, o, f, n in zip(
+                      out['arm'], out['outside_list'], out['split_fold'],
+                      out['n_outside_list']))
                   or 'none') + '.',
               '', 'Fits whose test_macro_f1 and test_macro_f1_last lie on '
               f'different sides of {F3_PA_SUCCESS:g}: ' + ('; '.join(
@@ -4240,12 +4437,13 @@ def main(argv=None) -> int:
                         '<out>/f3_family_b.csv and <out>/f3_family_e.csv')
     p.add_argument('--f3-descriptive', default=None, metavar='SPEC.yaml',
                    help='the descriptive F3 arms (F3_DESCRIPTIVE_ARMS: block '
-                        'A, budget and script arm) from a spec of explicit '
-                        'path lists per arm (configs/aggregate/'
-                        'f3_descriptive.yaml); counts and Clopper-Pearson '
-                        'intervals, no p-value; writes <out>/'
-                        'f3_descriptive_fits.csv, f3_descriptive_arms.csv '
-                        'and f3_descriptive_readings.csv')
+                        'A, budget, script, dose, component and fold-check '
+                        'arms) from a spec of explicit path lists per arm '
+                        '(configs/aggregate/f3_descriptive.yaml); counts and '
+                        'Clopper-Pearson intervals, no p-value; writes <out>/'
+                        'f3_descriptive_fits.csv, f3_descriptive_arms.csv, '
+                        'f3_descriptive_readings.csv and '
+                        'f3_descriptive_stages.csv')
     p.add_argument('--lambda-grid', default=None, metavar='DIR',
                    help='the *.lambda_grid.evalonly.json files below DIR '
                         '(committee eval-only vote-lambda grid, #137); '
@@ -4351,6 +4549,8 @@ def main(argv=None) -> int:
         for name, t in zip(('fits', 'arms', 'readings'), tables):
             t.to_csv(os.path.join(args.out, f'f3_descriptive_{name}.csv'),
                      index=False)
+        f3_descriptive_stages(tables[0]).to_csv(
+            os.path.join(args.out, 'f3_descriptive_stages.csv'), index=False)
         parts.append(f3_descriptive_report(*tables))
     if args.lambda_grid:
         grid = lambda_grid(args.lambda_grid)
