@@ -867,6 +867,25 @@ def arm_label(r):
     return f"{r['cell']}/{r['wiring']}" + (f' [{tag}]' if tag else '')
 
 
+def _is_fit_record(path, r):
+    """Whether a runner JSON that passed the task filter is a fit record
+    (#159). A JSON with none of cell, wiring and config.effective is not and
+    is skipped: the wandb-summary.json of an offline run below a run folder
+    (a Person Activity fit run with --wandb leaves one with test_macro_f1, so
+    _record_task reads it as 'pa'), or another metadata file. A JSON with one
+    of them but without cell or wiring raises SystemExit naming the file and
+    the missing keys. Every other JSON is a fit record, also one without
+    config.effective (older runner JSONs on the F1 path)."""
+    missing = [k for k in ('cell', 'wiring') if k not in r]
+    cfg = r.get('config')
+    if len(missing) == 2 and not (isinstance(cfg, dict)
+                                  and 'effective' in cfg):
+        return False
+    if missing:
+        raise SystemExit(f'{path}: runner record without {missing}')
+    return True
+
+
 def _sequence_row(path, r, task, curves=False, fields=()) -> dict:
     """The load_sequence_runs row of one runner record of the task; with
     curves also the per-epoch validation curve (val_loss_curve on the
@@ -949,7 +968,7 @@ def load_sequence_runs(runs_dirs, task, curves=False) -> pd.DataFrame:
                     f'{path}: old single-step harness record (run/evaluation, '
                     'NRMSE); load_sequence_runs reads the Lotka-Volterra and '
                     'Person Activity runner JSONs, load_runs the old harness')
-            if _record_task(r) != task:
+            if _record_task(r) != task or not _is_fit_record(path, r):
                 continue
             rows.append(_sequence_row(path, r, task, curves))
     df = pd.DataFrame(rows)
@@ -1959,6 +1978,7 @@ def _f2_arm(test, side, task, arm, draws, curves=False, empty_ok=False):
             r = json.load(f)
         if (not isinstance(r, dict) or _record_task(r) != runner
                 or (runner == 'lv' and r.get('system') != task)
+                or not _is_fit_record(path, r)
                 or r.get('seed') not in FINAL_SEEDS or arm_label(r) != label):
             continue
         eff = (r.get('config') or {}).get('effective') or {}
@@ -2653,9 +2673,13 @@ def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
     F3_PA_FIELDS as columns; a diverged fit = non-finite endpoint; the
     crossed interval only on the best-validation field its confusions
     belong to), below and floor (_floor_mark on that metric), success (with
-    a registry success rule), data_key, width_matched, param_budget and
-    protocol_version; an empty frame when no listed seed has a record. Two
-    records of one key raise SystemExit."""
+    a registry success rule), data_key, width_matched, param_budget,
+    protocol_version and split_fold (top level, else config.effective;
+    None without the field); an empty frame when no listed seed has a
+    record. Two records of one key raise SystemExit. Without split_fold in
+    key, a record with the arm label and a split_fold (fold 0 included),
+    whatever its seed, raises SystemExit naming the file and the fold
+    (#159). Non-fit JSONs (_is_fit_record) are skipped."""
     task, endpoint = entry['task'], entry['endpoint']
     runner = 'pa' if task == 'pa' else 'lv'
     label, versions = arm['label'], arm['protocol_version']
@@ -2665,7 +2689,8 @@ def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
         with open(path, encoding='utf-8') as f:
             r = json.load(f)
         if (not isinstance(r, dict) or _record_task(r) != runner
-                or (runner == 'lv' and r.get('system') != task)):
+                or (runner == 'lv' and r.get('system') != task)
+                or not _is_fit_record(path, r)):
             continue
         eff = (r.get('config') or {}).get('effective') or {}
         if arm_label(r) != label:
@@ -2673,6 +2698,10 @@ def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
                 other[arm_label(r)] += 1
             continue
         _check_protocol(path, eff, versions, name)
+        fold = r.get('split_fold', eff.get('split_fold'))
+        if fold is not None and 'split_fold' not in key:   # fold 0 is a fold
+            raise SystemExit(f'{path}: split_fold {fold} in {name}, a test '
+                             'without folds')
         if r.get('seed') not in seeds:
             outside.append(r.get('seed'))
             continue
@@ -2699,7 +2728,8 @@ def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
                                          else 'data_seed'),
                      'below': bool(below), 'floor': floor,
                      'param_budget': r.get('param_budget'),
-                     'protocol_version': eff.get('protocol_version')})
+                     'protocol_version': eff.get('protocol_version'),
+                     'split_fold': fold})
     df = pd.DataFrame(rows)
     if not df.empty:
         dup = df[df.duplicated(list(key), keep=False)]
