@@ -6,17 +6,21 @@
 #                     and not used, a listed seed without a pair makes the
 #                     test incomplete
 # and per arm:
-#   label             the arm label as arm_label returns it (fixed per test)
+#   label             the arm label as arm_label returns it (fixed per test;
+#                     family B: the committee arm name cons, avg_in or
+#                     fault_mean)
 #   protocol_version  the F3 stamp every record of the arm with this label
 #                     carries, whatever its seed (a string or a list); F1/F2
 #                     records never enter an F3 test
 #   paths             run folders (searched recursively, inside the folder
 #                     only) or record files; no patterns
-# Required families (A, C, D, F) must be present; a conditional (G) or
-# optional (H) family is left out as a whole. Replace every <...>
-# placeholder before use. Family A runs its two optimizers in separate run
-# folders (result names carry no optimizer); family H reuses the
-# cfc_lrc/ncp fits of C and D (seeds 20-29 there count as outside the list).
+# Required families (A, B, C, D, F) must be present; a conditional (G) or
+# optional (H) family is left out as a whole (H is not listed here). Replace
+# every <..._RUN_DIR> placeholder with the run folder of that campaign
+# before use; every path is its results/ subfolder. Family A runs its two
+# optimizers in separate run folders (result names carry no optimizer), one
+# per seed half (10-19, 20-29); family B runs its three arms in one run
+# folder.
 
 # family A (required)
 T-A1:
@@ -24,21 +28,43 @@ T-A1:
   a:
     label: 'lrc/ncp [optimizer=rmsprop_legacy]'
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_A_PA_LRC_NCP_LEGACY_RUN_DIR>]
+    paths: [<F3_A_LEGACY_S10_RUN_DIR>/results, <F3_A_LEGACY_S20_RUN_DIR>/results]
   b:
     label: lrc/ncp
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_A_PA_LRC_NCP_RUN_DIR>]
+    paths: [<F3_A_RMS_S10_RUN_DIR>/results, <F3_A_RMS_S20_RUN_DIR>/results]
 T-A2:
   seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
   a:
     label: 'lrc_cal/ncp [optimizer=rmsprop_legacy]'
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_A_PA_LRC_CAL_NCP_LEGACY_RUN_DIR>]
+    paths: [<F3_A_LEGACY_S10_RUN_DIR>/results, <F3_A_LEGACY_S20_RUN_DIR>/results]
   b:
     label: 'lrc/ncp [optimizer=rmsprop_legacy]'
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_A_PA_LRC_NCP_LEGACY_RUN_DIR>]
+    paths: [<F3_A_LEGACY_S10_RUN_DIR>/results, <F3_A_LEGACY_S20_RUN_DIR>/results]
+
+# family B (required)
+T-B1:
+  seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+  a:
+    label: cons
+    protocol_version: F3-<FREEZE_DATE>
+    paths: [<F3_B_CO_K30_RUN_DIR>/results]
+  b:
+    label: fault_mean
+    protocol_version: F3-<FREEZE_DATE>
+    paths: [<F3_B_CO_K30_RUN_DIR>/results]
+T-B2:
+  seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+  a:
+    label: cons
+    protocol_version: F3-<FREEZE_DATE>
+    paths: [<F3_B_CO_K30_RUN_DIR>/results]
+  b:
+    label: avg_in
+    protocol_version: F3-<FREEZE_DATE>
+    paths: [<F3_B_CO_K30_RUN_DIR>/results]
 
 # family C (required)
 T-C1:
@@ -46,21 +72,21 @@ T-C1:
   a:
     label: cfc_lrc/ncp
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_C_LV_CFC_LRC_NCP_RUN_DIR>]
+    paths: [<F3_C_LV_CFC_LRC_NCP_RUN_DIR>/results]
   b:
     label: gru/ncp
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_C_LV_GRU_NCP_RUN_DIR>]
+    paths: [<F3_C_LV_GRU_NCP_RUN_DIR>/results]
 T-C2:
   seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
   a:
     label: cfc_lrc/ncp
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_C_LV_CFC_LRC_NCP_RUN_DIR>]
+    paths: [<F3_C_LV_CFC_LRC_NCP_RUN_DIR>/results]
   b:
     label: lstm/ncp
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_C_LV_LSTM_NCP_RUN_DIR>]
+    paths: [<F3_C_LV_LSTM_NCP_RUN_DIR>/results]
 
 # family D (required)
 T-D1:
@@ -68,21 +94,21 @@ T-D1:
   a:
     label: cfc_lrc/ncp
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_D_PA_CFC_LRC_NCP_RUN_DIR>]
+    paths: [<F3_D_PA_CFC_LRC_NCP_RUN_DIR>/results]
   b:
     label: cfc_lrc_eps1/ncp
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_D_PA_CFC_LRC_EPS1_NCP_RUN_DIR>]
+    paths: [<F3_D_PA_CFC_LRC_EPS1_NCP_RUN_DIR>/results]
 T-D2:
   seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
   a:
     label: cfc_lrc/ncp
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_D_PA_CFC_LRC_NCP_RUN_DIR>]
+    paths: [<F3_D_PA_CFC_LRC_NCP_RUN_DIR>/results]
   b:
     label: cfc_lrc_outer/ncp
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_D_PA_CFC_LRC_OUTER_NCP_RUN_DIR>]
+    paths: [<F3_D_PA_CFC_LRC_OUTER_NCP_RUN_DIR>/results]
 
 # family F (required)
 T-F1:
@@ -90,21 +116,21 @@ T-F1:
   a:
     label: lrc_init/ncp
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_F_DUFFING_LRC_INIT_NCP_RUN_DIR>]
+    paths: [<F3_F_DUFFING_LRC_INIT_NCP_RUN_DIR>/results]
   b:
     label: lrc/ncp
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_F_DUFFING_LRC_NCP_RUN_DIR>]
+    paths: [<F3_F_DUFFING_LRC_NCP_RUN_DIR>/results]
 T-F2:
   seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
   a:
     label: lrc_cal_duffing/ncp
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_F_DUFFING_LRC_CAL_DUFFING_NCP_RUN_DIR>]
+    paths: [<F3_F_DUFFING_LRC_CAL_DUFFING_NCP_RUN_DIR>/results]
   b:
     label: lrc/ncp
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_F_DUFFING_LRC_NCP_RUN_DIR>]
+    paths: [<F3_F_DUFFING_LRC_NCP_RUN_DIR>/results]
 
 # family G (conditional)
 T-G1:
@@ -112,40 +138,19 @@ T-G1:
   a:
     label: cfc_lrc/cncp
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_G_LV_CFC_LRC_CNCP_RUN_DIR>]
+    paths: [<F3_G_LV_CFC_LRC_CNCP_RUN_DIR>/results]
   b:
     label: cfc_lrc/cncp_ff
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_G_LV_CFC_LRC_CNCP_FF_RUN_DIR>]
+    paths: [<F3_G_LV_CFC_LRC_CNCP_FF_RUN_DIR>/results]
 T-G2:
   seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
   a:
     label: cfc_lrc/cncp
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_G_PA_CFC_LRC_CNCP_RUN_DIR>]
+    paths: [<F3_G_PA_CFC_LRC_CNCP_RUN_DIR>/results]
   b:
     label: cfc_lrc/cncp_ff
     protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_G_PA_CFC_LRC_CNCP_FF_RUN_DIR>]
+    paths: [<F3_G_PA_CFC_LRC_CNCP_FF_RUN_DIR>/results]
 
-# family H (optional)
-T-H1:
-  seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
-  a:
-    label: cfc_mm_lrc/ncp
-    protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_H_LV_CFC_MM_LRC_NCP_RUN_DIR>]
-  b:
-    label: cfc_lrc/ncp
-    protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_C_LV_CFC_LRC_NCP_RUN_DIR>]
-T-H2:
-  seeds: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
-  a:
-    label: cfc_mm_lrc/ncp
-    protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_H_PA_CFC_MM_LRC_NCP_RUN_DIR>]
-  b:
-    label: cfc_lrc/ncp
-    protocol_version: F3-<FREEZE_DATE>
-    paths: [<F3_D_PA_CFC_LRC_NCP_RUN_DIR>]

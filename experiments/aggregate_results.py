@@ -92,9 +92,12 @@ Optional sections:
                    reading incomplete/floor-bound/PASS/FAIL; descriptive
                    columns entering no reading: the family D seed and
                    crossed intervals (E17), diverged and other-label counts
-                   per arm, convergence flags on C and F (F-5);
-                   <out>/f3_families.csv and <out>/f3_pa_fits.csv (both
-                   Person Activity endpoint fields per fit, E14)
+                   per arm, convergence flags on C and F (F-5); family B
+                   on the K = 30 committee records (one-sided, no floor
+                   rule; T-B2 on delta = d15 - d0, #132);
+                   <out>/f3_families.csv, <out>/f3_pa_fits.csv (both
+                   Person Activity endpoint fields per fit, E14) and the
+                   descriptive <out>/f3_family_b.csv
   --f3-descriptive SPEC.yaml  the descriptive F3 arms (F3_DESCRIPTIVE_ARMS:
                    the six block A arms, the budget arm and the script arm;
                    F-12) from explicit path lists per arm (template:
@@ -2538,13 +2541,17 @@ def descriptive_report(blocks) -> str:
 #   status    optional, overrides the family's 'required' | 'conditional'
 #             | 'optional'
 # Values follow the F3 draft; a change before the freeze is a registry PR.
-# Families B (#132) and E (#133) plug in here.
+# Family E (#133) plugs in here.
 F3_CONFIG_FIELDS = ('lr', 'clipnorm', 'epochs', 'param_budget')
 _LEGACY = ' [optimizer=rmsprop_legacy]'
 _VPT = 'vpt_multi_median'
 F3_PA_SUCCESS = 0.30   # learning success on Person Activity (E8)
 F3_PA_FIELDS = ('test_macro_f1', 'test_macro_f1_last')   # both per fit (E14)
 _EB = ('epochs', 'param_budget')
+_BY_FAULT = 'test_macro_f1_by_fault'      # the committee endpoint field
+_CO_SEEDS = ('split_seed', 'corruption_seed', 'val_seed')   # equal per pair
+DID_PENALTY = -3.0   # T-B2: a seed with a non-finite input (valid: [-2, 2])
+F3_B_FAULTS = (0, 3, 9, 15, 20)   # the fault levels of f3_family_b.csv
 # the final seeds per family (F-1); a spec test of a family listed here must
 # name exactly these seeds (E: per fold). G and H have no registry list.
 F3_SEEDS = {'A': range(10, 30), 'B': range(10, 30), 'C': range(10, 30),
@@ -2575,6 +2582,18 @@ F3_FAMILIES = {
                     match=F3_CONFIG_FIELDS),
         'T-A2': _f3('pa', 'lrc_cal/ncp' + _LEGACY, 'lrc/ncp' + _LEGACY,
                     'test_macro_f1', 'exclusive', match=F3_CONFIG_FIELDS)}},
+    # B: the K = 30 committee on Person Activity (#132), arms by their
+    # _co_arm_any name; the registry fixes cell, wiring, n_columns and epochs
+    # of every record. T-B1 compares the test macro-F1 at fault level m = 15,
+    # T-B2 (kind 'did') the per-seed delta = d15 - d0 of d_m = cons - avg_in
+    # at the fault levels of the test. No floor rule.
+    'B': {'status': 'required', 'cell': 'cfc_lrc', 'wiring': 'ncp',
+          'n_columns': 30, 'epochs': 60, 'tests': {
+              'T-B1': _f3('co', 'cons', 'fault_mean', _BY_FAULT, 'none',
+                          side='greater', faults=(15,), match=_CO_SEEDS),
+              'T-B2': _f3('co', 'cons', 'avg_in', _BY_FAULT, 'none',
+                          kind='did', side='greater', faults=(0, 15),
+                          match=_CO_SEEDS)}},
     'C': {'status': 'required', 'tests': {
         'T-C1': _f3(_LV, 'cfc_lrc/ncp', 'gru/ncp', _VPT, 'exclusive',
                     match=_EB),
@@ -2756,6 +2775,124 @@ def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
     return df, outside, dict(other)
 
 
+def _num(v):
+    return float('nan') if v is None else float(v)
+
+
+def _fault_value(path, r, m):
+    """The test macro-F1 of a committee record at fault level m, looked up
+    with r['fault_counts'].index(m); a record without the level raises
+    SystemExit naming the file."""
+    if m not in (r.get('fault_counts') or []):
+        raise SystemExit(f'{path}: no fault level m={m} in fault_counts')
+    return _num(r[_BY_FAULT][r['fault_counts'].index(m)])
+
+
+def _f3_co_records(test, side, entry, arm, seeds):
+    """(records, outside, other, n_evalonly) of one family B arm (#132):
+    records {seed: (path, record)} of the committee records (_record_task
+    'co') below the arm's explicit paths whose _co_arm_any name is the arm
+    label, on the test's seed list. *.evalonly.json files are skipped by
+    name and counted (n_evalonly), non-fit JSONs (_is_fit_record, before any
+    label is read) skipped. other: {name: count} of the records with an F3
+    stamp and another arm name; outside: the seeds of the arm's records off
+    the seed list (neither used). Every record of the arm, whatever its
+    seed, carries a protocol_version the arm lists (_check_protocol), the
+    cell, wiring, n_columns and epochs of its registry family, a seed and
+    corruption_seed == seed, else SystemExit naming the file; two records of
+    one seed raise SystemExit."""
+    fam = F3_FAMILIES[entry['family']]
+    label, versions = arm['label'], arm['protocol_version']
+    name = f'{test}.{side} ({label})'
+    recs, outside, other, n_evalonly = {}, [], defaultdict(int), 0
+    for path in _record_files(arm['paths']):
+        if path.endswith('.evalonly.json'):     # eval-only outputs (#81, #137)
+            n_evalonly += 1
+            continue
+        with open(path, encoding='utf-8') as f:
+            r = json.load(f)
+        if (not isinstance(r, dict) or _record_task(r) != 'co'
+                or not _is_fit_record(path, r)):
+            continue
+        eff = (r.get('config') or {}).get('effective') or {}
+        co = _co_arm_any(r)
+        if co != label:
+            if str(eff.get('protocol_version') or '').startswith('F3-'):
+                other[co or 'unnamed'] += 1
+            continue
+        _check_protocol(path, eff, versions, name)
+        bad = [f'{k} {r.get(k)!r} (registry {fam[k]!r})' for k in (
+            'cell', 'wiring', 'n_columns', 'epochs') if r.get(k) != fam[k]]
+        if bad:
+            raise SystemExit(f'{path}: {name}: ' + ', '.join(bad))
+        if 'seed' not in r:
+            raise SystemExit(f'{path}: {name}: record without seed')
+        if r.get('corruption_seed') != r.get('seed'):
+            raise SystemExit(f'{path}: corruption_seed '
+                             f'{r.get("corruption_seed")!r} differs from seed '
+                             f'{r.get("seed")!r}')
+        if r['seed'] not in seeds:
+            outside.append(r['seed'])
+            continue
+        if r['seed'] in recs:
+            raise SystemExit(f'two records of {name} and one seed: '
+                             f'{recs[r["seed"]][0]}, {path}')
+        recs[r['seed']] = (path, r)
+    return recs, outside, dict(other), n_evalonly
+
+
+def _f3_co_frame(recs, faults):
+    """The _f3_test frame of one family B arm: one row per record with the
+    test macro-F1 f<m> at each fault level of the test, metric = the value
+    at the last level, diverged = a non-finite value at one of the levels,
+    the test confusions per recording at m = HD_M (the crossed interval of
+    T-B1) and the columns the engine reads (task 'pa', data_key =
+    split_seed, the _CO_SEEDS, the F3_CONFIG_FIELDS)."""
+    rows = []
+    for seed, (path, r) in sorted(recs.items()):
+        v = {f'f{m}': _fault_value(path, r, m) for m in faults}
+        rows.append({
+            'seed': seed, 'task': 'pa', **v, 'metric': v[f'f{faults[-1]}'],
+            'diverged': not np.isfinite(list(v.values())).all(),
+            'training_diverged': bool(r.get('training_diverged')),
+            'budget_above_tolerance': bool(r.get('budget_above_tolerance')),
+            'width_matched': False, 'data_key': r.get('split_seed'),
+            **{k: r.get(k) for k in (*_CO_SEEDS, *F3_CONFIG_FIELDS,
+                                     'best_val_epoch')},
+            'confusion': _hd_confusions(r)[1], 'file': path})
+    return pd.DataFrame(rows)
+
+
+def _did_vectors(p, entry) -> tuple:
+    """(x, y, stats) of T-B2 from its merged frame (#132): per seed
+    d_m = A - B at fault level m and delta = d15 - d0. The tested vector x
+    sets a seed with a non-finite one of its four values to DID_PENALTY
+    (below every valid difference, so the highest rank with a negative
+    sign), y = 0; p_raw is wilcoxon_test(x, y, 'greater'). median_diff, its
+    seed bootstrap interval, d_z, P(A>B) and n_positive read delta with
+    non-finite values as 0 and without the penalty. stats also carries the
+    non-finite counts per arm and level over the pairs and n_penalised."""
+    lo_m, hi_m = entry['faults']
+    raw = {(s, m): p[f'f{m}_{s}'].to_numpy(float) for s in 'ab'
+           for m in (lo_m, hi_m)}
+    z = {k: np.where(np.isfinite(v), v, 0.0) for k, v in raw.items()}
+    delta = (z['a', hi_m] - z['b', hi_m]) - (z['a', lo_m] - z['b', lo_m])
+    bad = ~np.isfinite(np.stack(list(raw.values()))).all(axis=0)
+    x, y = np.where(bad, DID_PENALTY, delta), np.zeros(len(delta))
+    lo, hi = bootstrap_median_ci(delta, N_BOOT)
+    pw, plo, phi = p_a_gt_b(delta, y)
+    p_raw, method = wilcoxon_test(x, y, 'greater')
+    return x, y, {
+        'p_raw': p_raw, 'method': method,
+        'd_z': _cohens_d_paired(delta, y) if len(y) > 1 else float('nan'),
+        'p_a_gt_b': pw, 'p_a_gt_b_lo': plo, 'p_a_gt_b_hi': phi,
+        'median_diff': float(np.median(delta)), 'median_diff_lo': lo,
+        'median_diff_hi': hi, 'ci_units': 'seed (d15 - d0, non-finite as 0)',
+        'n_positive': int((delta > 0).sum()), 'n_penalised': int(bad.sum()),
+        **{f'n_nonfinite_{entry[s]}_m{m}': int((~np.isfinite(v)).sum())
+           for (s, m), v in raw.items()}}
+
+
 def _config_values(d, field):
     """'v1;v2' of the distinct values of a config field over an arm's fits,
     None for an empty arm."""
@@ -2847,7 +2984,9 @@ def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',),
     other: {side: {label: count}} of _f3_arm. The descriptive columns
     (family D intervals and interval_note, diverged and other-label counts,
     the convergence flags of families C and F) enter no reading; p_perm
-    and the intervals are also reported on a budget-excluded row."""
+    and the intervals are also reported on a budget-excluded row. Floor rule
+    'none' (family B) leaves the floor columns empty; kind 'did' (T-B2)
+    tests the vector of _did_vectors against 0 (#132)."""
     kind, side = entry['kind'], entry['side']
     row = {'family': entry['family'], 'test': test,
            'registry_status': entry['status'], 'task': entry['task'],
@@ -2859,9 +2998,11 @@ def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',),
            or None, 'floor_rule': entry['floor']}
     marks, other = {}, other or {}
     for s, d in (('a', a), ('b', b)):
-        k, n = (int(d['below'].sum()), len(d)) if len(d) else (0, 0)
-        row[f'floor_{s}'] = f'{k}/{n}'
-        marks[s] = floor_share_bound(k, n)
+        n = len(d)
+        if entry['floor'] != 'none':      # family B: no floor marking
+            k = int(d['below'].sum()) if n else 0
+            row[f'floor_{s}'] = f'{k}/{n}'
+            marks[s] = floor_share_bound(k, n)
         for f in F3_CONFIG_FIELDS:
             row[f'{f}_{s}'] = _config_values(d, f)
         # every fit of the arm on the seed list, paired or not
@@ -2876,13 +3017,14 @@ def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',),
             row[f'n_flag_const_{s}'] = sum(map(
                 _const_phase_flagged, d['val_loss_curve'], d['epochs'])) \
                 if n else 0
-    row['floor_bound'] = marks['a'] or marks['b']
-    row['floor_bound_arms'] = ','.join(
-        s.upper() for s in 'ab' if marks[s]) or None
+    if marks:
+        row['floor_bound'] = marks['a'] or marks['b']
+        row['floor_bound_arms'] = ','.join(
+            s.upper() for s in 'ab' if marks[s]) or None
     above = any(len(d) and (d['budget_above_tolerance']
                             & ~d['width_matched']).any() for d in (a, b))
     if len(a) and len(b):
-        worst = WORST['pa' if entry['task'] == 'pa' else 'lv']
+        worst = WORST['pa' if entry['task'] in ('pa', 'co') else 'lv']
         a, b = (d.assign(v=np.where(d['diverged'], worst, d['metric']))
                 for d in (a, b))
         p = a.merge(b, on=list(key), suffixes=('_a', '_b')).sort_values(
@@ -2896,15 +3038,20 @@ def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',),
                                           + p['diverged_b'].sum()) if n
                else 0)
     if n and kind != 'mcnemar':
-        st = _pair_stats(p, p['task_a'].iloc[0], m, side)
-        x, y = p['v_a'].to_numpy(float), p['v_b'].to_numpy(float)
+        if kind == 'did':                   # T-B2: the tested vector vs 0
+            x, y, st = _did_vectors(p, entry)
+            row.update({k: v for k, v in st.items()
+                        if k.startswith(('n_nonfinite_', 'n_penalised'))})
+        else:
+            st = _pair_stats(p, p['task_a'].iloc[0], m, side)
+            x, y = p['v_a'].to_numpy(float), p['v_b'].to_numpy(float)
+            st['n_positive'] = int((x - y > 0).sum())
         row.update({k: st[k] for k in (
             'd_z', 'p_a_gt_b', 'p_a_gt_b_lo', 'p_a_gt_b_hi', 'median_diff',
-            'median_diff_lo', 'median_diff_hi', 'ci_units')},
-            n_positive=int((x - y > 0).sum()),
+            'median_diff_lo', 'median_diff_hi', 'ci_units', 'n_positive')},
             ci_includes_zero=(bool(st['median_diff_lo'] <= 0
                                    <= st['median_diff_hi'])
-                              if entry['task'] == 'pa' else None),
+                              if entry['task'] in ('pa', 'co') else None),
             p_perm=permutation_p(x, y, side))
         if entry['family'] == 'D':
             row.update(_family_d_intervals(p))
@@ -2981,7 +3128,13 @@ F3_COLUMNS = ['family', 'test', 'registry_status', 'task', 'endpoint',
               'n_diverged_a', 'n_diverged_b', 'n_other_label_a',
               'n_other_label_b', 'other_labels_a', 'other_labels_b',
               'n_flag_whole_a', 'n_flag_whole_b', 'n_flag_const_a',
-              'n_flag_const_b']
+              'n_flag_const_b',
+              # family B (#132): T-B2 non-finite inputs over the pairs and
+              # the seeds entering delta at DID_PENALTY; eval-only outputs
+              # skipped by name under each arm's paths
+              'n_nonfinite_cons_m0', 'n_nonfinite_cons_m15',
+              'n_nonfinite_avg_in_m0', 'n_nonfinite_avg_in_m15',
+              'n_penalised', 'n_evalonly_a', 'n_evalonly_b']
 
 
 F3_FIT_COLUMNS = ['tests', 'arm', 'seed', *F3_PA_FIELDS,
@@ -3021,26 +3174,39 @@ def f3_family_blocks(spec) -> tuple[pd.DataFrame, pd.DataFrame]:
     reading and status incomplete (fewer complete pairs than listed seeds;
     statistics still reported) before the floor rule of the registry
     (floor_share_bound, F-9) before PASS/FAIL; the budget-tolerance
-    exclusion of every arm except the width-matched one."""
+    exclusion of every arm except the width-matched one. Family B reads its
+    arms with _f3_co_records (n_evalonly_a/b: eval-only files skipped)."""
     draws, rows, fits = {}, [], []
     for test, entry in F3_TESTS.items():
         if test not in spec:
             continue
         seeds = spec[test]['seeds']
         m = sum(t in spec for t in F3_FAMILIES[entry['family']]['tests'])
-        (a, out_a, oth_a), (b, out_b, oth_b) = (
-            _f3_arm(test, side, entry, spec[test][side], seeds, draws)
-            for side in 'ab')
+        evalonly = {}
+        if entry['task'] == 'co':                   # family B (#132)
+            (ra, out_a, oth_a, evalonly['a']), (rb, out_b, oth_b,
+                                                evalonly['b']) = (
+                _f3_co_records(test, side, entry, spec[test][side], seeds)
+                for side in 'ab')
+            a, b = (_f3_co_frame(r, entry['faults']) for r in (ra, rb))
+        else:
+            (a, out_a, oth_a), (b, out_b, oth_b) = (
+                _f3_arm(test, side, entry, spec[test][side], seeds, draws)
+                for side in 'ab')
         if entry['task'] == 'pa':
             fits += [d.assign(test=f'{test}.{s}')
                      for s, d in (('a', a), ('b', b)) if len(d)]
-        rows.append(_f3_test(test, entry, m, len(spec), a, b, seeds,
-                             {'a': out_a, 'b': out_b},
-                             other={'a': oth_a, 'b': oth_b}))
+        rows.append({**_f3_test(test, entry, m, len(spec), a, b, seeds,
+                                {'a': out_a, 'b': out_b},
+                                other={'a': oth_a, 'b': oth_b}),
+                     **{f'n_evalonly_{s}': v for s, v in evalonly.items()}})
     counts = ['n10', 'n01', 'n_positive',
               *(c for c in F3_COLUMNS if c.startswith(('n_diverged_',
                                                        'n_other_label_',
-                                                       'n_flag_')))]
+                                                       'n_flag_',
+                                                       'n_nonfinite_',
+                                                       'n_penalised',
+                                                       'n_evalonly_')))]
     return (pd.DataFrame(rows).reindex(columns=F3_COLUMNS).astype(
         dict.fromkeys(counts, 'Int64')), _f3_pa_fits(fits))
 
@@ -3096,9 +3262,10 @@ def f3_report(blocks, pa_fits) -> str:
             + f" | {fl or '—'} | {med} | {_fmt(b['d_z'], '+.3f')} | {win} "
             f"| {'—' if pd.isna(b['n_positive']) else b['n_positive']} "
             f"| {txt(b['rate_a'])} "
-            f"| {txt(b['rate_b'])} | {b['floor_rule']} | {b['floor_a']} "
-            f"| {b['floor_b']} | "
-            + (f"YES ({b['floor_bound_arms']})" if yes(b['floor_bound'])
+            f"| {txt(b['rate_b'])} | {b['floor_rule']} | {txt(b['floor_a'])} "
+            f"| {txt(b['floor_b'])} | "
+            + ('—' if b['floor_rule'] == 'none'
+               else f"YES ({b['floor_bound_arms']})" if yes(b['floor_bound'])
                else 'no') + f" | {b['n_nonfinite']} |")
     d_rows = blocks[blocks['family'] == 'D'].to_dict('records')
     if d_rows:
@@ -3153,6 +3320,27 @@ def f3_report(blocks, pa_fits) -> str:
                   'n_diverged', 'n_flag_whole', 'n_flag_const')
                   for s in 'ab')]) + ' |'
                 for b in blocks.to_dict('records'))]
+    b_rows = blocks[blocks['family'] == 'B'].to_dict('records')
+    if b_rows:
+        lines += ['', 'Family B (committee K = 30, #132; floor rule none): '
+                  'T-B1 tests cons against fault_mean at m = 15 (a '
+                  'non-finite value enters as 0); T-B2 tests per seed delta '
+                  '= d15 - d0, d_m = cons - avg_in at fault level m, against '
+                  '0, a seed with a non-finite one of its four values '
+                  f'entering as {DID_PENALTY:g}; its median delta, interval, '
+                  'd_z, P(A>B) and seeds delta>0 read delta with non-finite '
+                  'values as 0 and without that penalty. Diverged: '
+                  'training_diverged or a non-finite value at a fault level '
+                  'the test reads.', '',
+                  '| Test | non-finite cons m0 | non-finite cons m15 '
+                  '| non-finite avg_in m0 | non-finite avg_in m15 '
+                  '| penalised | eval-only skipped A | eval-only skipped B |',
+                  '|' + '---|' * 8,
+                  *('| ' + ' | '.join([b['test'], *(cnt(b[c]) for c in (
+                      'n_nonfinite_cons_m0', 'n_nonfinite_cons_m15',
+                      'n_nonfinite_avg_in_m0', 'n_nonfinite_avg_in_m15',
+                      'n_penalised', 'n_evalonly_a', 'n_evalonly_b'))])
+                    + ' |' for b in b_rows)]
     differ = pa_fits[pa_fits['success_fields_differ'].eq(True)]
     lines += ['', 'Person Activity fits whose test_macro_f1 and '
               'test_macro_f1_last lie on different sides of '
@@ -3185,6 +3373,121 @@ def f3_report(blocks, pa_fits) -> str:
               'below the floor; floor_bound: an arm at the floor in at least '
               '30 % of the seeds (F-9). A non-finite or unbounded fit enters '
               'at the worst value.', '']
+    return '\n'.join(lines)
+
+
+F3_B_COLUMNS = ['quantity', 'arm', 'm', 'n', 'median', 'lo', 'hi',
+                'n_nonfinite', 'median_crossed_lo', 'median_crossed_hi',
+                'n_positive', 'n_converged']
+
+
+def _b_row(quantity, arm, m, v, bad, **extra) -> dict:
+    """One f3_family_b row: median of v (non-finite inputs already 0) with
+    its seed bootstrap interval, n and the seeds with a non-finite input."""
+    lo, hi = (bootstrap_median_ci(v, N_BOOT) if len(v)
+              else (float('nan'), float('nan')))
+    return {'quantity': quantity, 'arm': arm, 'm': m, 'n': len(v),
+            'median': float(np.median(v)) if len(v) else float('nan'),
+            'lo': lo, 'hi': hi, 'n_nonfinite': int(np.sum(bad)), **extra}
+
+
+def f3_family_b(spec) -> pd.DataFrame:
+    """f3_family_b.csv (#132): the descriptive rows of family B, without a
+    p-value or a verdict and counted in neither m nor m_f3 (columns
+    F3_B_COLUMNS). Arms as the tests load them (cons from T-B1.a,
+    fault_mean from T-B1.b, avg_in from T-B2.b), every record on the seed
+    list; a non-finite value enters as 0 (the T-B2 penalty is not used) and
+    counts in n_nonfinite (seeds with a non-finite input). Rows: the test
+    macro-F1 per arm and fault level F3_B_FAULTS; d0, d15 (cons - avg_in at
+    m = 0 and 15; d15 also with the crossed interval over seeds x test
+    recordings of _hd_confusions, NaN when a confusion is missing or the
+    shapes differ, and n_positive) and d15 - d0; cons - fault_mean at m = 0
+    and 15 and its per-seed difference (15) - (0), over the seeds both arms
+    have; per arm the fits with best_val_epoch >= CONVERGED x epochs
+    (n_converged). Median with its seed bootstrap interval (N_BOOT,
+    generator seed 0)."""
+    fam, seeds = F3_FAMILIES['B'], spec['T-B1']['seeds']
+    recs = {arm: _f3_co_records(t, s, F3_TESTS[t], spec[t][s], seeds)[0]
+            for arm, (t, s) in (('cons', ('T-B1', 'a')),
+                                ('avg_in', ('T-B2', 'b')),
+                                ('fault_mean', ('T-B1', 'b')))}
+    val = {arm: {s: {m: _fault_value(p, r, m) for m in F3_B_FAULTS}
+                 for s, (p, r) in rs.items()} for arm, rs in recs.items()}
+    rows = []
+    for arm, by_seed in val.items():
+        for m in F3_B_FAULTS:
+            v = np.array([x[m] for x in by_seed.values()], float)
+            rows.append(_b_row('test_macro_f1', arm, m,
+                               np.where(np.isfinite(v), v, 0.0),
+                               ~np.isfinite(v)))
+    for b, names in (('avg_in', ('d0', 'd15', 'd15 - d0')),
+                     ('fault_mean', ('cons - fault_mean', 'cons - fault_mean',
+                                     'cons - fault_mean (15) - (0)'))):
+        both = sorted(set(val['cons']) & set(val[b]))
+        raw = {(k, m): np.array([val[k][s][m] for s in both], float)
+               for k in ('cons', b) for m in (0, 15)}
+        z = {k: np.where(np.isfinite(v), v, 0.0) for k, v in raw.items()}
+        bad = {m: ~(np.isfinite(raw['cons', m]) & np.isfinite(raw[b, m]))
+               for m in (0, 15)}
+        d = {m: z['cons', m] - z[b, m] for m in (0, 15)}
+        rows.append(_b_row(names[0], None, 0, d[0], bad[0]))
+        extra = {}
+        if b == 'avg_in':
+            cms = [_hd_confusions(recs[k][s][1])[1] for k in ('cons', b)
+                   for s in both]
+            crossed = (len(both) and all(c is not None for c in cms)
+                       and len({c.shape for c in cms}) == 1)
+            lo, hi = (crossed_median_diff_ci(
+                np.stack(cms[:len(both)]), np.stack(cms[len(both):]), N_BOOT)
+                if crossed else (float('nan'), float('nan')))
+            extra = {'median_crossed_lo': lo, 'median_crossed_hi': hi,
+                     'n_positive': int((d[15] > 0).sum())}
+        rows.append(_b_row(names[1], None, 15, d[15], bad[15], **extra))
+        rows.append(_b_row(names[2], None, None, d[15] - d[0],
+                           bad[0] | bad[15]))
+    for arm, rs in recs.items():
+        rows.append({'quantity': 'best_val_epoch >= '
+                     f'{CONVERGED * fam["epochs"]:g}', 'arm': arm,
+                     'n': len(rs), 'n_converged': sum(
+                         (r.get('best_val_epoch') or 0)
+                         >= CONVERGED * fam['epochs'] for _, r in rs.values())})
+    return pd.DataFrame(rows).reindex(columns=F3_B_COLUMNS).astype(
+        {c: 'Int64' for c in ('m', 'n', 'n_nonfinite', 'n_positive',
+                              'n_converged')})
+
+
+def f3_family_b_report(fb) -> str:
+    """Markdown of f3_family_b."""
+    def num(v, spec='+.4f'):
+        return '—' if pd.isna(v) else format(v, spec)
+
+    def cnt(v):
+        return '—' if pd.isna(v) else str(v)
+
+    lines = ['## F3 family B, descriptive\n',
+             'No p-value, no verdict, nothing counted in m or m_f3 (#132). '
+             'Median over seeds with the seed bootstrap interval (10 000 '
+             'draws, generator seed 0, 95 %); a non-finite value enters as 0 '
+             f'(the {DID_PENALTY:g} of T-B2 is not used here) and counts as '
+             'non-finite; d_m = cons - avg_in at fault level m; the d15 row '
+             'also carries the crossed interval over seeds x test '
+             'recordings and the seeds with a positive difference; converged '
+             f'= best_val_epoch >= {CONVERGED:g} x epochs.\n',
+             '| quantity | arm | m | n | median [95% CI] | non-finite '
+             '| crossed [95% CI] | seeds > 0 | converged |',
+             '|' + '---|' * 9]
+    for r in fb.to_dict('records'):
+        arm = r['arm'] if isinstance(r['arm'], str) else '—'
+        lines.append(
+            f"| {r['quantity']} | {arm} | {cnt(r['m'])} | {r['n']} | "
+            + ('—' if pd.isna(r['median']) else
+               f"{num(r['median'])} [{num(r['lo'])}, {num(r['hi'])}]")
+            + f" | {cnt(r['n_nonfinite'])} | "
+            + ('—' if pd.isna(r['median_crossed_lo']) else
+               f"[{num(r['median_crossed_lo'])}, "
+               f"{num(r['median_crossed_hi'])}]")
+            + f" | {cnt(r['n_positive'])} | {cnt(r['n_converged'])} |")
+    lines.append('')
     return '\n'.join(lines)
 
 
@@ -3648,8 +3951,9 @@ def main(argv=None) -> int:
                         'seed lists and explicit path lists per arm '
                         '(configs/aggregate/f3_families.yaml); Wilcoxon '
                         'rows decided by the exact permutation p, T-A1 by '
-                        'the exact McNemar p; writes <out>/f3_families.csv '
-                        'and <out>/f3_pa_fits.csv')
+                        'the exact McNemar p; writes <out>/f3_families.csv, '
+                        '<out>/f3_pa_fits.csv and the descriptive '
+                        '<out>/f3_family_b.csv')
     p.add_argument('--f3-descriptive', default=None, metavar='SPEC.yaml',
                    help='the descriptive F3 arms (F3_DESCRIPTIVE_ARMS: block '
                         'A, budget and script arm) from a spec of explicit '
@@ -3748,10 +4052,13 @@ def main(argv=None) -> int:
                     index=False)
         parts.append(descriptive_report(desc))
     if args.f3_families:
-        f3, f3_fits = f3_family_blocks(load_f3_spec(args.f3_families))
+        spec = load_f3_spec(args.f3_families)
+        f3, f3_fits = f3_family_blocks(spec)
         f3.to_csv(os.path.join(args.out, 'f3_families.csv'), index=False)
         f3_fits.to_csv(os.path.join(args.out, 'f3_pa_fits.csv'), index=False)
-        parts.append(f3_report(f3, f3_fits))
+        fb = f3_family_b(spec)
+        fb.to_csv(os.path.join(args.out, 'f3_family_b.csv'), index=False)
+        parts += [f3_report(f3, f3_fits), f3_family_b_report(fb)]
     if args.f3_descriptive:
         tables = f3_descriptive(load_f3_descriptive_spec(args.f3_descriptive))
         for name, t in zip(('fits', 'arms', 'readings'), tables):
