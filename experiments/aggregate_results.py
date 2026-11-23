@@ -2798,7 +2798,7 @@ def _f3_co_records(test, side, entry, arm, seeds):
     stamp and another arm name; outside: the seeds of the arm's records off
     the seed list (neither used). Every record of the arm, whatever its
     seed, carries a protocol_version the arm lists (_check_protocol), the
-    cell, wiring, n_columns and epochs of its registry family and
+    cell, wiring, n_columns and epochs of its registry family, a seed and
     corruption_seed == seed, else SystemExit naming the file; two records of
     one seed raise SystemExit."""
     fam = F3_FAMILIES[entry['family']]
@@ -2825,6 +2825,8 @@ def _f3_co_records(test, side, entry, arm, seeds):
             'cell', 'wiring', 'n_columns', 'epochs') if r.get(k) != fam[k]]
         if bad:
             raise SystemExit(f'{path}: {name}: ' + ', '.join(bad))
+        if 'seed' not in r:
+            raise SystemExit(f'{path}: {name}: record without seed')
         if r.get('corruption_seed') != r.get('seed'):
             raise SystemExit(f'{path}: corruption_seed '
                              f'{r.get("corruption_seed")!r} differs from seed '

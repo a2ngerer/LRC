@@ -1670,6 +1670,19 @@ def test_family_b_record_without_wiring_names_the_file(tmp_path):
         f3_family_b(spec)
 
 
+def test_family_b_record_without_seed_names_the_file(tmp_path):
+    """A cons record with every field the loader checks before the seed
+    but without seed and corruption_seed stops it naming the file."""
+    spec = load_f3_spec(_world(tmp_path))
+    _dump(os.path.join(spec['T-B1']['a']['paths'][0], 'noseed.json'), {
+        'cell': 'cfc_lrc', 'wiring': 'ncp', 'n_columns': 30, 'epochs': 60,
+        'view_mode': 'identical', 'train_corruption': 'on',
+        'view_average': 'off', 'vote_lambda': None, 'consensus': 'mean',
+        'config': {'effective': {'protocol_version': F3}}})
+    with pytest.raises(SystemExit, match=r'noseed\.json: .*without seed'):
+        f3_family_blocks(spec)
+
+
 def test_family_b_empty_arm_folder_is_incomplete(tmp_path):
     spec = _world(tmp_path, skip={('T-B1', 'b'): B_SEEDS})
     r = _blocks(spec).loc['T-B1']
