@@ -1304,15 +1304,22 @@ def test_f1_and_f2_loaders_skip_wandb_summaries(tmp_path):
     pd.testing.assert_frame_equal(got, want)
 
 
-def test_pa_record_without_wiring_names_the_file(tmp_path):
+@pytest.mark.parametrize('half, missing', [
+    ({'cell': 'lrc'}, r"\['wiring'\]"),
+    ({'config': {'effective': {}}}, r"\['cell', 'wiring'\]")])
+def test_pa_record_without_wiring_names_the_file(tmp_path, half, missing):
+    """Also in _f2_arm, where the record has no seed: the helper runs
+    before the seed filter."""
     run = str(tmp_path / 'run')
     _pa(os.path.join(run, 'results'), 'lrc/ncp', 10, 0.5)
-    _dump(os.path.join(run, 'half.json'), {**SUMMARY, 'cell': 'lrc'})
+    _dump(os.path.join(run, 'half.json'), {**SUMMARY, **half})
     arm = {'label': 'lrc/ncp', 'protocol_version': [F3], 'paths': [run]}
-    with pytest.raises(SystemExit, match=r"half\.json.*\['wiring'\]"):
+    with pytest.raises(SystemExit, match=r'half\.json.*' + missing):
         _f3_arm('T-A1', 'b', F3_TESTS['T-A1'], arm, _seeds('T-A1'), {})
-    with pytest.raises(SystemExit, match=r"half\.json.*\['wiring'\]"):
+    with pytest.raises(SystemExit, match=r'half\.json.*' + missing):
         load_sequence_runs(run, 'pa')
+    with pytest.raises(SystemExit, match=r'half\.json.*' + missing):
+        _f2_arm('t', 'b', 'pa', arm, {})
 
 
 def _fold_arm(tmp_path, folds):
