@@ -1,6 +1,7 @@
 # tests/experiments/test_aggregate_f3_descriptive.py
 """The F3 descriptive path of experiments/aggregate_results.py (#152): block
-A arms, budget arm and script arm, on synthetic records only."""
+A arms, budget arm and script arm; the dose, component and fold-check arms
+with the stage table (#153); on synthetic records only."""
 import json
 import os
 
@@ -12,9 +13,11 @@ from experiments.aggregate_results import (B5_EXIT_THRESHOLD,
                                            F3_DESC_ARM_COLUMNS,
                                            F3_DESC_FIT_COLUMNS,
                                            F3_DESC_READING_COLUMNS,
+                                           F3_DESC_STAGE_COLUMNS,
                                            F3_DESCRIPTIVE_ARMS, F3_TESTS,
                                            _desc_arm_row, _f3_arm, _f3_test,
                                            arm_label, f3_descriptive,
+                                           f3_descriptive_stages,
                                            load_f3_descriptive_spec, main)
 from tests.experiments.test_aggregate_f3 import (F3, GOOD, SUMMARY, _cell,
                                                  _dump, _run_folder)
@@ -26,6 +29,10 @@ BLOCK_A = ['a_lrc', 'a_lrc_legacy', 'a_cal', 'a_cal_legacy', 'a_init',
            'a_init_legacy']
 SUFFIX20 = ' (exploratory, 20 seeds, one split)'
 SUFFIX5 = ' (exploratory, 5 seeds, one split)'
+SUFFIX10 = ' (exploratory, 10 seeds, one split)'
+DOSE = ['dose050', 'dose075', 'dose0875']
+COMP = ['fanin', 'ranges']
+FOLD = ['fold_lrc', 'fold_cal']
 
 
 # --- records and worlds ------------------------------------------------------
@@ -39,14 +46,18 @@ def _curve(exit_at, n, low=0.0751, high=0.2):
 
 
 def _rec(path, aid, seed, last=0.5, best=None, exit_at=5, diverged=False,
-         test_curve=None, val_curve=None, pv=F3, name=None, extra=None):
-    """One Person Activity record of the arm, the registry config."""
+         test_curve=None, val_curve=None, pv=F3, name=None, extra=None,
+         fold=None):
+    """One Person Activity record of the arm, the registry config (fold:
+    its split_fold, top level and config.effective)."""
     reg = F3_DESCRIPTIVE_ARMS[aid]
     cell, wiring, build = _cell(reg['label'], reg['lr'])
     e = reg['epochs']
     eff = {'task': 'person_activity', 'param_budget': 30000, 'epochs': e,
            'split_seed': 0, 'ode_unfolds': 6, 'protocol_version': pv,
            'build': build}
+    if fold is not None:
+        eff['split_fold'] = fold
     rec = {'cell': cell, 'wiring': wiring, 'seed': seed, 'epochs': e,
            'param_budget': 30000, 'budget_deviation': 0.02,
            'budget_above_tolerance': False, 'lr': reg['lr'],
@@ -55,10 +66,12 @@ def _rec(path, aid, seed, last=0.5, best=None, exit_at=5, diverged=False,
            else best, 'test_macro_f1_last': last,
            'test_macro_f1_curve': test_curve or [last] * e,
            'val_macro_f1_curve': val_curve or _curve(exit_at, e),
-           'training_diverged': diverged, 'split_fold': None,
+           'training_diverged': diverged, 'split_fold': fold,
            'test_confusion_by_recording': GOOD, 'config': {'effective': eff}}
     rec.update(extra or {})
-    _dump(os.path.join(path, name or f'{cell}_{wiring}_seed{seed}.json'), rec)
+    tag = '' if fold is None else f'_fold{fold}'
+    _dump(os.path.join(path, name or f'{cell}_{wiring}{tag}_seed{seed}.json'),
+          rec)
 
 
 def _folders(aid):
@@ -70,11 +83,17 @@ def _folders(aid):
     return {s: f'{opt}_s{10 if s < 20 else 20}' for s in range(10, 30)}
 
 
+def _keys(reg):
+    """The record keys of an arm: seeds, or (fold, seed) of a fold check."""
+    return reg['seeds'] if reg['folds'] is None else [
+        (k, s) for k in reg['folds'] for s in reg['seeds']]
+
+
 def _world(tmp_path, opts=None, skip=None, empty=()):
     """Spec path of a world with every seed of every arm (learning success
-    0.5, exit at epoch 5). opts: {arm: writer kwargs or {seed: kwargs}};
-    skip: {arm: seeds without a record}; empty: arms whose paths are one
-    empty folder."""
+    0.5, exit at epoch 5). opts: {arm: writer kwargs or {key: kwargs}};
+    skip: {arm: keys without a record}; key: the seed, (fold, seed) in a
+    fold-check arm; empty: arms whose paths are one empty folder."""
     opts, skip = opts or {}, skip or {}
     spec = {}
     for aid, reg in F3_DESCRIPTIVE_ARMS.items():
@@ -84,12 +103,15 @@ def _world(tmp_path, opts=None, skip=None, empty=()):
         else:
             folders = _folders(aid)
             o = opts.get(aid, {})
-            per_seed = bool(o) and all(isinstance(k, int) for k in o)
-            for s in reg['seeds']:
+            per_seed = bool(o) and all(isinstance(k, (int, tuple))
+                                       for k in o)
+            for key in _keys(reg):
+                fold, s = key if isinstance(key, tuple) else (None, key)
                 path = str(tmp_path / folders[s])
                 os.makedirs(path, exist_ok=True)
-                if s not in skip.get(aid, ()):
-                    _rec(path, aid, s, **(o.get(s, {}) if per_seed else o))
+                if key not in skip.get(aid, ()):
+                    _rec(path, aid, s, fold=fold,
+                         **(o.get(key, {}) if per_seed else o))
             paths = [str(tmp_path / f) for f in sorted(set(folders.values()))]
         spec[aid] = {'label': reg['label'], 'protocol_version': F3,
                      'paths': paths}
@@ -108,7 +130,8 @@ def _run(tmp_path, **kw):
 # --- registry, spec, template ------------------------------------------------
 
 def test_registry_holds_block_a_budget_and_script_arms():
-    assert list(F3_DESCRIPTIVE_ARMS) == [*BLOCK_A, 'budget', 'script']
+    assert list(F3_DESCRIPTIVE_ARMS) == [*BLOCK_A, 'budget', 'script', *DOSE,
+                                         *COMP, *FOLD]
     for aid in BLOCK_A:
         r = F3_DESCRIPTIVE_ARMS[aid]
         base = {'a_lrc': 'lrc/ncp', 'a_cal': 'lrc_cal/ncp',
@@ -191,15 +214,17 @@ def test_main_writes_the_three_tables_and_the_summary(tmp_path):
         assert list(tables[name].columns) == cols
         # no p-value, nothing of the test path (m, significant)
         assert not [c for c in cols if c.startswith(('p_', 'm', 'signif'))]
-    assert len(tables['fits']) == 6 * 20 + 2 * 5
+    assert len(tables['fits']) == 6 * 20 + 2 * 5 + 5 * 10 + 2 * 5 * 2
     arms = tables['arms'].set_index('arm')
     assert arms.loc['a_cal', 'success_rate'] == '20/20 [0.83, 1.00]'
     assert arms.loc['budget', 'n_exit_within_50'] == '5'          # Int64
     assert pd.isna(arms.loc['a_cal', 'n_exit_within_50'])
-    assert tables['fits']['exit_epoch'].eq('5').all()             # Int64
+    fold = tables['fits']['arm'].isin(FOLD)
+    assert tables['fits'].loc[~fold, 'exit_epoch'].eq('5').all()  # Int64
     assert list(tables['readings']['reading']) == [
         'manipulation_check', 'lrc_init', 'count_t_a1', 'budget', 'script',
-        'script_retained']
+        'script_retained', 'dose', 'component_fanin', 'component_ranges',
+        'component', *(f'fold_{k}' for k in range(5))]
     with open(os.path.join(out, 'summary.md'), encoding='utf-8') as f:
         text = f.read()
     check = text.index('## F3 block A manipulation check')
@@ -260,9 +285,12 @@ def test_budget_and_script_arms_keep_apart_by_label(tmp_path):
     spec = load_f3_descriptive_spec(_world(tmp_path, opts={
         'budget': {'last': 0.1}, 'a_lrc': {'exit_at': None}}))
     want = f3_descriptive(spec)
-    every = sorted({p for a in spec.values() for p in a['paths']})
+    # the fold-check folder stays apart: its labels are those of block A
+    every = sorted({p for a, v in spec.items() if a not in FOLD
+                    for p in v['paths']})
     for aid in spec:
-        spec[aid]['paths'] = every
+        if aid not in FOLD:
+            spec[aid]['paths'] = every
     got = f3_descriptive(spec)
     pd.testing.assert_frame_equal(got[1], want[1])
     arms = got[1].set_index('arm')
@@ -459,10 +487,11 @@ def test_manipulation_check(tmp_path, n_fail, skip, cls, counts):
     n = 20 - len(skip)
     assert (arms.loc['a_cal', 'k_success'],
             arms.loc['a_cal', 'n_records']) == (n - n_fail, n)
-    # the other rows do not depend on the check
+    # the other rows do not depend on the check (dose counts the failed
+    # a_cal seeds 10-13 as its stage lrc_cal)
     _, _, base = _run(tmp_path / 'base')
-    pd.testing.assert_frame_equal(rd.drop('manipulation_check'),
-                                  base.drop('manipulation_check'))
+    pd.testing.assert_frame_equal(rd.drop(['manipulation_check', 'dose']),
+                                  base.drop(['manipulation_check', 'dose']))
     out = str(tmp_path / 'out')
     main(['--runs', 'none', '--out', out, '--f3-descriptive',
           str(tmp_path / 'desc.yaml')])
@@ -632,3 +661,294 @@ def test_script_pairing_treats_nan_at_the_same_place_as_equal(tmp_path):
     assert pd.isna(f.loc[11, 'first_50_max_abs_diff'])
     assert f.loc[12, 'first_50_equal'] is True
     assert f.loc[12, 'first_50_max_abs_diff'] == 0.0
+
+
+# --- dose, component and fold-check arms (#153) ------------------------------
+
+STAGE_ARMS = {'lrc': 'a_lrc', 'lrc_dose050': 'dose050',
+              'lrc_dose075': 'dose075', 'lrc_dose0875': 'dose0875',
+              'lrc_cal': 'a_cal', 'lrc_init': 'a_init', 'lrc_fanin': 'fanin',
+              'lrc_ranges': 'ranges'}
+
+
+def _k_of_10(k):
+    """Writer opts: learning success on k of the seeds 10-19 (the others
+    of the arm, seeds 20-29 of block A included, keep it)."""
+    return {s: {'last': 0.1} for s in range(10 + k, 20)}
+
+
+def _stages(**ks):
+    """opts of a world with k of 10 per stage (keys of STAGE_ARMS)."""
+    return {STAGE_ARMS[s]: _k_of_10(k) for s, k in ks.items()}
+
+
+def test_registry_holds_dose_component_and_fold_check_arms():
+    for aid in DOSE + COMP:
+        assert F3_DESCRIPTIVE_ARMS[aid] == {
+            'label': f'lrc_{aid}/ncp', 'lr': 1e-3, 'clipnorm': None,
+            'epochs': 50, 'seeds': range(10, 20), 'folds': None}
+    for aid, label in zip(FOLD, ('lrc/ncp', 'lrc_cal/ncp')):
+        assert F3_DESCRIPTIVE_ARMS[aid] == {
+            'label': label, 'lr': 1e-3, 'clipnorm': None, 'epochs': 50,
+            'seeds': range(10, 12), 'folds': range(5)}
+
+
+def test_template_paths_of_the_new_arms():
+    path = os.path.join(REPO, 'configs/aggregate/f3_descriptive.yaml')
+    with open(path, encoding='utf-8') as f:
+        t = yaml.safe_load(f)
+    for aids, run in ((DOSE, 'F3_A_DOSE'), (COMP, 'F3_A_COMP'),
+                      (FOLD, 'F3_E_FOLDCHECK')):
+        for aid in aids:
+            assert t[aid]['paths'] == [f'<{run}_RUN_DIR>/results'], aid
+
+
+def test_wandb_summary_under_a_fold_check_path_changes_nothing(tmp_path):
+    spec = load_f3_descriptive_spec(_world(tmp_path))
+    want = f3_descriptive(spec)
+    _run_folder(os.path.join(spec['fold_cal']['paths'][0], 'run'))
+    for got, exp in zip(f3_descriptive(spec), want):
+        pd.testing.assert_frame_equal(got, exp)
+
+
+def test_fold_check_record_without_split_fold_names_the_file(tmp_path):
+    spec = load_f3_descriptive_spec(_world(tmp_path))
+    _rec(spec['fold_cal']['paths'][0], 'fold_cal', 10, name='nofold.json')
+    with pytest.raises(SystemExit, match=r'nofold\.json: fold_cal .*record '
+                                         'without split_fold'):
+        f3_descriptive(spec)
+
+
+def test_fold_check_fold_off_the_list_names_the_file(tmp_path):
+    spec = load_f3_descriptive_spec(_world(tmp_path))
+    _rec(spec['fold_lrc']['paths'][0], 'fold_lrc', 10, fold=5,
+         name='fold5.json')
+    with pytest.raises(SystemExit, match=r'fold5\.json: fold_lrc .*split_fold '
+                                         r'5 off the fold list 0-4'):
+        f3_descriptive(spec)
+
+
+def test_fold_check_duplicate_arm_fold_seed_is_an_error(tmp_path):
+    spec = load_f3_descriptive_spec(_world(tmp_path))
+    _rec(spec['fold_cal']['paths'][0], 'fold_cal', 11, fold=3,
+         name='again.json')
+    with pytest.raises(SystemExit, match=r'two records of fold_cal .*again'):
+        f3_descriptive(spec)
+
+
+def test_fold_check_outside_seeds_count_per_fold(tmp_path):
+    spec = load_f3_descriptive_spec(_world(tmp_path))
+    for fold, seed in ((1, 12), (1, 0), (4, 13)):
+        _rec(spec['fold_lrc']['paths'][0], 'fold_lrc', seed, fold=fold,
+             extra={'lr': 0.05}, last=0.0)
+    fits, arms, rd = f3_descriptive(spec)
+    f = arms[arms['arm'] == 'fold_lrc'].set_index('split_fold')
+    assert f['n_outside_list'].tolist() == [0, 2, 0, 0, 1]
+    assert f['n_records'].tolist() == [2] * 5
+    assert len(fits[fits['arm'] == 'fold_lrc']) == 10
+    assert rd.set_index('reading').loc['fold_1', 'readable']
+    out = str(tmp_path / 'out')
+    main(['--runs', 'none', '--out', out, '--f3-descriptive',
+          str(tmp_path / 'desc.yaml')])
+    with open(os.path.join(out, 'summary.md'), encoding='utf-8') as fh:
+        assert 'not used): fold_lrc fold 1 (2); fold_lrc fold 4 (1).' \
+            in fh.read()
+
+
+def test_fold_check_fits_and_arms_rows(tmp_path):
+    out = str(tmp_path / 'out')
+    assert main(['--runs', 'none', '--out', out, '--f3-descriptive',
+                 _world(tmp_path, opts={'fold_lrc': {(2, 11): {
+                     'last': 0.1}}})]) == 0
+    fits = pd.read_csv(os.path.join(out, 'f3_descriptive_fits.csv'),
+                       dtype=str)
+    f = fits[fits['arm'].isin(FOLD)]
+    assert len(f) == 20
+    assert f['exit_epoch'].isna().all() and f['censored'].isna().all()
+    assert sorted(set(f['split_fold'])) == ['0', '1', '2', '3', '4']
+    assert f['success'].notna().all()
+    assert fits.loc[~fits['arm'].isin(FOLD), 'split_fold'].isna().all()
+    arms = pd.read_csv(os.path.join(out, 'f3_descriptive_arms.csv'),
+                       dtype=str)
+    a = arms[arms['arm'].isin(FOLD)]
+    assert len(a) == 10
+    filled = {c for c in F3_DESC_ARM_COLUMNS if a[c].notna().any()}
+    assert filled == {'arm', 'split_fold', 'n_records', 'n_listed',
+                      'k_success', 'n_outside_list'}
+    assert all(a[c].notna().all() for c in filled)
+    row = a[(a['arm'] == 'fold_lrc') & (a['split_fold'] == '2')].iloc[0]
+    assert (row['n_records'], row['n_listed'], row['k_success']) == (
+        '2', '2', '1')
+    assert arms.loc[~arms['arm'].isin(FOLD), 'n_diverged'].eq('0').all()
+
+
+def test_empty_dose_and_fold_check_folders(tmp_path):
+    fits, arms, rd = _run(tmp_path, empty=(*DOSE, 'fold_cal'))
+    for aid in DOSE:
+        a = arms.loc[aid]
+        assert [a[c] for c in ('n_records', 'k_success', 'n_diverged',
+                               'n_censored', 'n_outside_list')] == [0] * 5
+    c = arms.loc['fold_cal']
+    assert c['n_records'].tolist() == [0] * 5
+    assert c['k_success'].tolist() == [0] * 5
+    assert not fits['arm'].isin([*DOSE, 'fold_cal']).any()
+    assert rd.loc['dose', 'classification'] == \
+        'not readable (20 of 50 records)'
+    for k in range(5):
+        r = rd.loc[f'fold_{k}']
+        assert r['classification'] == 'not readable (2 of 4 records)'
+        assert not r['readable'] and pd.isna(r['sentence'])
+    stages = f3_descriptive_stages(fits).set_index('stage')
+    assert stages.loc['lrc_dose050', ['k', 'n_records']].tolist() == [0, 0]
+    assert pd.isna(stages.loc['lrc_dose050', 'cp_lo'])
+    # every arm of a reading empty: 0 of N
+    _, _, rd = _run(tmp_path / 'both', empty=('fanin', *FOLD))
+    assert rd.loc['component_fanin', 'classification'] == \
+        'not readable (0 of 10 records)'
+    assert rd.loc['component', 'classification'] == \
+        'not readable (30 of 40 records)'
+    assert rd.loc['fold_0', 'classification'] == \
+        'not readable (0 of 4 records)'
+
+
+# --- stage table -------------------------------------------------------------
+
+def test_stage_table(tmp_path):
+    opts = _stages(lrc=0, lrc_dose050=3, lrc_dose075=10, lrc_init=8,
+                   lrc_fanin=1, lrc_ranges=10)
+    opts['a_init'].update({s: {'last': 0.1} for s in range(20, 30)})
+    opts['dose0875'] = {s: {'exit_at': None} for s in range(10, 20)}
+    out = str(tmp_path / 'out')
+    assert main(['--runs', 'none', '--out', out, '--f3-descriptive',
+                 _world(tmp_path, opts=opts)]) == 0
+    st = pd.read_csv(os.path.join(out, 'f3_descriptive_stages.csv'),
+                     dtype=str)
+    assert list(st.columns) == F3_DESC_STAGE_COLUMNS
+    assert not [c for c in st.columns if 'diff' in c]
+    assert st['stage'].tolist() == list(STAGE_ARMS)
+    assert st['alpha'].fillna('').tolist() == ['0', '0.5', '0.75', '0.875',
+                                               '1', '', '', '']
+    st = st.set_index('stage')
+    assert st['k'].tolist() == ['0', '3', '10', '10', '10', '8', '1', '10']
+    assert st['n_records'].eq('10').all()     # block A: seeds 10-19 only
+    assert [round(float(st.loc['lrc_dose050', c]), 2)
+            for c in ('cp_lo', 'cp_hi')] == [0.07, 0.65]
+    assert (st.loc['lrc_dose0875', 'n_censored'],
+            st.loc['lrc_dose0875', 'exit_epoch_median']) == ('10', '> 50')
+    assert (st.loc['lrc', 'n_censored'],
+            st.loc['lrc', 'exit_epoch_median']) == ('0', '5')
+    assert float(st.loc['lrc', 'test_macro_f1_median']) == 0.1
+    assert float(st.loc['lrc_cal', 'test_macro_f1_median']) == 0.5
+
+
+# --- readings ----------------------------------------------------------------
+
+@pytest.mark.parametrize('ks, cls, sentence', [
+    ((0, 6, 2, 9, 10), 'non-monotone', None),
+    ((0, 1, 2, 9, 10), 'step', 'Learning success sets in between α = 0.75 '
+     'and α = 0.875'),
+    ((2, 8, 9, 10, 10), 'step', 'Learning success sets in between α = 0 and '
+     'α = 0.5'),
+    ((0, 2, 5, 9, 10), 'graded', 'Learning success rises with the scale of '
+     'the initialisation (0, 2, 5, 9, 10 of 10)'),
+    ((5, 5, 5, 5, 5), 'none', None),
+    ((6, 2, 3, 9, 10), 'none', None),             # non-monotone, no precond.
+    ((0, 4, 5, 9, 7), 'none', None)])
+def test_dose_reading(tmp_path, ks, cls, sentence):
+    stages = ['lrc', 'lrc_dose050', 'lrc_dose075', 'lrc_dose0875', 'lrc_cal']
+    _, _, rd = _run(tmp_path, opts=_stages(**dict(zip(stages, ks))))
+    r = rd.loc['dose']
+    assert r['readable'] and r['classification'] == cls
+    assert r['counts'] == '; '.join(f'{s} {k} of 10'
+                                    for s, k in zip(stages, ks))
+    if sentence is None:
+        assert pd.isna(r['sentence'])
+    else:
+        assert r['sentence'] == sentence + SUFFIX10
+    _, _, rd = _run(tmp_path / 'gap', opts=_stages(**dict(zip(stages, ks))),
+                    skip={'dose075': (15,), 'a_lrc': (25,)})
+    assert rd.loc['dose', 'classification'] == \
+        'not readable (49 of 50 records)'
+
+
+def test_component_arm_sentences(tmp_path):
+    _, _, rd = _run(tmp_path, opts=_stages(lrc_fanin=3, lrc_ranges=0))
+    assert rd.loc['component_fanin', 'sentence'] == (
+        '`lrc_fanin/ncp` reaches learning success alone in 3 of 10 seeds at '
+        'learning rate 10⁻³ at the end of 50 epochs (95 % interval [0.07, '
+        '0.65])' + SUFFIX10)
+    assert rd.loc['component_ranges', 'sentence'] == (
+        '`lrc_ranges/ncp` reaches learning success alone in 0 of 10 seeds at '
+        'learning rate 10⁻³ at the end of 50 epochs (95 % interval [0.00, '
+        '0.31])' + SUFFIX10)
+    assert rd.loc['component_fanin', 'counts'] == '3 of 10'
+    _, _, rd = _run(tmp_path / 'gap', skip={'ranges': (19,)})
+    assert rd.loc['component_ranges', 'classification'] == \
+        'not readable (9 of 10 records)'
+    assert rd.loc['component_fanin', 'readable']
+    assert rd.loc['component', 'classification'] == \
+        'not readable (39 of 40 records)'
+
+
+@pytest.mark.parametrize('k, m, i, r, cls, sentence', [
+    (1, 2, 9, 0, 'neither', 'neither part alone reaches learning success in '
+     'more than 2 of 10 seeds at this budget (fan-in rule 1 of 10, range '
+     'changes 2 of 10)'),
+    (0, 9, 8, 2, 'ranges_only', 'the range changes alone reach learning '
+     'success in 9 of 10 seeds, the fan-in rule alone in 0 of 10, at this '
+     'budget'),
+    (8, 1, 10, 0, 'fanin_only', 'the fan-in rule alone reaches learning '
+     'success in 8 of 10 seeds, the range changes alone in 1 of 10, at this '
+     'budget'),
+    (10, 8, 10, 0, 'both', 'each part alone reaches learning success in at '
+     'least 8 of 10 seeds at this budget (10 and 8 of 10)'),
+    (5, 0, 10, 0, 'none', None),                  # 3 to 7 in one arm
+    (2, 7, 10, 0, 'none', None),
+    (0, 9, 7, 0, 'none', None),                   # lrc_init below 8
+    (0, 9, 10, 3, 'none', None)])                 # lrc above 2
+def test_component_classification(tmp_path, k, m, i, r, cls, sentence):
+    _, _, rd = _run(tmp_path, opts=_stages(lrc_fanin=k, lrc_ranges=m,
+                                           lrc_init=i, lrc=r))
+    row = rd.loc['component']
+    assert row['readable'] and row['classification'] == cls
+    assert row['counts'] == (f'lrc_fanin {k} of 10; lrc_ranges {m} of 10; '
+                             f'lrc_init {i} of 10; lrc {r} of 10')
+    if sentence is None:
+        assert pd.isna(row['sentence'])
+    else:
+        assert row['sentence'] == sentence + SUFFIX10
+    assert not [s for s in rd['sentence'].dropna() if 'hop gain' in s]
+
+
+def test_fold_check_readings(tmp_path):
+    fail = {'last': 0.1}
+    opts = {'fold_lrc': {(0, 10): fail, (0, 11): fail, (1, 10): fail,
+                         (1, 11): fail, (2, 10): fail, (2, 11): fail},
+            'fold_cal': {(1, 11): fail}}
+    out = str(tmp_path / 'out')
+    assert main(['--runs', 'none', '--out', out, '--f3-descriptive',
+                 _world(tmp_path, opts=opts, skip={'fold_cal': [(2, 10)]})
+                 ]) == 0
+    rd = pd.read_csv(os.path.join(out, 'f3_descriptive_readings.csv'),
+                     dtype=str).set_index('reading')
+    r = rd.loc['fold_0']
+    sentence = ('On fold 0 the calibrated initialisation reaches learning '
+                'success in 2 of 2 seeds and the reference initialisation in '
+                '0 of 2 (exploratory, 2 seeds, fold 0)')
+    assert (r['classification'], r['sentence']) == ('cal2_ref0', sentence)
+    assert r['counts'] == 'lrc_cal/ncp 2 of 2; lrc/ncp 0 of 2'
+    assert r['sentence'].count('(exploratory, 2 seeds, fold 0)') == 1
+    assert 'one split' not in r['sentence']
+    r = rd.loc['fold_1']                         # cal 1 of 2
+    assert (r['classification'], r['counts']) == (
+        'none', 'lrc_cal/ncp 1 of 2; lrc/ncp 0 of 2')
+    assert pd.isna(r['sentence'])
+    assert rd.loc['fold_2', 'classification'] == \
+        'not readable (3 of 4 records)'
+    assert rd.loc['fold_3', 'classification'] == 'none'      # ref 2 of 2
+    with open(os.path.join(out, 'summary.md'), encoding='utf-8') as f:
+        text = f.read()
+    assert text.count('(exploratory, 2 seeds, fold 0)') == 1
+    assert '- fold_0: ' + sentence + ' (cal2_ref0)\n' in text
+    assert '- fold_1: none (lrc_cal/ncp 1 of 2; lrc/ncp 0 of 2)' in text
+    assert '- fold_2: not readable (3 of 4 records)' in text
