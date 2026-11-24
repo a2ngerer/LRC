@@ -94,10 +94,15 @@ Optional sections:
                    crossed intervals (E17), diverged and other-label counts
                    per arm, convergence flags on C and F (F-5); family B
                    on the K = 30 committee records (one-sided, no floor
-                   rule; T-B2 on delta = d15 - d0, #132);
-                   <out>/f3_families.csv, <out>/f3_pa_fits.csv (both
-                   Person Activity endpoint fields per fit, E14) and the
-                   descriptive <out>/f3_family_b.csv
+                   rule; T-B2 on delta = d15 - d0, #132); family E on the
+                   five rotated Person Activity folds (#133: pairs on fold
+                   and seed, run value = the mean per-recording test
+                   macro-F1 of the fold's test recordings, fold-stratified
+                   interval); <out>/f3_families.csv, <out>/f3_pa_fits.csv
+                   (both Person Activity endpoint fields per fit, E14) and
+                   the descriptive <out>/f3_family_b.csv and
+                   <out>/f3_family_e.csv (fold medians, person-recording
+                   cells with the nested interval, L17 sensitivity)
   --f3-descriptive SPEC.yaml  the descriptive F3 arms (F3_DESCRIPTIVE_ARMS:
                    the six block A arms, the budget arm and the script arm;
                    F-12) from explicit path lists per arm (template:
@@ -150,17 +155,19 @@ import numpy as np
 import pandas as pd
 import yaml
 from scipy.stats import binomtest, rankdata, wilcoxon
+from scipy.stats import t as student_t
 
 # Allow running as a plain script (``src`` is the installed package).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.evaluation.metrics import (CHANCE_MARGIN, at_chance,  # noqa: E402
-                                    one_class_macro_f1)
+                                    macro_f1, one_class_macro_f1)
 from src.evaluation.rollout_metrics import (SENSITIVITY_KEY,  # noqa: E402
                                             TAU_ORB_SENSITIVITY, floor_lines)
 from src.evaluation.stats import (bootstrap_mean_ci,  # noqa: E402
                                   bootstrap_median_ci, clopper_pearson,
-                                  crossed_median_diff_ci, p_a_gt_b)
+                                  crossed_median_diff_ci, nested_median_ci,
+                                  p_a_gt_b, stratified_median_ci)
 
 ALPHA = 0.05
 METRIC = 'nrmse'   # primary comparison metric (proposal: MSE/NRMSE)
@@ -1102,7 +1109,15 @@ def _median_diff_ci(p, task):
     """((lo, hi), units) of the bootstrap interval of the median paired
     difference v_a - v_b of a _paired frame: crossed over seeds x test
     recordings on Person Activity when every fit has its confusion matrices
-    (one shape) and none diverged, else over seeds."""
+    (one shape) and none diverged, else over seeds. Both resample the seeds
+    on fixed recordings: records of one arm whose test recordings (the keys
+    of test_macro_f1_per_recording, where the frame has that column) differ,
+    e.g. the folds of F3 family E, raise ValueError (#133)."""
+    for s in 'ab':
+        col = f'test_macro_f1_per_recording_{s}'
+        if col in p and len({tuple(sorted(d or {})) for d in p[col]}) > 1:
+            raise ValueError(f'_median_diff_ci: the records of arm '
+                             f'{s.upper()} differ in their test recordings')
     crossed = (task == 'pa' and not (p['diverged_a'] | p['diverged_b']).any()
                and all(isinstance(c, np.ndarray) for c in
                        (*p['confusion_a'], *p['confusion_b']))
@@ -1116,20 +1131,21 @@ def _median_diff_ci(p, task):
                                 - p['v_b'].to_numpy(float), N_BOOT), 'seed')
 
 
-def _pair_stats(p, task, m=1, alternative='two-sided') -> dict:
+def _pair_stats(p, task, m=1, alternative='two-sided', ci=None) -> dict:
     """Statistics of one paired block (a _paired frame, n >= 1): Wilcoxon
     (exact without ties or zeros; undecidable below MIN_PAIRS pairs), d_z,
     P(A>B) with its Clopper-Pearson interval, the median difference with its
     bootstrap interval (Person Activity: crossed seeds x test recordings when
-    every fit has its confusion matrices and none diverged; else seeds), the
-    divergence rates of both arms."""
+    every fit has its confusion matrices and none diverged; else seeds; ci:
+    a ((lo, hi), units) of the caller instead, F3 family E), the divergence
+    rates of both arms."""
     x, y = p['v_a'].to_numpy(float), p['v_b'].to_numpy(float)
     sign = 1 if HIGHER_IS_BETTER[task] else -1
     pw, lo, hi = p_a_gt_b(sign * p['metric_a'].to_numpy(float),
                           sign * p['metric_b'].to_numpy(float),
                           p['diverged_a'].to_numpy(bool),
                           p['diverged_b'].to_numpy(bool))
-    ci, units = _median_diff_ci(p, task)
+    ci, units = ci or _median_diff_ci(p, task)
     n = len(x)
     p_raw, method = wilcoxon_test(x, y, alternative) if n else (None, None)
     p_adj = None if p_raw is None else min(1.0, p_raw * m)
@@ -2541,7 +2557,6 @@ def descriptive_report(blocks) -> str:
 #   status    optional, overrides the family's 'required' | 'conditional'
 #             | 'optional'
 # Values follow the F3 draft; a change before the freeze is a registry PR.
-# Family E (#133) plugs in here.
 F3_CONFIG_FIELDS = ('lr', 'clipnorm', 'epochs', 'param_budget')
 _LEGACY = ' [optimizer=rmsprop_legacy]'
 _VPT = 'vpt_multi_median'
@@ -2553,9 +2568,23 @@ _CO_SEEDS = ('split_seed', 'corruption_seed', 'val_seed')   # equal per pair
 DID_PENALTY = -3.0   # T-B2: a seed with a non-finite input (valid: [-2, 2])
 F3_B_FAULTS = (0, 3, 9, 15, 20)   # the fault levels of f3_family_b.csv
 # the final seeds per family (F-1); a spec test of a family listed here must
-# name exactly these seeds (E: per fold). G and H have no registry list.
+# name exactly these seeds. H has no registry list.
 F3_SEEDS = {'A': range(10, 30), 'B': range(10, 30), 'C': range(10, 30),
-            'D': range(10, 30), 'E': range(10, 15), 'F': range(10, 20)}
+            'D': range(10, 30), 'E': range(10, 35), 'F': range(10, 20),
+            'G': range(10, 20)}
+# family E (#133): fold k (test recording index k of every person, #134) has
+# its own seeds 10 + 5k to 14 + 5k; a record on a seed off its fold is not
+# used (n_outside_list)
+F3_FOLD_SEEDS = {k: range(10 + 5 * k, 15 + 5 * k) for k in range(5)}
+# L17 sensitivity of family E: per fold the test recordings that were
+# training recordings of the default split (split_seed 0), 15 in all
+F3_E_L17_RECORDINGS = {0: ('C01', 'D01'), 1: ('B02', 'E02'),
+                       2: ('A03', 'B03', 'C03', 'D03', 'E03'),
+                       3: ('A04', 'C04', 'D04'), 4: ('A05', 'B05', 'E05')}
+F3_E_NESTED_LABEL = ('descriptive person–recording resampling interval '
+                     '(five persons; not a confidence interval for new '
+                     'persons)')
+_PER_REC = 'test_macro_f1_per_recording'   # the family E endpoint field
 
 
 def floor_share_bound(n_below, n_fits) -> bool:
@@ -2604,12 +2633,26 @@ F3_FAMILIES = {
                     match=_EB),
         'T-D2': _f3('pa', 'cfc_lrc/ncp', 'cfc_lrc_outer/ncp', 'test_macro_f1',
                     'exclusive', match=_EB)}},
+    # E: three Person Activity arms on the five rotated folds (#133, #134),
+    # paired on (split_fold, seed); run value = the mean of the per-recording
+    # test macro-F1 over the fold's five test recordings, its floor the
+    # recording mean of the one-class value (_e_one_class). T-E3 is
+    # registered optional (protocol F3 section 2.8): outside the spec
+    # template, counted in neither m nor m_f3.
+    'E': {'status': 'required', 'tests': {
+        'T-E1': _f3('pa', 'cfc_lrc/ncp', 'gru/ncp', _PER_REC, 'exclusive',
+                    match=_EB),
+        'T-E2': _f3('pa', 'cfc_lrc/ncp', 'cfc_lrc/dense3', _PER_REC,
+                    'exclusive', match=_EB),
+        'T-E3': _f3('pa', 'cfc/dense', 'cfc_static/dense', _PER_REC,
+                    'exclusive', match=_EB, status='optional')}},
     'F': {'status': 'required', 'tests': {
         'T-F1': _f3('duffing', 'lrc_init/ncp', 'lrc/ncp', _VPT,
                     'informational', success=('floor+', 2.0), match=_EB),
         'T-F2': _f3('duffing', 'lrc_cal_duffing/ncp', 'lrc/ncp', _VPT,
                     'informational', success=('floor+', 2.0), match=_EB)}},
-    'G': {'status': 'conditional', 'tests': {
+    # G runs in every case (protocol F3, O-22)
+    'G': {'status': 'required', 'tests': {
         'T-G1': _f3(_LV, 'cfc_lrc/cncp', 'cfc_lrc/cncp_ff', _VPT,
                     'exclusive', match=_EB),
         'T-G2': _f3('pa', 'cfc_lrc/cncp', 'cfc_lrc/cncp_ff', 'test_macro_f1',
@@ -2625,6 +2668,10 @@ F3_TESTS = {test: {**t, 'family': family,
             for family, f in F3_FAMILIES.items()
             for test, t in f['tests'].items()}
 F3_TEST_KEYS = {'seeds', 'a', 'b'}
+# tests registered optional on their own (T-E3): in neither m nor m_f3
+F3_UNCOUNTED = {t for f in F3_FAMILIES.values()
+                for t, e in f['tests'].items()
+                if e.get('status') == 'optional'}
 
 
 def load_f3_spec(path) -> dict:
@@ -2715,11 +2762,22 @@ def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
     record. Two records of one key raise SystemExit. Without split_fold in
     key, a record with the arm label and a split_fold (fold 0 included),
     whatever its seed, raises SystemExit naming the file and the fold
-    (#159). Non-fit JSONs (_is_fit_record) are skipped."""
+    (#159). Non-fit JSONs (_is_fit_record) are skipped; a record with the
+    arm label without seed raises SystemExit naming the file.
+
+    Family E (#133, key ('split_fold', 'seed')): a record with the arm label
+    without split_fold raises SystemExit naming the file; a record whose
+    seed is off the seed list or off F3_FOLD_SEEDS of its fold goes to
+    outside as (fold, seed); metric = the run value, the mean of
+    test_macro_f1_per_recording (a column) over the fold's test recordings
+    (non-finite: diverged); below = at_chance against _e_one_class of its
+    test confusions; data_key = (split_seed, split_fold) of
+    config.effective; effective_dt_scale = config.effective.dt_scale."""
     task, endpoint = entry['task'], entry['endpoint']
     runner = 'pa' if task == 'pa' else 'lv'
     label, versions = arm['label'], arm['protocol_version']
     name = f'{test}.{side} ({label})'
+    fam_e = entry['family'] == 'E'
     rows, outside, other = [], [], defaultdict(int)
     for path in _record_files(arm['paths']):
         with open(path, encoding='utf-8') as f:
@@ -2734,24 +2792,38 @@ def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
                 other[arm_label(r)] += 1
             continue
         _check_protocol(path, eff, versions, name)
+        if 'seed' not in r:
+            raise SystemExit(f'{path}: {name}: record without seed')
         fold = r.get('split_fold', eff.get('split_fold'))
         if fold is not None and 'split_fold' not in key:   # fold 0 is a fold
             raise SystemExit(f'{path}: split_fold {fold} in {name}, a test '
                              'without folds')
-        if r.get('seed') not in seeds:
-            outside.append(r.get('seed'))
+        if fam_e and fold is None:
+            raise SystemExit(f'{path}: {name}: record without split_fold')
+        if r['seed'] not in seeds or (
+                fam_e and r['seed'] not in F3_FOLD_SEEDS.get(fold, ())):
+            outside.append((fold, r['seed']) if fam_e else r['seed'])
             continue
-        row = _sequence_row(path, r, runner, curves=True,
-                            fields=(endpoint,) if runner == 'pa' else ())
+        row = _sequence_row(path, r, runner, curves=True, fields=(
+            (endpoint, 'split_fold') if fam_e
+            else (endpoint,) if runner == 'pa' else ()))
         row['training_diverged'] = bool(row['training_diverged'])
         if runner == 'pa':
             v = row[endpoint]
-            v = float('nan') if v is None else float(v)
+            v = (float(np.mean([_num(x) for x in v.values()])) if v
+                 else float('nan')) if fam_e else _num(v)
             # both fields as columns; a record without the last-epoch field
             # (written before #138) leaves it None, no fallback
             row.update(metric=v, diverged=not np.isfinite(v),
                        **{f: r.get(f) for f in F3_PA_FIELDS})
-        below, floor = _floor_mark(path, r, eff, row, name, draws)
+        if fam_e:
+            if row['confusion'] is None:
+                raise SystemExit(f'{name}: no test confusion matrices '
+                                 f'(floor marking) in {path}')
+            below, floor = at_chance(v, _e_one_class(row['confusion'])), None
+            row.update(effective_dt_scale=eff.get('dt_scale'))
+        else:
+            below, floor = _floor_mark(path, r, eff, row, name, draws)
         if runner == 'pa' and endpoint != 'test_macro_f1':
             row['confusion'] = None     # confusions of the best-val epoch
         if 'success' in entry:
@@ -2760,8 +2832,10 @@ def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
                 row['metric'], row['diverged'] or row['training_diverged'],
                 t if rule == 'threshold' else floor + t)
         rows.append({**row, 'width_matched': _width_matched(r),
-                     'data_key': eff.get('split_seed' if runner == 'pa'
-                                         else 'data_seed'),
+                     'data_key': ((eff.get('split_seed'),
+                                   eff.get('split_fold')) if fam_e
+                                  else eff.get('split_seed' if runner == 'pa'
+                                               else 'data_seed')),
                      'below': bool(below), 'floor': floor,
                      'param_budget': r.get('param_budget'),
                      'protocol_version': eff.get('protocol_version'),
@@ -2777,6 +2851,19 @@ def _f3_arm(test, side, entry, arm, seeds, draws, key=('seed',)):
 
 def _num(v):
     return float('nan') if v is None else float(v)
+
+
+def _e_one_class(confusions) -> float:
+    """The one-class value of a family E run (#133): the mean over its test
+    recordings of macro_f1 of the confusion that assigns every window of the
+    recording to the majority class of the pooled test labels of the run
+    (classes with a label or a prediction count, as in macro_f1).
+    confusions: (recordings, C, C), rows = true labels."""
+    c = np.asarray(confusions, float)
+    major = int(np.argmax(c.sum(axis=(0, 2))))
+    one = np.zeros_like(c)
+    one[:, :, major] = c.sum(axis=2)
+    return float(np.mean([macro_f1(m) for m in one]))
 
 
 def _fault_value(path, r, m):
@@ -2974,6 +3061,28 @@ def _interval_note(row):
             f'{t}). The test decides.' if zero else None)
 
 
+def _check_e_pairs(p, name):
+    """SystemExit naming both runs of a family E pair whose records differ
+    in the data key (split_seed, split_fold of config.effective) or in the
+    resolved config.effective.dt_scale (#133)."""
+    for col, what in (('data_key', 'the data key (split_seed, split_fold)'),
+                      ('effective_dt_scale', 'config.effective.dt_scale')):
+        bad = [f'{fa} / {fb}' for fa, fb, x, y in zip(
+            p['file_a'], p['file_b'], p[f'{col}_a'], p[f'{col}_b'])
+            if x != y]
+        if bad:
+            raise SystemExit(f'{name}: arms A and B differ in {what}: '
+                             + ', '.join(bad))
+
+
+def _outside_text(o):
+    """'seeds 0-9, 100' of an outside list; family E names each record by
+    fold and seed."""
+    if o and isinstance(o[0], tuple):
+        return ', '.join(f'fold {f} seed {s}' for f, s in sorted(o))
+    return f'seeds {_seed_runs(set(o))}'
+
+
 def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',),
              other=None):
     """One F3 test row (F3_COLUMNS) from the fits of arm A and arm B on the
@@ -2986,14 +3095,17 @@ def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',),
     the convergence flags of families C and F) enter no reading; p_perm
     and the intervals are also reported on a budget-excluded row. Floor rule
     'none' (family B) leaves the floor columns empty; kind 'did' (T-B2)
-    tests the vector of _did_vectors against 0 (#132)."""
+    tests the vector of _did_vectors against 0 (#132). Family E (#133, key
+    ('split_fold', 'seed')) checks its pairs with _check_e_pairs and gives
+    the median difference the fold-stratified interval
+    (stratified_median_ci, ci_units 'fold-stratified')."""
     kind, side = entry['kind'], entry['side']
     row = {'family': entry['family'], 'test': test,
            'registry_status': entry['status'], 'task': entry['task'],
            'endpoint': entry['endpoint'], 'side': side, 'a': entry['a'],
            'b': entry['b'], 'm': m, 'm_f3': m_f3, 'n_expected': len(seeds),
            'n_outside_list': sum(len(o) for o in outside.values()),
-           'outside_list': '; '.join(f'{s}: seeds {_seed_runs(set(o))}'
+           'outside_list': '; '.join(f'{s}: {_outside_text(o)}'
                                      for s, o in outside.items() if o)
            or None, 'floor_rule': entry['floor']}
     marks, other = {}, other or {}
@@ -3029,7 +3141,10 @@ def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',),
                 for d in (a, b))
         p = a.merge(b, on=list(key), suffixes=('_a', '_b')).sort_values(
             list(key))
-        _check_data_key(p, test)
+        if entry['family'] == 'E':
+            _check_e_pairs(p, test)
+        else:
+            _check_data_key(p, test)
         _check_match(p, entry.get('match', ()), test)
     else:
         p = pd.DataFrame()
@@ -3043,8 +3158,10 @@ def _f3_test(test, entry, m, m_f3, a, b, seeds, outside, key=('seed',),
             row.update({k: v for k, v in st.items()
                         if k.startswith(('n_nonfinite_', 'n_penalised'))})
         else:
-            st = _pair_stats(p, p['task_a'].iloc[0], m, side)
             x, y = p['v_a'].to_numpy(float), p['v_b'].to_numpy(float)
+            ci = ((stratified_median_ci(x - y, p['split_fold'], N_BOOT),
+                   'fold-stratified') if entry['family'] == 'E' else None)
+            st = _pair_stats(p, p['task_a'].iloc[0], m, side, ci)
             st['n_positive'] = int((x - y > 0).sum())
         row.update({k: st[k] for k in (
             'd_z', 'p_a_gt_b', 'p_a_gt_b_lo', 'p_a_gt_b_hi', 'median_diff',
@@ -3177,12 +3294,15 @@ def f3_family_blocks(spec) -> tuple[pd.DataFrame, pd.DataFrame]:
     exclusion of every arm except the width-matched one. Family B reads its
     arms with _f3_co_records (n_evalonly_a/b: eval-only files skipped)."""
     draws, rows, fits = {}, [], []
+    m_f3 = sum(t not in F3_UNCOUNTED for t in spec)
     for test, entry in F3_TESTS.items():
         if test not in spec:
             continue
         seeds = spec[test]['seeds']
-        m = sum(t in spec for t in F3_FAMILIES[entry['family']]['tests'])
+        m = sum(t in spec and t not in F3_UNCOUNTED
+                for t in F3_FAMILIES[entry['family']]['tests'])
         evalonly = {}
+        key = ('split_fold', 'seed') if entry['family'] == 'E' else ('seed',)
         if entry['task'] == 'co':                   # family B (#132)
             (ra, out_a, oth_a, evalonly['a']), (rb, out_b, oth_b,
                                                 evalonly['b']) = (
@@ -3191,13 +3311,13 @@ def f3_family_blocks(spec) -> tuple[pd.DataFrame, pd.DataFrame]:
             a, b = (_f3_co_frame(r, entry['faults']) for r in (ra, rb))
         else:
             (a, out_a, oth_a), (b, out_b, oth_b) = (
-                _f3_arm(test, side, entry, spec[test][side], seeds, draws)
-                for side in 'ab')
+                _f3_arm(test, side, entry, spec[test][side], seeds, draws,
+                        key) for side in 'ab')
         if entry['task'] == 'pa':
             fits += [d.assign(test=f'{test}.{s}')
                      for s, d in (('a', a), ('b', b)) if len(d)]
-        rows.append({**_f3_test(test, entry, m, len(spec), a, b, seeds,
-                                {'a': out_a, 'b': out_b},
+        rows.append({**_f3_test(test, entry, m, m_f3, a, b, seeds,
+                                {'a': out_a, 'b': out_b}, key,
                                 other={'a': oth_a, 'b': oth_b}),
                      **{f'n_evalonly_{s}': v for s, v in evalonly.items()}})
     counts = ['n10', 'n01', 'n_positive',
@@ -3488,6 +3608,170 @@ def f3_family_b_report(fb) -> str:
                f"{num(r['median_crossed_hi'])}]")
             + f" | {cnt(r['n_positive'])} | {cnt(r['n_converged'])} |")
     lines.append('')
+    return '\n'.join(lines)
+
+
+F3_E_COLUMNS = ['test', 'quantity', 'fold', 'person', 'recording', 'arm',
+                'n', 'value', 'lo', 'hi', 'interval', 'dt_scale']
+
+
+def _e_pairs(spec, test):
+    """(p, a, b) of a family E test: both arm frames of _f3_arm (key
+    split_fold and seed) with the paired value v (a diverged run at 0) and
+    their merge p on (split_fold, seed), empty without both arms."""
+    entry, key = F3_TESTS[test], ['split_fold', 'seed']
+    a, b = (_f3_arm(test, s, entry, spec[test][s], spec[test]['seeds'], {},
+                    tuple(key))[0] for s in 'ab')
+    a, b = (d.assign(v=np.where(d['diverged'], WORST['pa'], d['metric']))
+            if len(d) else d for d in (a, b))
+    p = (a.merge(b, on=key, suffixes=('_a', '_b')).sort_values(key)
+         if len(a) and len(b) else pd.DataFrame())
+    return p, a, b
+
+
+def _rec_values(d, recs=None):
+    """{recording: value} of a test_macro_f1_per_recording dict, restricted
+    to recs; a non-finite value as 0."""
+    return {r: (x if np.isfinite(x) else 0.0) for r, x in (
+        (r, _num(v)) for r, v in sorted(d.items())) if recs is None
+        or r in recs}
+
+
+def _e_rows(test, p, a, b) -> list:
+    """The f3_family_e rows of one test (see f3_family_e)."""
+    rows = []
+
+    def row(quantity, **kw):
+        rows.append({'test': test, 'quantity': quantity, **kw})
+
+    folds = sorted({int(f) for d in (a, b) if len(d) for f in d['split_fold']})
+    for k in folds:
+        pk = p[p['split_fold'] == k] if len(p) else p
+        for s, d in (('a', a), ('b', b)):
+            arm = F3_TESTS[test][s]
+            if len(pk):
+                row('median run value', fold=k, arm=arm, n=len(pk),
+                    value=float(np.median(pk[f'v_{s}'])))
+            dk = d[d['split_fold'] == k] if len(d) else d
+            row(f'runs below {F3_PA_SUCCESS:g}', fold=k, arm=arm, n=len(dk),
+                value=int((dk['v'] < F3_PA_SUCCESS).sum()) if len(dk) else 0)
+        if len(pk):
+            row('median run difference', fold=k, n=len(pk),
+                value=float(np.median(pk['v_a'] - pk['v_b'])))
+        row('dt_scale', fold=k, dt_scale=';'.join(sorted({
+            str(v) for d in (a, b) if len(d)
+            for v in d.loc[d['split_fold'] == k, 'effective_dt_scale']})))
+    if not len(p):
+        return rows
+    x, y = p['v_a'].to_numpy(float), p['v_b'].to_numpy(float)
+    sign, ranks = _signed_ranks(x, y)
+    by_fold = p.assign(d=x - y).groupby('split_fold')['d']
+    med, means = by_fold.median(), by_fold.mean()
+    row('folds with the sign of W+ - W-', n=len(med),
+        value=int((np.sign(med) == np.sign((sign * ranks).sum())).sum()))
+    n = len(means)
+    half = (student_t.ppf(1 - ALPHA / 2, n - 1) * means.std(ddof=1)
+            / np.sqrt(n)) if n > 1 else float('nan')
+    row('mean of fold means', n=n, value=float(means.mean()),
+        lo=means.mean() - half, hi=means.mean() + half,
+        interval=f't interval ({n - 1} df)')
+    diffs = defaultdict(list)            # recording: per-run differences
+    for da, db in zip(p[f'{_PER_REC}_a'], p[f'{_PER_REC}_b']):
+        va, vb = _rec_values(da), _rec_values(db)
+        for r in va.keys() & vb.keys():
+            diffs[r].append(va[r] - vb[r])
+    cells = {r: float(np.mean(v)) for r, v in sorted(diffs.items())}
+    for r, v in cells.items():
+        row('cell', person=r[0], recording=r, n=len(diffs[r]), value=v)
+    persons = defaultdict(list)
+    for r, v in cells.items():
+        persons[r[0]].append(v)
+    for person, v in sorted(persons.items()):
+        row('person median', person=person, n=len(v),
+            value=float(np.median(v)))
+    sizes = {len(v) for v in persons.values()}
+    lo, hi = (nested_median_ci([v for _, v in sorted(persons.items())],
+                               N_BOOT) if len(sizes) == 1
+              else (float('nan'), float('nan')))
+    row('median over cells', n=len(cells), value=float(np.median(list(
+        cells.values()))), lo=lo, hi=hi, interval=F3_E_NESTED_LABEL)
+    l17 = np.array([np.mean(list(_rec_values(da, rs).values()) or [np.nan])
+                    - np.mean(list(_rec_values(db, rs).values()) or [np.nan])
+                    for f, da, db in zip(p['split_fold'], p[f'{_PER_REC}_a'],
+                                         p[f'{_PER_REC}_b'])
+                    for rs in [F3_E_L17_RECORDINGS[int(f)]]])
+    ok = np.isfinite(l17)
+    lo, hi = (stratified_median_ci(l17[ok], p['split_fold'].to_numpy()[ok],
+                                   N_BOOT)
+              if ok.any() else (float('nan'), float('nan')))
+    row('L17 run difference', n=int(ok.sum()),
+        value=float(np.median(l17[ok])) if ok.any() else float('nan'),
+        lo=lo, hi=hi, interval='fold-stratified')
+    return rows
+
+
+def f3_family_e(spec) -> pd.DataFrame:
+    """f3_family_e.csv (#133): the descriptive rows of family E per test in
+    the spec (T-E1, T-E2), no p-value, no verdict, counted in neither m nor
+    m_f3 (columns F3_E_COLUMNS). Run values and pairs as the test reads them
+    (a diverged run at 0, a non-finite per-recording value at 0). Rows: per
+    fold the median run value of each arm, the median run difference, the
+    runs of each arm below F3_PA_SUCCESS and the resolved
+    config.effective.dt_scale; the folds whose median run difference has the
+    sign of W+ - W- of the test (k of n); the mean of the fold means of the
+    run difference with its t interval (n - 1 df); per (person, recording)
+    the cell, the mean arm difference in per-recording macro-F1 over the
+    runs of the fold that tests the recording; per person the median of its
+    cells; the median over the cells with the nested person-recording
+    interval (nested_median_ci, F3_E_NESTED_LABEL); the L17 sensitivity, the
+    median paired difference of the run value over the fold's
+    F3_E_L17_RECORDINGS with the fold-stratified interval. N_BOOT draws,
+    generator seed 0, 95 %."""
+    rows = []
+    for test, e in F3_TESTS.items():
+        if e['family'] == 'E' and test in spec and test not in F3_UNCOUNTED:
+            rows += _e_rows(test, *_e_pairs(spec, test))
+    return pd.DataFrame(rows).reindex(columns=F3_E_COLUMNS).astype(
+        {c: 'Int64' for c in ('fold', 'n')})
+
+
+def f3_family_e_report(fe) -> str:
+    """Markdown of f3_family_e."""
+    def num(v, spec='+.4f'):
+        return '—' if pd.isna(v) else format(v, spec)
+
+    def txt(v):
+        return v if isinstance(v, str) else '—'
+
+    lines = ['## F3 family E, descriptive\n',
+             'No p-value, no verdict, nothing counted in m or m_f3 (#133). '
+             'Run value: the mean test macro-F1 over the five test '
+             'recordings of the run\'s fold (a diverged run at 0); fold-'
+             'stratified intervals draw the runs of every fold with '
+             'replacement, the nested interval persons and, within each, '
+             'recordings (seeds not drawn); 10 000 draws, generator seed 0, '
+             '95 %. L17: the test recordings that were training recordings '
+             'of the default split.\n',
+             '| test | quantity | fold | person | recording | arm | n '
+             '| value [95% interval] | interval | dt_scale |',
+             '|' + '---|' * 10]
+    for r in fe.to_dict('records'):
+        val = ('—' if pd.isna(r['value']) else num(r['value'], '.4g')
+               if pd.isna(r['lo']) else f"{num(r['value'])} "
+               f"[{num(r['lo'])}, {num(r['hi'])}]")
+        lines.append('| ' + ' | '.join([
+            r['test'], r['quantity'], *('—' if pd.isna(r[c]) else str(r[c])
+                                        for c in ('fold', 'person',
+                                                  'recording')),
+            txt(r['arm']), '—' if pd.isna(r['n']) else str(r['n']), val,
+            txt(r['interval']), txt(r['dt_scale'])]) + ' |')
+    dt = fe[fe['quantity'] == 'dt_scale']
+    differ = sorted(t for t, g in dt.groupby('test')
+                    if len({v for s in g['dt_scale'].dropna()
+                            for v in s.split(';') if v}) > 1)
+    lines += ['', 'config.effective.dt_scale across folds: ' + (
+        'differs in ' + ', '.join(differ) if differ else 'one value per test')
+        + '.', '']
     return '\n'.join(lines)
 
 
@@ -3953,7 +4237,7 @@ def main(argv=None) -> int:
                         'rows decided by the exact permutation p, T-A1 by '
                         'the exact McNemar p; writes <out>/f3_families.csv, '
                         '<out>/f3_pa_fits.csv and the descriptive '
-                        '<out>/f3_family_b.csv')
+                        '<out>/f3_family_b.csv and <out>/f3_family_e.csv')
     p.add_argument('--f3-descriptive', default=None, metavar='SPEC.yaml',
                    help='the descriptive F3 arms (F3_DESCRIPTIVE_ARMS: block '
                         'A, budget and script arm) from a spec of explicit '
@@ -4058,7 +4342,10 @@ def main(argv=None) -> int:
         f3_fits.to_csv(os.path.join(args.out, 'f3_pa_fits.csv'), index=False)
         fb = f3_family_b(spec)
         fb.to_csv(os.path.join(args.out, 'f3_family_b.csv'), index=False)
-        parts += [f3_report(f3, f3_fits), f3_family_b_report(fb)]
+        fe = f3_family_e(spec)
+        fe.to_csv(os.path.join(args.out, 'f3_family_e.csv'), index=False)
+        parts += [f3_report(f3, f3_fits), f3_family_b_report(fb),
+                  f3_family_e_report(fe)]
     if args.f3_descriptive:
         tables = f3_descriptive(load_f3_descriptive_spec(args.f3_descriptive))
         for name, t in zip(('fits', 'arms', 'readings'), tables):
